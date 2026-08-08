@@ -56,7 +56,7 @@ Vendor-specific terms (ECS/task/ARN/S3/Fargate…) appear **only** inside a
 | **AgentState** | The 6 lifecycle states (ADR-1) | — |
 | **Discriminators** | `desiredStatus · accepting_work · health · identity_verified` | ADR-1 |
 | **RuntimeDriver** | Per-runtime translation layer (the only place vendor terms live) | Controller/Operator |
-| **config** | The agent's app config (`config.toml`); a field within Spec | — |
+| **config** | The agent's app config (`config.toml`) — the *content* referenced by Spec's `configRef` (delivered out-of-band, not inlined in Spec) | — |
 
 ## 4. Read model
 
@@ -87,22 +87,34 @@ deletionTimestamp`. Traps to document so k8s intuition doesn't misread us:
 - **`Stopping`** = k8s "Terminating" (`deletionTimestamp≠null`), which is not a `.status.phase` value.
 - **`Stopped`** = k8s `Succeeded`/`Failed`; we keep one state + a death `cause`.
 - **`Unhealthy`** is a first-class state; k8s expresses it via conditions/probes + `Unknown`.
-- **`identity_verified`** (latch) ≈ k8s `startupProbe` first success.
+- **`identity_verified`** (latch) ≈ k8s **`Ready` condition first True** (= our
+  `Running`: readiness passed **and** the CP lease exchange completed) — **not**
+  `startupProbe` first success. `startupProbe` fires *before* `Ready`; latching
+  there would mark a started-but-never-`Ready` pod `Unhealthy` instead of
+  `Starting`, breaking ADR-1's F1 split. (ECS equivalent, §7: `lastStatus` ever
+  reached `RUNNING`.)
 
 ## 5. Write model
 
-One idempotent primitive: **`apply(Spec)`** — reconcile observed toward desired.
-Named intents are **sugar over apply** (differ only in delta + guardrail):
+One idempotent primitive: **`apply(Spec)`** — converge observed toward desired
+**on demand** (a one-shot apply that computes the diff and applies it once). The
+*continuous background reconcile loop* is **ADR-4**, not ADR-2. Named intents are
+**sugar over apply** (differ only in delta + guardrail):
 
-| intent | reduces to | note |
-|---|---|---|
-| create | `apply(new Spec)` | first-time; provisions identity |
-| scale | `apply(Spec with new replicas)` | count only; no new identity |
-| **cordon** | `apply(Spec with admission=off)` → Instance `Paused` | stop taking new work, **stay alive** (drain / isolate); reversible |
-| **resume** | `apply(Spec with admission=on)` → Instance `Running` | uncordon |
-| stop / delete | `apply(absence)` / replicas→0 | destructive |
+| intent | reduces to | reversible? | note |
+|---|---|---|---|
+| create | `apply(new Spec)` | — | first-time; provisions identity |
+| scale | `apply(Spec, new replicas)` | — | count only; no new identity |
+| **cordon** | `apply(Spec, admission=off)` → `Paused` | ✅ | stop new work, **stay alive** (drain / isolate) |
+| **resume** | `apply(Spec, admission=on)` → `Running` | ✅ | uncordon |
+| **stop** | `apply(Spec, replicas→0)` | ✅ | scale to zero; **Spec kept** → Instances `Stopping`→`Stopped` |
+| **delete** | `apply(absence)` — remove the Spec | ❌ | **destructive**; the Deployment is gone |
 
 - **create is not a separate operation** — `apply` covers it.
+- **stop ≠ delete.** `stop` scales to zero but keeps the Spec (reversible —
+  `resume`/`scale` brings it back). `delete` removes the Spec entirely
+  (destructive). They are distinct intents with distinct reversibility, so they
+  are not one row.
 - **cordon / resume** are the write path to ADR-1's `Paused` state (admission =
   `accepting_work`, a Spec field). Without them the write model could not reach a
   state ADR-1 defines. `cordon` is *not* `stop`: it keeps the Instance alive and
@@ -129,7 +141,8 @@ models; the MCP server is one adapter.
 | `deploy_scale` | write | change replicas |
 | `deploy_cordon` | write | admission=off → `Paused` (stay alive) |
 | `deploy_resume` | write | admission=on → `Running` |
-| `deploy_stop` | write | destructive |
+| `deploy_stop` | write | scale→0; **reversible** (Spec kept) |
+| `deploy_delete` | write | remove the Deployment; **destructive** |
 
 **`dry_run: bool` is a first-class, required parameter on every write tool** —
 in the pre-authz interim it is the structured safety preview an agent relies on.
@@ -146,9 +159,10 @@ Per-caller authorization is **out of scope for ADR-2** and deferred to ADR-3.
   **coarse ceiling** that *cannot distinguish callers* — every caller reaching
   the MCP server shares the credential's full power.
 - **Consequence / known risk:** until ADR-3, any caller wired to the write tools
-  can do anything the credential allows. Therefore, interim operating rule:
+  can do anything the credential allows. The interim operating rule —
   **least-privilege the `oabctl` role, and wire the write tools only to trusted
-  callers.**
+  callers** — is a **deployment-time assumption, not a technical control**: the
+  system does not itself verify caller trust before ADR-3.
 - ADR-3 adds the **per-caller / per-verb / per-scope** layer (default-deny
   allowlist, destructive-confirm, namespace scoping, audit; caller identity
   CP-verified per ADR-1). Two identities: the process (credential) vs the calling
@@ -170,6 +184,9 @@ alone **cannot produce the 6-state**. Therefore the seam must expose **per-Task
 `InstanceStatus`**: the driver aggregates
 
 - `DescribeServices` → **Deployment**-level counters + rollout state, and
+- **(conformance)** the ECS task must define a container **`healthCheck`** — else
+  `healthStatus` stays `UNKNOWN` and the `health` discriminator is unknowable
+  (the ECS parallel to the compose healthcheck requirement), and
 - `DescribeTasks` → each **Instance**'s 4 discriminators → `phase` (`AgentState`).
 
 `ServiceStatus` thus wraps a `Vec<InstanceStatus>`; the ECS specifics stay inside
