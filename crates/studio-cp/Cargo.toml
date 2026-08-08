@@ -10,3 +10,4 @@ oabctl = { path = "../oabctl" }
 agent-lifecycle = { path = "../agent-lifecycle" }
 aws-config = "1.5"
 anyhow = "1.0"
+tokio = { version = "1.40", features = ["rt-multi-thread", "macros"] }
