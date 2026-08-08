@@ -9,7 +9,8 @@
 > **Y-statement.** In the context of running agents across heterogeneous
 > runtimes, facing the need for one glanceable, runtime-independent notion of
 > "what state is this agent in", we decided a canonical **6-state** lifecycle
-> discriminated by `(desiredStatus, accepting_work, health)`, to get a
+> discriminated by `(desiredStatus, accepting_work, health, identity_verified)`,
+> to get a
 > **single-field dispatch predicate** and a clean native→canonical projection,
 > accepting a sixth state and a per-runtime projection/conformance burden.
 
@@ -38,9 +39,14 @@ agent, at any moment, into **exactly one** state.
 
 ## 3. Decision
 
-Every agent is in exactly one of **6 states**, discriminated by three
-observable axes — `desiredStatus` (running / stopped), `accepting_work`
-(bool), and `health` (in-sync & authorized / not):
+Every agent is in exactly one of **6 states**, discriminated by four observable
+axes — `desiredStatus` (running / stopped), `accepting_work` (bool), `health`
+(in-sync & authorized / not), and `identity_verified` (a **latching** bit: set
+true the first time the agent reaches Running, never cleared). The latch is what
+separates `Starting` (never verified) from `Unhealthy` (was verified, now
+faulted) — without it their `(desiredStatus, accepting_work, health)` tuples
+collide. It is CP-observable per runtime: ECS `lastStatus` ever reached RUNNING /
+k8s ever Ready / compose ever healthy.
 
 ```mermaid
 stateDiagram-v2
@@ -64,17 +70,19 @@ stateDiagram-v2
 
 | State | Discriminator | Definition | The one thing that matters |
 |---|---|---|---|
-| **Starting** | desired=running; identity not yet verified/live | CP provisions an authenticated config and injects it; the agent proves identity before it runs. | Identity is bound and verified by the control plane — never self-asserted. A **per-instance** credential is minted here. |
-| **Running** | desired=running ∧ accepting_work ∧ healthy | Alive, authorized, in-sync, and admitting work. | **Only Running admits new work** → dispatch/gate is the single predicate `state == Running`. |
-| **Paused** | desired=running ∧ ¬accepting_work ∧ healthy | Healthy and in-sync but deliberately not admitting (director cordon). | Intent, not fault. Resumable; still subject to health edges. Keeping it a peer state is what keeps the dispatch predicate single-field. |
-| **Unhealthy** | desired=running ∧ ¬healthy | Alive but fenced: liveness/authz/probe/lease lost. **Not** version skew. | Fenced at once; recover within a window (re-prove identity) or go to Stopping. Split cause: *observed-bad* vs *unobservable* (node lost). |
+| **Starting** | desired=running ∧ ¬identity_verified | CP provisions an authenticated config and injects it; the agent proves identity before it runs. | Identity is bound and verified by the control plane — never self-asserted. A **per-instance** credential is minted here. |
+| **Running** | desired=running ∧ identity_verified ∧ accepting_work ∧ healthy | Alive, authorized, in-sync, and admitting work. | **Only Running admits new work** → dispatch/gate is the single predicate `state == Running`. |
+| **Paused** | desired=running ∧ identity_verified ∧ ¬accepting_work ∧ healthy | Healthy and in-sync but deliberately not admitting (director cordon). | Intent, not fault. Resumable; still subject to health edges. Keeping it a peer state is what keeps the dispatch predicate single-field. |
+| **Unhealthy** | desired=running ∧ identity_verified ∧ ¬healthy | Alive but fenced: liveness/authz/probe/lease lost. **Not** version skew. | Fenced at once; recover within a window (re-prove identity) or go to Stopping. Split cause: *observed-bad* vs *unobservable* (node lost). |
 | **Stopping** | desired=stopped; graceful window open | Terminate committed: flush state and finish in-flight work within a deadline (may still be health-OK). | `desiredStatus==stopped` is the cross-runtime discriminator. Durability was already secured while Running. |
 | **Stopped** | terminal (absorbing) | Terminated. Not resurrected; a replacement is a fresh instance. | Record the cause (normative enum: normal / crash / reclaimed). Granularity is **instance-level**. |
 
 **Attributes, not states** (read alongside the state): `accepting_work`
-(Running vs Paused); `superseded` / version-skew (healthy; drives
-drain→replace; stays Running); health `cause` = observed-bad vs unobservable;
-death `cause` enum; turn-level busy/idle.
+(Running vs Paused) — its authority is the **CP/director**, never the agent's
+self-report; `superseded` / version-skew (healthy) ⇒ the agent is **cordoned to
+Paused** (`accepting_work=false`) and then goes to Stopping/replace, so a
+superseded agent is never left dispatchable in Running; health `cause` =
+observed-bad vs unobservable; death `cause` enum; turn-level busy/idle.
 
 ## 4. Principles
 
@@ -98,11 +106,12 @@ death `cause` enum; turn-level busy/idle.
    straight to `Stopped`. Durability never relies on the Stopping window —
    **checkpoint while Running.**
 5. **Runtime-independent.** Each driver projects native signals onto the 6 via
-   the discriminators `(desiredStatus, accepting_work, health)`; the machine
-   never changes per runtime.
+   the discriminators `(desiredStatus, accepting_work, health, identity_verified)`;
+   the machine never changes per runtime.
 6. **Two predicates, kept apart.** *Dispatch new work* = `state == Running`
-   (single field). *Doing in-flight work* = `Running ∪ Stopping`(within
-   deadline). Don't collapse them into one sentence.
+   (single field). *Doing in-flight work* = `Running ∪ Paused ∪ Stopping`(within
+   deadline) — a cordoned (Paused) agent still finishes its current turn / MCP
+   call. Don't collapse them into one sentence.
 
 ## 5. Model: config vs observed
 
@@ -124,14 +133,14 @@ an ECS-only coincidence.
 |---|---|---|---|
 | Starting | PROVISIONING / PENDING / **ACTIVATING** (ENI + secret inject) | Pending / ContainerCreating / startupProbe pending | created / starting |
 | Running | RUNNING + health OK + desiredStatus RUNNING | Running + readinessProbe True + lease valid | healthy *(healthcheck required)* |
-| Paused | RUNNING + health OK + app-level cordon (`accepting_work=false`) | Ready but cordoned (app-level) | running + app cordon |
-| Unhealthy | RUNNING + healthStatus UNHEALTHY / lease lost *(attribute, not a task state)* | readiness/liveness fail; **Unknown (node lost) → Unhealthy(fenced) + epoch fence**; CrashLoopBackOff | healthcheck fail |
+| Paused | RUNNING + health OK + CP/director cordon (`accepting_work=false`) | Ready but cordoned (CP/director) | running + CP/director cordon |
+| Unhealthy | RUNNING + healthStatus UNHEALTHY / lease lost *(attribute, not a task state)* | readiness/liveness fail; **Unknown (node lost) → Unhealthy(fenced) + epoch fence**; CrashLoopBackOff | healthcheck fail; `docker pause` (SIGSTOP) → healthcheck stall → Unhealthy |
 | Stopping | desiredStatus STOPPED *(DEACTIVATING only if in a target group / service-discovery; else RUNNING→STOPPING)* | deletionTimestamp != null (Terminating: preStop + grace) | stop requested (stop_grace_period) |
 | Stopped | STOPPED + stopCode (enum) | deleted; *preempted* = the reclaim edge | exited |
 
 **Driver conformance conditions**
-- A driver must expose all three discriminators; if it cannot, it does not
-  conform.
+- A driver must expose all four discriminators (including the latching
+  `identity_verified`); if it cannot, it does not conform.
 - **docker-compose requires a `healthcheck`** — without one it only sees
   running/exited and can never separate Running from Unhealthy.
 - **docker-compose must set `restart: "no"`** and hand restart to the control
