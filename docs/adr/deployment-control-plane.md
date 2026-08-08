@@ -49,7 +49,7 @@ Vendor-specific terms (ECS/task/ARN/S3/Fargate…) appear **only** inside a
 | **Deployment** | An Agent's declared desired unit → N Instances | ECS service / k8s Deployment / compose service |
 | **Fleet** | A set of Deployments | — |
 | **Spec** | Desired: `identity + version + scale + admission + runtime + configRef` | `.spec` |
-| **admission** | Spec field (`accepting_work`): may this Instance take new work | (readiness gate) |
+| **admission** | Spec field (`accepting_work`): may this Instance take new work | — (app/CP-level, orthogonal to `Ready`) |
 | **Instance.Status** | Observed per Instance: `phase + conditions + …` | Pod `.status` |
 | **phase** | Field on an **Instance**'s Status; value is an `AgentState` — **Instance-level only** | Pod `.status.phase` |
 | **Deployment.Status** | Observed per Deployment: replica counters `desired/current/ready/available` + Conditions — **not** an `AgentState` | Deployment `.status` |
@@ -137,7 +137,6 @@ models; the MCP server is one adapter.
 |---|---|---|
 | `deploy_list` | read | list Deployments + `Deployment.status` counters |
 | `deploy_get` | read | one Deployment's Spec + status (+ each Instance's phase) |
-| `deploy_apply` | write | the declarative primitive |
 | `deploy_scale` | write | change replicas |
 | `deploy_cordon` | write | admission=off → `Paused` (stay alive) |
 | `deploy_resume` | write | admission=on → `Running` |
@@ -146,6 +145,13 @@ models; the MCP server is one adapter.
 
 **`dry_run: bool` is a first-class, required parameter on every write tool** —
 in the pre-authz interim it is the structured safety preview an agent relies on.
+
+**Raw `apply` is *not* an MCP tool.** `apply` stays the internal primitive; the
+surface exposes only the individually-guardable sugar verbs above. Exposing
+`deploy_apply` would let a caller submit an arbitrary Spec and thereby bypass
+every per-verb guard (§8) — so it is omitted. Creating/provisioning a **new**
+Deployment (a raw new Spec) is likewise a **restricted provisioning action**, not
+a first-class operate tool; its gating lands in ADR-3.
 
 Excluded from MCP: `exec`/`cp`/`sync` (shell into containers — blast radius),
 `bootstrap` (infra, one-time), `schedule` (automation). See Non-goals.
@@ -197,8 +203,10 @@ the driver.
 - **MCP tools named `oabctl_*`** — rejected: re-introduces vendor lock-in in the
   agent-facing vocabulary and duplicates the server namespace.
 - **Pure declarative MCP (`apply` + `get` only)** — rejected as the surface:
-  agents get clearer, individually-guardable intents (`scale`/`stop`); they
-  still compile to `apply`.
+  agents get clearer, individually-guardable intents (`scale`/`cordon`/`stop`);
+  they still compile to `apply` internally. Raw `apply` is deliberately *not*
+  surfaced (it would bypass the per-verb guards); creating a new Spec is a
+  restricted provisioning action, not a first-class operate tool.
 - **Read-only ADR-2 (defer all writes)** — rejected: we enable basic write now,
   and defer *authorization* instead (§6).
 
