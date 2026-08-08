@@ -70,7 +70,7 @@ pub use manifest::{
     Runtime, Spec,
 };
 
-pub use status::{service_status, ServiceStatus};
+pub use status::{instance_status, service_status, InstanceStatus, ServiceStatus};
 
 #[doc(hidden)]
 pub use cli::run_cli;

@@ -124,3 +124,75 @@ pub async fn service_status(
 
     Ok(out)
 }
+
+/// Per-Instance (ECS task) observation — the granularity ADR-1's four
+/// discriminators need (`DescribeServices` alone is service-level and cannot
+/// yield these). See ADR-2 §7.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InstanceStatus {
+    /// Task ARN.
+    pub id: String,
+    /// ECS `lastStatus`: PROVISIONING/PENDING/ACTIVATING/RUNNING/DEACTIVATING/STOPPING/STOPPED.
+    pub last_status: String,
+    /// ECS container `healthStatus`: HEALTHY/UNHEALTHY/UNKNOWN.
+    pub health_status: String,
+    /// `desiredStatus == STOPPED`.
+    pub desired_stopped: bool,
+    /// ECS `stopCode` when stopped (else `None`).
+    pub stop_code: Option<String>,
+}
+
+/// List the tasks (Instances) of one service with per-task status.
+///
+/// Aggregates `ListTasks` + `DescribeTasks`; the caller maps these onto the
+/// canonical model (Studio does this in `studio-cp`).
+pub async fn instance_status(
+    aws_config: &aws_config::SdkConfig,
+    cluster: &str,
+    service: &str,
+) -> Result<Vec<InstanceStatus>> {
+    let ecs = aws_sdk_ecs::Client::new(aws_config);
+
+    // List task ARNs for the service (paginated).
+    let mut task_arns = Vec::new();
+    let mut next_token = None;
+    loop {
+        let mut req = ecs.list_tasks().cluster(cluster).service_name(service);
+        if let Some(t) = &next_token {
+            req = req.next_token(t);
+        }
+        let resp = req.send().await.context("failed to list ECS tasks")?;
+        for arn in resp.task_arns() {
+            task_arns.push(arn.to_string());
+        }
+        next_token = resp.next_token().map(|s| s.to_string());
+        if next_token.is_none() {
+            break;
+        }
+    }
+
+    let mut out = Vec::new();
+    for chunk in task_arns.chunks(100) {
+        let resp = ecs
+            .describe_tasks()
+            .cluster(cluster)
+            .set_tasks(Some(chunk.to_vec()))
+            .send()
+            .await
+            .context("failed to describe ECS tasks")?;
+        for task in resp.tasks() {
+            out.push(InstanceStatus {
+                id: task.task_arn().unwrap_or("-").to_string(),
+                last_status: task.last_status().unwrap_or("UNKNOWN").to_string(),
+                health_status: task
+                    .health_status()
+                    .map(|h| h.as_str().to_string())
+                    .unwrap_or_else(|| "UNKNOWN".to_string()),
+                desired_stopped: task.desired_status() == Some("STOPPED"),
+                stop_code: task.stop_code().map(|c| c.as_str().to_string()),
+            });
+        }
+    }
+
+    Ok(out)
+}
