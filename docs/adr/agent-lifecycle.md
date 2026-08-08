@@ -1,10 +1,10 @@
 # ADR: Agent Lifecycle State Machine
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-08-08
 - **Author:** @brettchien
-- **Reviewers:** Mira (ECS), Jellyfish (control-plane), Falcon (MCP)
-- **Tracking issues:** TBD
+- **Reviewers:** Mira (ECS), Jellyfish (control-plane), Falcon (MCP) — all LGTM
+- **Tracking issues:** implementation openabdev/studio#2
 
 > **Y-statement.** In the context of running agents across heterogeneous
 > runtimes, facing the need for one glanceable, runtime-independent notion of
