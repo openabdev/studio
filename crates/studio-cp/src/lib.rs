@@ -67,6 +67,75 @@ pub fn instance_phase(inst: &InstanceStatus, verified_before: bool) -> AgentStat
     EcsDriver.project(&task, verified_before).classify()
 }
 
+/// One Instance's identity + phase within a Deployment.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InstancePhase {
+    pub id: String,
+    pub phase: AgentState,
+}
+
+/// The generic Deployment read-model (ADR-2 §4): Deployment-level replica
+/// **counters** + per-Instance `phase`. A Deployment has *counts*, **not** an
+/// `AgentState`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Deployment {
+    pub name: String,
+    pub namespace: String,
+    /// Desired replica count.
+    pub desired: i32,
+    /// Instances currently observed.
+    pub current: i32,
+    /// Instances whose `phase` is `Running`.
+    pub ready: i32,
+    pub instances: Vec<InstancePhase>,
+}
+
+/// One-shot approximation of the `identity_verified` latch from the current
+/// `last_status`. The real latch needs CP-persisted history; here an Instance
+/// counts as verified once its ECS `lastStatus` is at or past `RUNNING`.
+fn latched_verified(last_status: &str) -> bool {
+    matches!(last_status, "RUNNING" | "DEACTIVATING" | "STOPPING")
+}
+
+/// Build the Deployment read-model from service-level + per-Instance status.
+pub fn build_deployment(svc: &ServiceStatus, instances: &[InstanceStatus]) -> Deployment {
+    let instances: Vec<InstancePhase> = instances
+        .iter()
+        .map(|i| InstancePhase {
+            id: i.id.clone(),
+            phase: instance_phase(i, latched_verified(&i.last_status)),
+        })
+        .collect();
+    let ready = instances
+        .iter()
+        .filter(|p| p.phase == AgentState::Running)
+        .count() as i32;
+    Deployment {
+        name: svc.name.clone(),
+        namespace: svc.namespace.clone(),
+        desired: svc.desired,
+        current: instances.len() as i32,
+        ready,
+        instances,
+    }
+}
+
+/// Observe one Deployment end-to-end: service-level counters + per-Instance
+/// phases. `service` is the ECS service name (`oab-{namespace}-{name}`).
+pub async fn observe_deployment(
+    aws_config: &aws_config::SdkConfig,
+    cluster: &str,
+    service: &str,
+) -> anyhow::Result<Option<Deployment>> {
+    let svc = oabctl::service_status(aws_config, cluster)
+        .await?
+        .into_iter()
+        .find(|s| service == format!("oab-{}-{}", s.namespace, s.name) || service == s.name);
+    let Some(svc) = svc else { return Ok(None) };
+    let instances = oabctl::instance_status(aws_config, cluster, service).await?;
+    Ok(Some(build_deployment(&svc, &instances)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -111,5 +180,32 @@ mod tests {
             instance_phase(&inst("DEACTIVATING", "HEALTHY", true), true),
             AgentState::Stopping
         );
+    }
+
+    fn svc(desired: i32, running: i32) -> ServiceStatus {
+        ServiceStatus {
+            name: "orca".into(),
+            namespace: "prod".into(),
+            cpu: "512".into(),
+            memory: "1024".into(),
+            capacity: "FARGATE".into(),
+            running,
+            desired,
+            status: "ACTIVE".into(),
+        }
+    }
+
+    #[test]
+    fn build_deployment_counts_ready_and_phases() {
+        let insts = vec![
+            inst("RUNNING", "HEALTHY", false),
+            inst("ACTIVATING", "UNKNOWN", false),
+        ];
+        let d = build_deployment(&svc(2, 1), &insts);
+        assert_eq!(d.desired, 2);
+        assert_eq!(d.current, 2);
+        assert_eq!(d.ready, 1); // one Running, one Starting
+        assert_eq!(d.instances[0].phase, AgentState::Running);
+        assert_eq!(d.instances[1].phase, AgentState::Starting);
     }
 }
