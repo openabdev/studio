@@ -1,0 +1,48 @@
+# yaml-language-server: $schema=../schema/oabservice-v2.json
+apiVersion: oab.dev/v2
+kind: OABFleet
+metadata:
+  name: law-shi-team
+  namespace: prod
+spec:
+  template:
+    image: 123456789.dkr.ecr.us-east-1.amazonaws.com/openab:latest
+    resources:
+      cpu: "256"
+      memory: "512"
+    secrets:
+      DISCORD_TOKEN: /oab/prod/${name}/discord-token
+    runtime:
+      type: ecs
+      capacityProvider: FARGATE_SPOT
+      networking:
+        subnets: [subnet-aaa, subnet-bbb]
+        securityGroups: [sg-oab]
+  agents:
+    - name: chaodu
+      configFrom: s3://oab-control-plane/config/prod/chaodu/config.toml
+    - name: pudu
+      configFrom: s3://oab-control-plane/config/prod/pudu/config.toml
+    - name: baidu
+      configFrom: s3://oab-control-plane/config/prod/baidu/config.toml
+    - name: juedu
+      configFrom: s3://oab-control-plane/config/prod/juedu/config.toml
+    - name: koudu
+      configFrom: s3://oab-control-plane/config/prod/koudu/config.toml
+    - name: xdu
+      configFrom: s3://oab-control-plane/config/prod/xdu/config.toml
+    - name: zdu
+      configFrom: s3://oab-control-plane/config/prod/zdu/config.toml
+    - name: kiro-01
+      configFrom: s3://oab-control-plane/config/prod/kiro-01/config.toml
+    - name: kiro-02
+      configFrom: s3://oab-control-plane/config/prod/kiro-02/config.toml
+      resources:
+        cpu: "512"
+        memory: "1024"
+    - name: openclaw
+      configFrom: s3://oab-control-plane/config/prod/openclaw/config.toml
+      image: 123456789.dkr.ecr.us-east-1.amazonaws.com/openclaw:latest
+      resources:
+        cpu: "1024"
+        memory: "2048"

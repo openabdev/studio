@@ -1,0 +1,15 @@
+# Vendored: oabctl
+
+This crate is vendored from **[openabdev/openab](https://github.com/openabdev/openab)**
+(`operator/`), which is licensed **MIT** (Copyright (c) 2026 openabdev).
+
+- Source: `openabdev/openab` @ `d64c678f0b5e4b26f52d5272b0c6743c4207a1b9`
+- Vendored: 2026-08-08
+
+We copied it (rather than depending across repos) so Studio can build the
+control-plane actions and an MCP surface on top of it in one place. Upstream
+changes are **not** auto-synced; re-vendor deliberately and record the new sha
+here.
+
+MIT license text: see the repo root `LICENSE` (Studio is also MIT) and the
+upstream `openabdev/openab` `LICENSE`.

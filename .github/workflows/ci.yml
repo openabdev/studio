@@ -1,0 +1,27 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: fmt (our crates)
+        run: cargo fmt -p agent-lifecycle --check
+      - name: clippy (our crates)
+        run: cargo clippy -p agent-lifecycle -- -D warnings
+      - name: build (workspace)
+        run: cargo build --workspace --all-targets
+      - name: test (workspace)
+        run: cargo test --workspace

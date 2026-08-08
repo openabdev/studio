@@ -1,0 +1,43 @@
+[package]
+name = "oabctl"
+version = "0.1.0"
+edition = "2021"
+description = "CLI provisioner for OAB agents on ECS"
+license = "MIT"
+
+# Vendored from openabdev/openab (MIT) @ d64c678 — see VENDORED.md. Part of the
+# studio workspace (root Cargo.toml).
+
+[lib]
+name = "oabctl"
+path = "src/lib.rs"
+
+[[bin]]
+name = "oabctl"
+path = "src/main.rs"
+
+[dependencies]
+aws-config = "1.5"
+aws-sdk-ecs = "1.53"
+aws-sdk-ec2 = "1"
+aws-sdk-iam = "1"
+aws-sdk-s3 = "1.65"
+aws-sdk-scheduler = "1.98"
+aws-sdk-ssm = "1.52"
+aws-sdk-sts = "1"
+aws-sdk-cloudwatchlogs = "1"
+aws-sdk-secretsmanager = "1"
+aws-sdk-apigatewayv2 = "1"
+aws-sdk-servicediscovery = "1"
+ecsctl = { git = "https://github.com/oablab/ecsctl.git", rev = "90a6cd1" }
+clap = { version = "4.5", features = ["derive"] }
+chrono = "0.4"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+tokio = { version = "1.40", features = ["full"] }
+toml = "0.8"
+anyhow = "1.0"
+dirs = "6"
+rpassword = "7"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
