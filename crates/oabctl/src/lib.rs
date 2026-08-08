@@ -58,6 +58,7 @@ mod ingress;
 pub mod manifest;
 mod scale;
 mod secrets;
+pub mod status;
 
 pub use apply::{
     apply_manifests, AppliedService, ApplyAction, ApplyError, ApplyErrorKind, ApplyOptions,
@@ -68,6 +69,8 @@ pub use manifest::{
     KubernetesRuntime, Metadata, OABFleetManifest, OABServiceManifest, RawManifest, Resources,
     Runtime, Spec,
 };
+
+pub use status::{service_status, ServiceStatus};
 
 #[doc(hidden)]
 pub use cli::run_cli;
