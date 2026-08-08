@@ -48,9 +48,11 @@ Vendor-specific terms (ECS/task/ARN/S3/Fargate…) appear **only** inside a
 | **Instance** | One running copy of an agent | ECS task / k8s pod / compose container |
 | **Deployment** | An Agent's declared desired unit → N Instances | ECS service / k8s Deployment / compose service |
 | **Fleet** | A set of Deployments | — |
-| **Spec** | Desired: `identity + version + scale + runtime + configRef` | `.spec` |
-| **Status** | Observed bundle: `phase + conditions + …` | `.status` |
-| **phase** | Field on Status; value is an `AgentState` (the 6 states) | `.status.phase` |
+| **Spec** | Desired: `identity + version + scale + admission + runtime + configRef` | `.spec` |
+| **admission** | Spec field (`accepting_work`): may this Instance take new work | (readiness gate) |
+| **Instance.Status** | Observed per Instance: `phase + conditions + …` | Pod `.status` |
+| **phase** | Field on an **Instance**'s Status; value is an `AgentState` — **Instance-level only** | Pod `.status.phase` |
+| **Deployment.Status** | Observed per Deployment: replica counters `desired/current/ready/available` + Conditions — **not** an `AgentState` | Deployment `.status` |
 | **AgentState** | The 6 lifecycle states (ADR-1) | — |
 | **Discriminators** | `desiredStatus · accepting_work · health · identity_verified` | ADR-1 |
 | **RuntimeDriver** | Per-runtime translation layer (the only place vendor terms live) | Controller/Operator |
@@ -61,15 +63,19 @@ Vendor-specific terms (ECS/task/ARN/S3/Fargate…) appear **only** inside a
 `Instance = Spec (desired) + Status (observed)`; **state is observed, never part
 of Spec** (ADR-1). A driver observes native signals and projects them onto:
 
-- `Status.phase` — one `AgentState` per Instance (ADR-1's `classify()`).
-- `Status.conditions[]` — orthogonal facts (ready, superseded, …).
-- Rolled up per Deployment: a Deployment's phase derives from its Instances
-  (e.g. any `Starting` → progressing; ≥1 `Running` at desired scale → available).
+- **Instance-level** — `Instance.status.phase` is one `AgentState` (ADR-1's
+  `classify()`), plus `conditions[]` (ready, superseded, …).
+- **Deployment-level** — `Deployment.status` is **replica counters**
+  (`desired / current / ready / available`) + Deployment `conditions[]` (e.g.
+  `Available`, `Progressing`). **It is NOT an `AgentState`**: a Deployment with N
+  Instances (say one `Running`, one `Unhealthy`) has no single lifecycle value —
+  it has *counts*. (Mirrors k8s exactly: a Pod has a `phase`; a Deployment has
+  replica counts + conditions, never a phase.)
 
 **Observation types are generic** (`Deployment`, `Instance`, `Status`, `phase`);
 ECS strings (`ACTIVE`/`DRAINING`/task ARN) stay inside the ECS driver. The
 current `studio-cp::ServiceStatus` (ECS-flavoured) is replaced by generic types
-here.
+here (see §7).
 
 ### 6-state ⇄ k8s (mapping, with traps)
 
@@ -92,12 +98,18 @@ Named intents are **sugar over apply** (differ only in delta + guardrail):
 |---|---|---|
 | create | `apply(new Spec)` | first-time; provisions identity |
 | scale | `apply(Spec with new replicas)` | count only; no new identity |
+| **cordon** | `apply(Spec with admission=off)` → Instance `Paused` | stop taking new work, **stay alive** (drain / isolate); reversible |
+| **resume** | `apply(Spec with admission=on)` → Instance `Running` | uncordon |
 | stop / delete | `apply(absence)` / replicas→0 | destructive |
 
 - **create is not a separate operation** — `apply` covers it.
-- **dry-run / diff**: `apply` supports a preview mode that returns *what would
+- **cordon / resume** are the write path to ADR-1's `Paused` state (admission =
+  `accepting_work`, a Spec field). Without them the write model could not reach a
+  state ADR-1 defines. `cordon` is *not* `stop`: it keeps the Instance alive and
+  resumable.
+- **dry-run / diff**: every write supports a preview that returns *what would
   change* without mutating — a safety valve, and important for agents (look
-  before leap).
+  before leap). See §6 for `dry_run` as a first-class tool parameter.
 
 ## 6. MCP adapter
 
@@ -111,11 +123,16 @@ models; the MCP server is one adapter.
 
 | tool | kind | maps to |
 |---|---|---|
-| `deploy_list` | read | list Deployments + phase |
-| `deploy_get` | read | one Deployment's Spec + Status (+ Instance phases) |
-| `deploy_apply` | write | the declarative primitive (supports dry-run) |
+| `deploy_list` | read | list Deployments + `Deployment.status` counters |
+| `deploy_get` | read | one Deployment's Spec + status (+ each Instance's phase) |
+| `deploy_apply` | write | the declarative primitive |
 | `deploy_scale` | write | change replicas |
+| `deploy_cordon` | write | admission=off → `Paused` (stay alive) |
+| `deploy_resume` | write | admission=on → `Running` |
 | `deploy_stop` | write | destructive |
+
+**`dry_run: bool` is a first-class, required parameter on every write tool** —
+in the pre-authz interim it is the structured safety preview an agent relies on.
 
 Excluded from MCP: `exec`/`cp`/`sync` (shell into containers — blast radius),
 `bootstrap` (infra, one-time), `schedule` (automation). See Non-goals.
@@ -143,6 +160,20 @@ oabctl exposes status as a **library API returning data** (not CLI table output)
 `oabctl::service_status(...) -> Vec<ServiceStatus>` (added in PR #2). Studio
 consumes it in `studio-cp` and maps it onto the generic read model. Vendored
 oabctl stays additive/clean so changes are upstream-contributable.
+
+**Granularity requirement.** `DescribeServices` gives only *service-level* data
+(running/desired counts, service status) — it cannot yield a Task's `lastStatus`
+(`PROVISIONING`/`ACTIVATING`/`RUNNING`/`STOPPED`), container `healthStatus`, or
+`stopCode`. Those per-Task facts are exactly what ADR-1's four discriminators
+(`identity_verified`, `health`, …) need, so a service-level `ServiceStatus`
+alone **cannot produce the 6-state**. Therefore the seam must expose **per-Task
+`InstanceStatus`**: the driver aggregates
+
+- `DescribeServices` → **Deployment**-level counters + rollout state, and
+- `DescribeTasks` → each **Instance**'s 4 discriminators → `phase` (`AgentState`).
+
+`ServiceStatus` thus wraps a `Vec<InstanceStatus>`; the ECS specifics stay inside
+the driver.
 
 ## 8. Alternatives Considered
 
