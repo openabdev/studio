@@ -79,10 +79,13 @@ stateDiagram-v2
 
 **Attributes, not states** (read alongside the state): `accepting_work`
 (Running vs Paused) — its authority is the **CP/director**, never the agent's
-self-report; `superseded` / version-skew (healthy) ⇒ the agent is **cordoned to
-Paused** (`accepting_work=false`) and then goes to Stopping/replace, so a
-superseded agent is never left dispatchable in Running; health `cause` =
-observed-bad vs unobservable; death `cause` enum; turn-level busy/idle.
+self-report; `superseded` / version-skew (a healthy instance whose desired
+version has moved on) ⇒ `accepting_work=false`, so it classifies as **Paused**
+and is never dispatched new work. *When and in what order* a superseded instance
+is drained or replaced is a **fleet-level rollout** concern (e.g.
+make-before-break) — out of scope for this instance-level ADR; see the future
+rollout / RuntimeDriver ADR. Also: health `cause` = observed-bad vs
+unobservable; death `cause` enum; turn-level busy/idle.
 
 ## 4. Principles
 
