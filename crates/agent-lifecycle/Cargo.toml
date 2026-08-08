@@ -1,0 +1,8 @@
+[package]
+name = "agent-lifecycle"
+version = "0.1.0"
+edition = "2021"
+description = "Canonical agent lifecycle state machine — see docs/adr/agent-lifecycle.md"
+license = "MIT"
+
+[dependencies]
