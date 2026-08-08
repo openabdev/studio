@@ -1,9 +1,9 @@
 # ADR: Deployment Control Plane — read/write model + MCP
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-08-08
 - **Author:** @brettchien
-- **Reviewers:**
+- **Reviewers:** Mira (ECS), Jellyfish (control-plane), Falcon (MCP) — all LGTM
 - **Tracking issues:** builds on [agent-lifecycle](./agent-lifecycle.md) (ADR-1)
 
 > **Y-statement.** In the context of operating agents across runtimes on top of
