@@ -1,0 +1,59 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      # Hard gate: the whole workspace must compile and pass tests.
+      - name: build (workspace)
+        run: cargo build --workspace --all-targets
+      - name: test (workspace)
+        run: cargo test --workspace
+      # Smoke: the MCP server must actually START and speak MCP over stdio, not
+      # merely compile. No AWS creds needed — initialize + tools/list only touch
+      # the static tool catalog (AWS is resolved lazily, on real tool calls).
+      - name: smoke (oab-mcp runs + lists tools over stdio)
+        run: |
+          bin=./target/debug/oab-mcp
+          test -x "$bin" || { echo "binary not found at $bin"; exit 1; }
+          printf '%s\n' \
+            '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"smoke","version":"0"}}}' \
+            '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
+            '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' \
+            | timeout 30 "$bin" > out.jsonl 2> err.log || true
+          echo "----- stdout -----"; cat out.jsonl
+          echo "----- stderr -----"; cat err.log
+          for t in deploy_list deploy_get get_agent_states deploy_apply deploy_scale deploy_delete; do
+            grep -q "\"$t\"" out.jsonl || { echo "SMOKE FAIL: tool '$t' not advertised"; exit 1; }
+          done
+          echo "SMOKE OK: server initialized and advertised all 6 tools"
+      # Publish the built server so a runtime that can't compile it locally
+      # (aws-sdk-ec2 exceeds small boxes' RAM) can still fetch and run it.
+      - name: upload oab-mcp binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: oab-mcp-linux-x64
+          path: target/debug/oab-mcp
+          if-no-files-found: error
+          retention-days: 7
+      # Informational (non-blocking) — the authoring runtime has no rustfmt, so
+      # style is tidied opportunistically rather than gated.
+      - name: fmt (our crates)
+        run: cargo fmt -p agent-lifecycle --check
+        continue-on-error: true
+      - name: clippy (our crates)
+        run: cargo clippy -p agent-lifecycle -- -D warnings
+        continue-on-error: true

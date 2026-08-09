@@ -1,0 +1,22 @@
+# yaml-language-server: $schema=../schema/oabservice-v2.json
+apiVersion: oab.dev/v2
+kind: OABService
+metadata:
+  name: kiro-01
+  namespace: prod
+spec:
+  image: 123456789.dkr.ecr.us-east-1.amazonaws.com/openab:latest
+  resources:
+    cpu: "256"
+    memory: "512"
+  configFrom: s3://oab-control-plane/config/prod/kiro-01/config.toml
+  bootstrapFrom: s3://oab-backups/agents/kiro-01/latest.tar.gz
+  secrets:
+    DISCORD_TOKEN: /oab/prod/kiro-01/discord-token
+  runtime:
+    type: ecs
+    capacityProvider: FARGATE_SPOT
+    networking:
+      subnets: [subnet-aaa, subnet-bbb]
+      securityGroups: [sg-oab]
+      assignPublicIp: false

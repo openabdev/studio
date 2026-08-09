@@ -1,0 +1,13 @@
+[package]
+name = "studio-cp"
+version = "0.1.0"
+edition = "2021"
+description = "Studio control-plane — consumes oabctl (management/status) and maps it onto the agent-lifecycle model"
+license = "MIT"
+
+[dependencies]
+oabctl = { path = "../oabctl" }
+agent-lifecycle = { path = "../agent-lifecycle" }
+aws-config = "1.5"
+anyhow = "1.0"
+tokio = { version = "1.40", features = ["rt-multi-thread", "macros"] }
