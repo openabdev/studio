@@ -1,0 +1,151 @@
+:root {
+  --bg: #ffffff;
+  --panel: #f6f7f9;
+  --text: #1b1f24;
+  --muted: #6b7280;
+  --border: #e5e7eb;
+  --ok: #1a7f37;
+  --warn: #b7791f;
+
+  --s-starting: #2563eb;
+  --s-running: #1a7f37;
+  --s-paused: #b7791f;
+  --s-unhealthy: #c2410c;
+  --s-stopping: #d97706;
+  --s-stopped: #6b7280;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0e1116;
+    --panel: #161b22;
+    --text: #e6edf3;
+    --muted: #8b949e;
+    --border: #21262d;
+    --ok: #3fb950;
+    --warn: #d29922;
+
+    --s-starting: #58a6ff;
+    --s-running: #3fb950;
+    --s-paused: #d29922;
+    --s-unhealthy: #f0883e;
+    --s-stopping: #db8f2a;
+    --s-stopped: #8b949e;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 18px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+}
+
+.brand {
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+.brand span {
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.meta {
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  color: var(--muted);
+  font-size: 12px;
+}
+.cluster::before {
+  content: "cluster ";
+  opacity: 0.6;
+}
+.status.err {
+  color: var(--s-unhealthy);
+}
+
+.roster-wrap {
+  padding: 18px;
+}
+
+table.roster {
+  width: 100%;
+  border-collapse: collapse;
+}
+table.roster th {
+  text-align: left;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+}
+table.roster td {
+  padding: 10px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+td.name {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+td.counts {
+  font-variant-numeric: tabular-nums;
+}
+td.counts.ok {
+  color: var(--ok);
+}
+td.counts.warn {
+  color: var(--warn);
+}
+.muted {
+  color: var(--muted);
+}
+.empty {
+  color: var(--muted);
+  padding: 24px 10px;
+}
+
+.badge {
+  display: inline-block;
+  padding: 2px 8px;
+  margin: 1px 0;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #fff;
+  white-space: nowrap;
+}
+.s-starting {
+  background: var(--s-starting);
+}
+.s-running {
+  background: var(--s-running);
+}
+.s-paused {
+  background: var(--s-paused);
+}
+.s-unhealthy {
+  background: var(--s-unhealthy);
+}
+.s-stopping {
+  background: var(--s-stopping);
+}
+.s-stopped {
+  background: var(--s-stopped);
+}

@@ -1,0 +1,30 @@
+[package]
+name = "studio-desktop"
+version = "0.1.0"
+description = "OAB Studio desktop console (Tauri shell) — ADR-3 slice-2"
+authors = ["OpenAB"]
+license = "MIT"
+edition = "2021"
+rust-version = "1.77.2"
+
+[lib]
+name = "app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.6.3" }
+
+[dependencies]
+serde_json = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+log = "0.4"
+tauri = { version = "2.11.3" }
+tauri-plugin-log = "2"
+
+# Bridge to the control-plane read model (ADR-2).
+studio-cp = { path = "../crates/studio-cp" }
+aws-config = "1.5"
+
+# Its own workspace so the aws-heavy desktop build stays out of the root
+# workspace's `cargo build --workspace` (kept to the small crates + CI).
+[workspace]
