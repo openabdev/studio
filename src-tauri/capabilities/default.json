@@ -6,6 +6,17 @@
     "main"
   ],
   "permissions": [
-    "core:default"
+    "core:default",
+    "shell:allow-stdin-write",
+    "shell:allow-kill",
+    {
+      "identifier": "shell:allow-spawn",
+      "allow": [
+        {
+          "name": "oab-mcp",
+          "sidecar": true
+        }
+      ]
+    }
   ]
 }

@@ -20,8 +20,11 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # Stage 1: cheap Linux compile-validation of the Tauri app (the Rust bridge +
-  # wiring must build). macOS/Windows bundling is a follow-on once this is green.
+  # Stage 1: cheap Linux compile-validation of the Tauri app + MCP client wiring.
+  # We build the `oab-mcp` sidecar for the Linux triple and place it under
+  # binaries/ so `externalBin` resolves, then `cargo build` the desktop shell.
+  # (macOS is the only shipped target for now — this stage is just a fast Rust
+  # gate before the 30-min bundle below.)
   compile-linux:
     runs-on: ubuntu-latest
     steps:
@@ -42,15 +45,24 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: "src-tauri -> target"
+          workspaces: |
+            . -> target
+            src-tauri -> target
+      - name: Build oab-mcp sidecar (linux)
+        run: |
+          cargo build --release -p oab-mcp
+          mkdir -p src-tauri/binaries
+          cp target/release/oab-mcp \
+            "src-tauri/binaries/oab-mcp-$(rustc -vV | sed -n 's/host: //p')"
       - name: cargo build (studio-desktop)
         working-directory: src-tauri
         run: cargo build
 
-  # Stage 2: bundle a macOS app on GitHub's free macOS runner (public repo).
+  # Stage 2: bundle the macOS app on GitHub's free macOS runner (public repo).
   # Native arm64, UNSIGNED for now (Gatekeeper: right-click → Open, or
-  # `xattr -dr com.apple.quarantine`). Universal + code-signing + updater are
-  # follow-ons (ADR-4). Artifact = the .dmg to download and run.
+  # `xattr -dr com.apple.quarantine`). The `oab-mcp` core is bundled as a
+  # sidecar and spawned by the app at launch. Universal + code-signing + updater
+  # are follow-ons. Artifact = the .dmg to download and run.
   bundle-macos:
     runs-on: macos-latest
     steps:
@@ -63,19 +75,30 @@ jobs:
           npm --prefix console ci
           npm --prefix console run build
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: "src-tauri -> target"
+          workspaces: |
+            . -> target
+            src-tauri -> target
+      - name: Build oab-mcp sidecar (arm64)
+        run: |
+          cargo build --release -p oab-mcp --target aarch64-apple-darwin
+          mkdir -p src-tauri/binaries
+          cp target/aarch64-apple-darwin/release/oab-mcp \
+            src-tauri/binaries/oab-mcp-aarch64-apple-darwin
       - name: Install Tauri CLI
         run: npm install -g @tauri-apps/cli@^2
       - name: Bundle (.app + .dmg)
-        run: tauri build
+        working-directory: src-tauri
+        run: tauri build --target aarch64-apple-darwin
       - name: Upload macOS bundle
         uses: actions/upload-artifact@v4
         with:
           name: studio-macos-arm64
           path: |
-            src-tauri/target/release/bundle/dmg/*.dmg
-            src-tauri/target/release/bundle/macos/*.app
+            src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
+            src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app
           if-no-files-found: error
           retention-days: 7
