@@ -136,6 +136,52 @@ pub async fn observe_deployment(
     Ok(Some(build_deployment(&svc, &instances)))
 }
 
+// ---- Write side (ADR-2 write model) ------------------------------------
+//
+// The read side above observes; these mutate. Each is a thin passthrough to
+// oabctl's programmatic `studio_api` — Studio owns the vocabulary and the MCP
+// surface, oabctl owns the AWS reconciliation.
+
+pub use oabctl::{ApplyOptions, ApplyReport};
+
+/// Apply one or more service manifests (create/update).
+///
+/// Parses the YAML document into manifests, then runs oabctl's **programmatic**
+/// apply (no stdout/stderr side effects) and returns the structured
+/// [`ApplyReport`]. An `OABFleet` document applies every expanded service.
+pub async fn apply_deployment(
+    aws_config: &aws_config::SdkConfig,
+    manifest_yaml: &str,
+    cluster: &str,
+    wait: bool,
+) -> anyhow::Result<ApplyReport> {
+    let manifests = oabctl::studio_api::parse_manifests(manifest_yaml)?;
+    let opts = ApplyOptions::new(cluster).with_wait(wait);
+    oabctl::apply_manifests(aws_config, &manifests, &opts)
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))
+}
+
+/// Scale an agent/service to `size` replicas.
+pub async fn scale_deployment(
+    aws_config: &aws_config::SdkConfig,
+    alias: &str,
+    size: i32,
+) -> anyhow::Result<()> {
+    oabctl::studio_api::scale(aws_config, alias, size).await
+}
+
+/// Delete a control-plane resource (e.g. an `OABService`).
+pub async fn delete_deployment(
+    aws_config: &aws_config::SdkConfig,
+    resource: &str,
+    name: &str,
+    cluster: &str,
+    namespace: &str,
+) -> anyhow::Result<()> {
+    oabctl::studio_api::delete(aws_config, resource, name, cluster, namespace).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

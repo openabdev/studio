@@ -1,0 +1,14 @@
+[package]
+name = "oab-mcp"
+version = "0.1.0"
+edition = "2021"
+description = "Studio control-plane MCP server — exposes the oabctl read/write model as MCP tools (ADR-2)"
+license = "MIT"
+
+[dependencies]
+studio-cp = { path = "../studio-cp" }
+aws-config = "1.5"
+rmcp = { version = "1.7", default-features = false, features = ["server", "transport-io"] }
+serde_json = "1"
+anyhow = "1.0"
+tokio = { version = "1.40", features = ["rt-multi-thread", "macros"] }

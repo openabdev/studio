@@ -13,3 +13,13 @@ here.
 
 MIT license text: see the repo root `LICENSE` (Studio is also MIT) and the
 upstream `openabdev/openab` `LICENSE`.
+
+## Studio-local additions (not from upstream)
+
+To keep the diff against upstream auditable, Studio-specific changes are
+additive and listed here:
+
+- **`src/studio_api.rs`** — a programmatic surface (`parse_manifests`, `scale`,
+  `delete`) so `studio-cp` / `oab-mcp` call a library API instead of shelling
+  out. Thin wrappers over existing internals; no upstream behaviour changed.
+- **`src/lib.rs`** — one line: `pub mod studio_api;`.
