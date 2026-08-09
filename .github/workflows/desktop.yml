@@ -1,0 +1,48 @@
+name: desktop
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src-tauri/**"
+      - "console/**"
+      - "crates/**"
+      - ".github/workflows/desktop.yml"
+  pull_request:
+    paths:
+      - "src-tauri/**"
+      - "console/**"
+      - "crates/**"
+      - ".github/workflows/desktop.yml"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Stage 1: cheap Linux compile-validation of the Tauri app (the Rust bridge +
+  # wiring must build). macOS/Windows bundling is a follow-on once this is green.
+  compile-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tauri Linux system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev \
+            libayatana-appindicator3-dev patchelf
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Build the web skin
+        run: |
+          npm --prefix console ci
+          npm --prefix console run build
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "src-tauri -> target"
+      - name: cargo build (studio-desktop)
+        working-directory: src-tauri
+        run: cargo build
