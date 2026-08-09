@@ -12,9 +12,36 @@ const logEl = document.getElementById("log");
 const mcpEl = document.getElementById("mcpio");
 const source = defaultSource();
 
-// Pane 1: Activity (lifecycle + failures). Pane 2: MCP interaction stream.
-const activity = logEl ? createPane(logEl) : null;
-const mcp = mcpEl ? createPane(mcpEl) : null;
+// Two tabs, one pane each: Activity (lifecycle + failures) and MCP (the raw
+// oab-mcp JSON-RPC interaction). `data-target` links a tab to its pane id.
+const tabs = Array.from(
+  document.querySelectorAll<HTMLButtonElement>("#tabs .tab"),
+);
+let activeTarget = tabs.find((t) => t.classList.contains("is-active"))?.dataset
+  .target;
+
+function show(target: string): void {
+  activeTarget = target;
+  for (const tab of tabs) {
+    const on = tab.dataset.target === target;
+    tab.classList.toggle("is-active", on);
+    if (on) tab.classList.remove("has-new");
+    const pane = document.getElementById(tab.dataset.target ?? "");
+    if (pane) pane.hidden = !on;
+  }
+}
+for (const tab of tabs) {
+  tab.addEventListener("click", () => show(tab.dataset.target ?? ""));
+}
+
+// Flag a tab when its (hidden) pane gets new lines, so nothing is missed.
+function flag(target: string): void {
+  if (target === activeTarget) return;
+  tabs.find((t) => t.dataset.target === target)?.classList.add("has-new");
+}
+
+const activity = logEl ? createPane(logEl, () => flag("log")) : null;
+const mcp = mcpEl ? createPane(mcpEl, () => flag("mcpio")) : null;
 
 function note(level: Level, msg: string): void {
   activity?.push({ cls: `lv-${level}`, tag: level.toUpperCase(), msg });

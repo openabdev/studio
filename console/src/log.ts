@@ -14,7 +14,9 @@ export interface Pane {
   push(opts: { cls?: string; tag: string; msg: string }): void;
 }
 
-export function createPane(el: HTMLElement): Pane {
+// `onPush` fires after every appended line — used to flag the tab when its pane
+// is not the visible one.
+export function createPane(el: HTMLElement, onPush?: () => void): Pane {
   el.innerHTML = "";
   return {
     push({ cls, tag, msg }) {
@@ -40,6 +42,7 @@ export function createPane(el: HTMLElement): Pane {
         el.removeChild(el.firstChild);
       }
       el.scrollTop = el.scrollHeight;
+      onPush?.();
     },
   };
 }
