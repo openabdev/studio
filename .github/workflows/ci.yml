@@ -40,6 +40,15 @@ jobs:
             grep -q "\"$t\"" out.jsonl || { echo "SMOKE FAIL: tool '$t' not advertised"; exit 1; }
           done
           echo "SMOKE OK: server initialized and advertised all 6 tools"
+      # Publish the built server so a runtime that can't compile it locally
+      # (aws-sdk-ec2 exceeds small boxes' RAM) can still fetch and run it.
+      - name: upload oab-mcp binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: oab-mcp-linux-x64
+          path: target/debug/oab-mcp
+          if-no-files-found: error
+          retention-days: 7
       # Informational (non-blocking) — the authoring runtime has no rustfmt, so
       # style is tidied opportunistically rather than gated.
       - name: fmt (our crates)
