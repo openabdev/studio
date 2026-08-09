@@ -7,17 +7,24 @@
 //!
 //! Transport is newline-delimited JSON-RPC on the sidecar's stdio (rmcp's stdio
 //! server). One shared child; requests are multiplexed by a monotonic id.
+//!
+//! Lifecycle and the core's stderr are forwarded to the frontend `app-log`
+//! event so the desktop's first screen shows launch progress and failures.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use serde_json::{json, Value};
-use tauri::async_runtime;
+use tauri::{async_runtime, Emitter};
 use tokio::sync::{oneshot, Mutex};
 
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
+
+/// Emits a `(level, message)` line to the frontend log pane. Type-erased so
+/// `McpClient` stays free of the runtime generic and can live in managed state.
+type LogFn = Arc<dyn Fn(&str, &str) + Send + Sync>;
 
 /// A live connection to the `oab-mcp` sidecar. Cheap to clone (shared state
 /// behind an `Arc`), so it can live in Tauri managed state.
@@ -30,6 +37,7 @@ struct Inner {
     child: Mutex<CommandChild>,
     pending: Mutex<HashMap<u64, oneshot::Sender<Value>>>,
     next_id: AtomicU64,
+    log: LogFn,
 }
 
 impl McpClient {
@@ -40,6 +48,13 @@ impl McpClient {
         app: &tauri::AppHandle<R>,
         cluster: &str,
     ) -> Result<Self, String> {
+        // Frontend log sink — lets the app's first screen show core lifecycle.
+        let app_log = app.clone();
+        let log: LogFn = Arc::new(move |level: &str, msg: &str| {
+            let _ = app_log.emit("app-log", json!({ "level": level, "msg": msg }));
+        });
+
+        log("info", &format!("spawning oab-mcp core (cluster {cluster})…"));
         let (mut rx, child) = app
             .shell()
             .sidecar("oab-mcp")
@@ -52,11 +67,13 @@ impl McpClient {
             child: Mutex::new(child),
             pending: Mutex::new(HashMap::new()),
             next_id: AtomicU64::new(1),
+            log: log.clone(),
         });
 
-        // stdout reader: bytes may arrive un-framed, so buffer and split on '\n',
-        // then resolve any pending request whose id matches.
+        // Reader: stdout carries JSON-RPC (resolve pending by id); stderr and
+        // process events are forwarded to the log pane.
         let reader = inner.clone();
+        let reader_log = log.clone();
         async_runtime::spawn(async move {
             let mut buf: Vec<u8> = Vec::new();
             while let Some(event) = rx.recv().await {
@@ -78,17 +95,35 @@ impl McpClient {
                             }
                         }
                     }
-                    CommandEvent::Terminated(_) => break,
+                    CommandEvent::Stderr(bytes) => {
+                        let s = String::from_utf8_lossy(&bytes);
+                        for line in s.lines() {
+                            if !line.trim().is_empty() {
+                                reader_log("warn", &format!("[core] {line}"));
+                            }
+                        }
+                    }
+                    CommandEvent::Error(e) => reader_log("error", &format!("[core] {e}")),
+                    CommandEvent::Terminated(payload) => {
+                        reader_log("error", &format!("oab-mcp exited (code {:?})", payload.code));
+                        break;
+                    }
                     _ => {}
                 }
             }
-            // Drain pending waiters so callers fail fast instead of hanging.
+            // Fail any in-flight waiters instead of hanging them.
             reader.pending.lock().await.clear();
         });
 
         let client = McpClient { inner };
         client.handshake().await?;
+        log("info", "core ready — MCP initialized");
         Ok(client)
+    }
+
+    /// Emit a line to the frontend log pane (shared sink with the sidecar).
+    pub fn log(&self, level: &str, msg: &str) {
+        (self.inner.log)(level, msg);
     }
 
     async fn send(&self, msg: &Value) -> Result<(), String> {

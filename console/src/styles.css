@@ -78,6 +78,53 @@ body {
   color: var(--s-unhealthy);
 }
 
+.content {
+  display: flex;
+  flex-direction: column;
+}
+
+/* Activity / log pane — the first display, so launch + core lifecycle and any
+   failure are visible immediately. */
+.logpane {
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+}
+.pane-title {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  padding: 8px 18px 4px;
+}
+.log {
+  font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  max-height: 42vh;
+  overflow: auto;
+  padding: 0 18px 12px;
+}
+.logline {
+  display: flex;
+  gap: 10px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.logline .lt {
+  color: var(--muted);
+  flex: 0 0 auto;
+}
+.logline .ll {
+  flex: 0 0 auto;
+  width: 42px;
+  color: var(--muted);
+}
+.lv-warn .ll {
+  color: var(--warn);
+}
+.lv-error .ll,
+.lv-error .lm {
+  color: var(--s-unhealthy);
+}
+
 .roster-wrap {
   padding: 18px;
 }
