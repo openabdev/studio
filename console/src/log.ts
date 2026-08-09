@@ -1,41 +1,47 @@
-// A small Activity/Log pane. It streams the desktop backend's `app-log` events
-// (core lifecycle: spawn → handshake → ready, plus the sidecar's stderr and any
-// failure) and local UI events, so the app's first screen shows whether it
-// launched and whether anything went wrong.
+// Two observability panes for the desktop shell:
+//   1. Activity  — backend `app-log` events (core lifecycle + failures) and
+//      local UI events, so the first screen shows whether the app launched.
+//   2. MCP       — backend `mcp-io` events: every JSON-RPC message to/from the
+//      `oab-mcp` sidecar, so the raw interaction with the core is visible.
+// In the browser build there is no core, so only the Activity pane says so.
 
 export type Level = "info" | "warn" | "error";
 
 const MAX_LINES = 500;
-let listEl: HTMLElement | null = null;
+const MAX_MSG = 4000;
 
-export function initLog(el: HTMLElement): void {
-  listEl = el;
-  el.innerHTML = "";
+export interface Pane {
+  push(opts: { cls?: string; tag: string; msg: string }): void;
 }
 
-export function log(level: Level, msg: string): void {
-  if (!listEl) return;
-  const line = document.createElement("div");
-  line.className = `logline lv-${level}`;
+export function createPane(el: HTMLElement): Pane {
+  el.innerHTML = "";
+  return {
+    push({ cls, tag, msg }) {
+      const line = document.createElement("div");
+      line.className = cls ? `logline ${cls}` : "logline";
 
-  const t = document.createElement("span");
-  t.className = "lt";
-  t.textContent = new Date().toLocaleTimeString();
+      const t = document.createElement("span");
+      t.className = "lt";
+      t.textContent = new Date().toLocaleTimeString();
 
-  const lv = document.createElement("span");
-  lv.className = "ll";
-  lv.textContent = level.toUpperCase();
+      const g = document.createElement("span");
+      g.className = "ll";
+      g.textContent = tag;
 
-  const m = document.createElement("span");
-  m.className = "lm";
-  m.textContent = msg; // textContent — no HTML injection from core output
+      const m = document.createElement("span");
+      m.className = "lm";
+      // textContent — never interpret core output as HTML.
+      m.textContent = msg.length > MAX_MSG ? `${msg.slice(0, MAX_MSG)}…` : msg;
 
-  line.append(t, lv, m);
-  listEl.appendChild(line);
-  while (listEl.childElementCount > MAX_LINES && listEl.firstChild) {
-    listEl.removeChild(listEl.firstChild);
-  }
-  listEl.scrollTop = listEl.scrollHeight;
+      line.append(t, g, m);
+      el.appendChild(line);
+      while (el.childElementCount > MAX_LINES && el.firstChild) {
+        el.removeChild(el.firstChild);
+      }
+      el.scrollTop = el.scrollHeight;
+    },
+  };
 }
 
 // Minimal shape of the Tauri event global (v2, `withGlobalTauri`).
@@ -48,16 +54,20 @@ interface TauriEventGlobal {
   };
 }
 
-// Subscribe to backend log events when inside the Tauri shell; in the browser
-// build there is no core, so just say so.
-export async function bindBackendLog(): Promise<void> {
+/** Route backend `app-log` / `mcp-io` events into the two panes. */
+export async function bindBackend(activity: Pane, mcp: Pane): Promise<void> {
   const tauri = (globalThis as { __TAURI__?: TauriEventGlobal }).__TAURI__;
   const listen = tauri?.event?.listen;
   if (!listen) {
-    log("info", "browser build — no core (fixtures)");
+    activity.push({ cls: "lv-info", tag: "INFO", msg: "browser build — no core (fixtures)" });
     return;
   }
   await listen<{ level: Level; msg: string }>("app-log", (e) => {
-    log(e.payload?.level ?? "info", e.payload?.msg ?? "");
+    const level = e.payload?.level ?? "info";
+    activity.push({ cls: `lv-${level}`, tag: level.toUpperCase(), msg: e.payload?.msg ?? "" });
+  });
+  await listen<{ dir: "out" | "in"; text: string }>("mcp-io", (e) => {
+    const dir = e.payload?.dir === "out" ? "out" : "in";
+    mcp.push({ cls: `io-${dir}`, tag: dir === "out" ? "→" : "←", msg: e.payload?.text ?? "" });
   });
 }

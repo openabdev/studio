@@ -125,6 +125,17 @@ body {
   color: var(--s-unhealthy);
 }
 
+/* MCP interaction pane — → out (request), ← in (response). */
+.mcpio .lm {
+  color: var(--muted);
+}
+.io-out .ll {
+  color: var(--s-starting);
+}
+.io-in .ll {
+  color: var(--ok);
+}
+
 .roster-wrap {
   padding: 18px;
 }

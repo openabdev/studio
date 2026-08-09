@@ -1,6 +1,6 @@
 import { defaultSource } from "./source";
 import { renderRoster } from "./render";
-import { initLog, log, bindBackendLog } from "./log";
+import { createPane, bindBackend, type Level } from "./log";
 
 const POLL_MS = 5000;
 const CLUSTER = "oab";
@@ -9,7 +9,16 @@ const roster = document.getElementById("roster");
 const clusterLabel = document.getElementById("cluster-label");
 const pollStatus = document.getElementById("poll-status");
 const logEl = document.getElementById("log");
+const mcpEl = document.getElementById("mcpio");
 const source = defaultSource();
+
+// Pane 1: Activity (lifecycle + failures). Pane 2: MCP interaction stream.
+const activity = logEl ? createPane(logEl) : null;
+const mcp = mcpEl ? createPane(mcpEl) : null;
+
+function note(level: Level, msg: string): void {
+  activity?.push({ cls: `lv-${level}`, tag: level.toUpperCase(), msg });
+}
 
 let lastError = "";
 
@@ -19,7 +28,7 @@ async function tick(): Promise<void> {
     const deployments = await source.listDeployments(CLUSTER);
     renderRoster(roster, deployments);
     if (lastError) {
-      log("info", `roster recovered — ${deployments.length} deployment(s)`);
+      note("info", `roster recovered — ${deployments.length} deployment(s)`);
       lastError = "";
     }
     if (pollStatus) {
@@ -29,7 +38,7 @@ async function tick(): Promise<void> {
   } catch (e) {
     const msg = (e as Error).message;
     if (msg !== lastError) {
-      log("error", `roster: ${msg}`);
+      note("error", `roster: ${msg}`);
       lastError = msg;
     }
     if (pollStatus) {
@@ -39,13 +48,12 @@ async function tick(): Promise<void> {
   }
 }
 
-// Log pane is the first thing wired up, so launch + core lifecycle are visible
+// Panes are wired first, so launch + core lifecycle + MCP traffic are visible
 // immediately — before any roster data arrives.
-if (logEl) initLog(logEl);
-log("info", "console loaded");
-void bindBackendLog();
+note("info", "console loaded");
+if (activity && mcp) void bindBackend(activity, mcp);
 
 if (clusterLabel) clusterLabel.textContent = CLUSTER;
-log("info", `polling cluster "${CLUSTER}" every ${POLL_MS / 1000}s`);
+note("info", `polling cluster "${CLUSTER}" every ${POLL_MS / 1000}s`);
 void tick();
 window.setInterval(() => void tick(), POLL_MS);
