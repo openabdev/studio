@@ -47,13 +47,6 @@ impl RuntimeDriver for EcsDriver {
     /// Task ARN.
     type InstanceId = String;
 
-    fn observe(&self, _id: &Self::InstanceId) -> Option<Self::Native> {
-        // Slice-1: wiring to the ECS API is deferred. The real implementation
-        // calls DescribeTasks and returns `None` when the task is absent from
-        // the response (⇒ Stopped).
-        unimplemented!("ECS DescribeTasks wiring is a later slice")
-    }
-
     fn project(&self, task: &EcsTask, verified_before: bool) -> Discriminator {
         let desired_status = if task.desired_status_stopped {
             DesiredStatus::Stopped

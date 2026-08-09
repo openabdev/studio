@@ -84,7 +84,7 @@ pub(crate) async fn run(
     run_with_bucket(aws_config, resource, name, cluster, namespace, &bucket).await
 }
 
-async fn run_with_bucket(
+pub(crate) async fn run_with_bucket(
     aws_config: &aws_config::SdkConfig,
     resource: &str,
     name: &str,

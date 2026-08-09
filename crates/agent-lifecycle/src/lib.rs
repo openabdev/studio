@@ -118,28 +118,27 @@ impl IdentityLatch {
 }
 
 /// A runtime driver projects its native signals onto the canonical model.
+///
+/// This slice is **projection-only**: a driver turns an externally-supplied
+/// native observation into the four discriminator axes via [`project`]. Live
+/// self-observation (a `DescribeTasks`-style `observe`, and the `observe +
+/// project + classify` `state` convenience that ⇒ `Stopped` on absence) lands
+/// with the ECS live-driver slice; it is intentionally absent here rather than
+/// stubbed with a panic.
+///
+/// [`project`]: RuntimeDriver::project
 pub trait RuntimeDriver {
     /// The driver's native, per-instance observation type.
     type Native;
-    /// Opaque per-instance identifier in this runtime.
+    /// Opaque per-instance identifier in this runtime (for the live-observe
+    /// slice; carried now so the associated type is stable).
     type InstanceId;
-
-    /// Observe an instance. `None` ⇒ the instance no longer exists (⇒ Stopped).
-    fn observe(&self, id: &Self::InstanceId) -> Option<Self::Native>;
 
     /// Project a native observation onto the four discriminator axes.
     ///
     /// `verified_before` is the latched `identity_verified` the control plane
     /// has tracked for this instance so far.
     fn project(&self, native: &Self::Native, verified_before: bool) -> Discriminator;
-
-    /// Convenience: observe + project + classify into an [`AgentState`].
-    fn state(&self, id: &Self::InstanceId, verified_before: bool) -> AgentState {
-        match self.observe(id) {
-            None => AgentState::Stopped,
-            Some(native) => self.project(&native, verified_before).classify(),
-        }
-    }
 }
 
 #[cfg(test)]

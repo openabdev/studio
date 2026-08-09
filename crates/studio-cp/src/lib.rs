@@ -159,19 +159,26 @@ pub async fn apply_deployment(
     let opts = ApplyOptions::new(cluster).with_wait(wait);
     oabctl::apply_manifests(aws_config, &manifests, &opts)
         .await
-        .map_err(|e| anyhow::anyhow!("{e}"))
+        .map_err(|e| anyhow::anyhow!("apply failed [{:?}]: {e}", e.kind))
 }
 
-/// Scale an agent/service to `size` replicas.
+/// Scale an OAB service to `size` replicas (0 = off, 1 = on).
+///
+/// Config-free: `cluster` / `namespace` are explicit (service = `oab-{namespace}-{name}`).
 pub async fn scale_deployment(
     aws_config: &aws_config::SdkConfig,
-    alias: &str,
+    cluster: &str,
+    namespace: &str,
+    name: &str,
     size: i32,
 ) -> anyhow::Result<()> {
-    oabctl::studio_api::scale(aws_config, alias, size).await
+    oabctl::studio_api::scale(aws_config, cluster, namespace, name, size).await
 }
 
 /// Delete a control-plane resource (e.g. an `OABService`).
+///
+/// The control-plane bucket is resolved from the environment / account, not
+/// from `~/.oabctl/config.toml`.
 pub async fn delete_deployment(
     aws_config: &aws_config::SdkConfig,
     resource: &str,
@@ -179,7 +186,7 @@ pub async fn delete_deployment(
     cluster: &str,
     namespace: &str,
 ) -> anyhow::Result<()> {
-    oabctl::studio_api::delete(aws_config, resource, name, cluster, namespace).await
+    oabctl::studio_api::delete(aws_config, resource, name, cluster, namespace, None).await
 }
 
 #[cfg(test)]

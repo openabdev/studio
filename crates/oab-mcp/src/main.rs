@@ -91,14 +91,16 @@ fn tools() -> Vec<Tool> {
         ),
         Tool::new(
             "deploy_scale",
-            "Scale an agent/service to a target replica count.",
+            "Scale an OAB service on or off. OAB services run a single bot token, so size must be 0 (off) or 1 (on).",
             as_map(json!({
                 "type": "object",
                 "properties": {
-                    "alias": { "type": "string", "description": "Agent alias / service name." },
-                    "size": { "type": "integer", "description": "Desired replica count." }
+                    "name": { "type": "string", "description": "Agent / service name (service = oab-{namespace}-{name})." },
+                    "size": { "type": "integer", "enum": [0, 1], "description": "0 = off, 1 = on." },
+                    "cluster": { "type": "string", "description": "ECS cluster (defaults to the server's configured cluster)." },
+                    "namespace": { "type": "string", "description": "Namespace (default \"default\")." }
                 },
-                "required": ["alias", "size"]
+                "required": ["name", "size"]
             })),
         ),
         Tool::new(
@@ -212,16 +214,23 @@ impl OabMcp {
     }
 
     async fn t_scale(&self, args: &Map<String, Value>) -> Result<Value> {
-        let alias = args
-            .get("alias")
+        let cluster = self.cluster(args);
+        let namespace = args
+            .get("namespace")
             .and_then(Value::as_str)
-            .ok_or_else(|| anyhow::anyhow!("missing required arg: alias"))?;
+            .unwrap_or("default");
+        let name = args
+            .get("name")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("missing required arg: name"))?;
         let size =
             args.get("size")
                 .and_then(Value::as_i64)
                 .ok_or_else(|| anyhow::anyhow!("missing or invalid arg: size"))? as i32;
-        scp::scale_deployment(&self.aws, alias, size).await?;
-        Ok(json!({ "ok": true, "alias": alias, "size": size }))
+        scp::scale_deployment(&self.aws, &cluster, namespace, name, size).await?;
+        Ok(
+            json!({ "ok": true, "cluster": cluster, "namespace": namespace, "name": name, "size": size }),
+        )
     }
 
     async fn t_delete(&self, args: &Map<String, Value>) -> Result<Value> {
@@ -308,4 +317,51 @@ async fn main() -> anyhow::Result<()> {
     let service = server.serve(rmcp::transport::stdio()).await?;
     service.waiting().await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn catalog_advertises_the_six_named_tools() {
+        let catalog = serde_json::to_value(tools()).expect("tools serialize");
+        let names: Vec<String> = catalog
+            .as_array()
+            .expect("tool list is an array")
+            .iter()
+            .map(|t| t["name"].as_str().expect("tool has a name").to_string())
+            .collect();
+        assert_eq!(names.len(), 6);
+        for expected in [
+            "deploy_list",
+            "deploy_get",
+            "get_agent_states",
+            "deploy_apply",
+            "deploy_scale",
+            "deploy_delete",
+        ] {
+            assert!(names.contains(&expected.to_string()), "missing {expected}");
+        }
+    }
+
+    #[test]
+    fn deployment_json_carries_counters_and_instance_states() {
+        let d = scp::Deployment {
+            name: "orca".into(),
+            namespace: "prod".into(),
+            desired: 1,
+            current: 1,
+            ready: 1,
+            instances: vec![scp::InstancePhase {
+                id: "task-arn".into(),
+                phase: scp::AgentState::Running,
+            }],
+        };
+        let v = deployment_json(&d);
+        assert_eq!(v["desired"], 1);
+        assert_eq!(v["ready"], 1);
+        assert_eq!(v["instances"][0]["id"], "task-arn");
+        assert_eq!(v["instances"][0]["state"], "Running");
+    }
 }
