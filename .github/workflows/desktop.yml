@@ -46,3 +46,36 @@ jobs:
       - name: cargo build (studio-desktop)
         working-directory: src-tauri
         run: cargo build
+
+  # Stage 2: bundle a macOS app on GitHub's free macOS runner (public repo).
+  # Native arm64, UNSIGNED for now (Gatekeeper: right-click → Open, or
+  # `xattr -dr com.apple.quarantine`). Universal + code-signing + updater are
+  # follow-ons (ADR-4). Artifact = the .dmg to download and run.
+  bundle-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Build the web skin
+        run: |
+          npm --prefix console ci
+          npm --prefix console run build
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "src-tauri -> target"
+      - name: Install Tauri CLI
+        run: npm install -g @tauri-apps/cli@^2
+      - name: Bundle (.app + .dmg)
+        run: tauri build
+      - name: Upload macOS bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: studio-macos-arm64
+          path: |
+            src-tauri/target/release/bundle/dmg/*.dmg
+            src-tauri/target/release/bundle/macos/*.app
+          if-no-files-found: error
+          retention-days: 7
