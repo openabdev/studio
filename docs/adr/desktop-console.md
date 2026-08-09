@@ -7,14 +7,13 @@
 - **Tracking issues:** builds on [deployment-control-plane](./deployment-control-plane.md) (ADR-2) and [agent-lifecycle](./agent-lifecycle.md) (ADR-1)
 
 > **Y-statement.** In the context of giving humans a director's console over the
-> control plane, facing the need to ship a cross-platform GUI now yet rewrite
-> the skin natively (SwiftUI) on Apple platforms later — and to serve mobile
-> where a device must not hold cloud credentials — we decided to make the
-> **skin ↔ core boundary the existing MCP surface** (`oab-mcp`), served over
-> **stdio locally and streamable-HTTP remotely**, with a **Tauri web skin** as
-> the interim front-end and a thin Rust bridge, **accepting that the interim web
-> UI is throwaway** when the native skins arrive and that **live updates start
-> as polling**, not push.
+> control plane, facing a **macOS + Windows desktop** target now — with a
+> SwiftUI-native macOS skin later and iOS kept as a future option — we decided to
+> make the **skin ↔ core boundary the existing MCP surface** (`oab-mcp`), served
+> over **stdio** for a locally-run core (with **streamable-HTTP deferred** for
+> browser/mobile), using a **Tauri web skin** across macOS/Windows now behind a
+> thin Rust bridge, **accepting that the interim web UI is throwaway** on
+> platforms that later go native and that **live updates start as polling**.
 
 ---
 
@@ -28,11 +27,15 @@ approve/drive the same actions.
 
 Constraints that shape the design:
 
-- **Native endgame is Swift.** On macOS/iOS the long-term skin is SwiftUI, not a
-  webview. Whatever we build now is an **interim** skin.
-- **Mobile can't hold cloud creds and can't spawn subprocesses.** An iOS app
-  must be a thin client to a **remote** core; it cannot run the AWS-touching
-  control plane locally, nor speak to it over stdio.
+- **Targets now: macOS + Windows desktop.** Both run the core locally. On macOS
+  the long-term skin is **SwiftUI**; Windows-native is open (it may stay on the
+  web skin, or gain a native skin later). Whatever we ship now is an **interim**
+  skin on platforms that later go native.
+- **iOS is kept as a future option, not a driver.** We don't build for it now,
+  but the contract choice below must not preclude it — a phone can't hold cloud
+  creds or spawn a stdio subprocess, so it would later be a thin client to a
+  **remote** core over the network. Designing the boundary as a protocol (not a
+  Rust-internal binding) keeps that door open at no cost today.
 - **The console is a dense, live dashboard.** Roster + per-instance 6-state +
   counters now; per-agent diff and wave/phase orchestration later.
 - **We must not fork control logic.** The console is *another front-end*, not a
@@ -56,10 +59,11 @@ Constraints that shape the design:
 ```
  core     studio-cp (Rust)         read/write model over oabctl (ADR-2)
  service  oab-mcp   (Rust)         core exposed as MCP tools  ── the contract
-            ├─ stdio                 local desktop (spawned child)
-            └─ streamable-HTTP       remote / browser / mobile
- skin     ├─ web (Tauri desktop, or plain browser)   ← now
-          └─ SwiftUI (macOS + iOS, native)           ← later
+            ├─ stdio                 local desktop core (macOS / Windows)  ← now
+            └─ streamable-HTTP       remote / browser / iOS               ← deferred
+ skin     ├─ web (Tauri: macOS + Windows; also plain browser)  ← now
+          ├─ SwiftUI (macOS, native)                           ← later
+          └─ iOS / Windows-native                              ← optional, later
                  every skin — and every agent — is a client of the SAME MCP surface
 ```
 
@@ -72,21 +76,25 @@ Rust-internal boundary.
 
 ### 3.2 Transports
 
-`oab-mcp` today serves **stdio**. We add a **streamable-HTTP** transport (rmcp
-supports it; openab's facade already uses it) so the identical tool surface is
-reachable remotely. Desktop uses stdio (or local HTTP); browser and iOS use
-HTTP to a remote core that holds the AWS credentials.
+`oab-mcp` today serves **stdio**, which is all the macOS/Windows desktop needs:
+each app spawns a local core that resolves AWS credentials from the standard
+chain, exactly like a CLI. A **streamable-HTTP** transport (rmcp supports it;
+openab's facade already uses it) is **deferred** — it lands when the browser or
+iOS clients do, so the identical tool surface is reachable remotely against a
+core that holds the credentials server-side. No HTTP work is required for the
+current desktop scope.
 
 ### 3.3 Interim skin: Tauri
 
-The first skin is a **web front-end wrapped by Tauri**. Rationale: the interim
-UI is throwaway (native endgame is Swift), so optimize for speed and polish on a
-dense dashboard — where the web ecosystem wins. The same web UI **doubles as a
-browser console** (talking MCP-over-HTTP), so we get desktop + browser from one
-build. Tauri's Rust backend is a **thin bridge only** — it spawns/connects the
-local `oab-mcp` (or embeds `studio-cp` and re-exposes the same MCP surface to the
-webview); it does **not** introduce a second Rust command API that could drift
-from MCP.
+The first skin is a **web front-end wrapped by Tauri**, which covers **macOS and
+Windows** (and Linux) from one build. Rationale: the interim UI is throwaway on
+platforms that go native (macOS → SwiftUI), so optimize for speed and polish on a
+dense dashboard — where the web ecosystem wins — and get two desktop platforms
+now for free. The same web UI **doubles as a browser console** later (talking
+MCP-over-HTTP once that transport lands). Tauri's Rust backend is a **thin bridge
+only** — it spawns/connects the local `oab-mcp` (or embeds `studio-cp` and
+re-exposes the same MCP surface to the webview); it does **not** introduce a
+second Rust command API that could drift from MCP.
 
 ### 3.4 Live updates: polling first
 
@@ -107,13 +115,16 @@ environment/action panel.
 - Humans and agents share one control surface; no divergent command path.
 - Skin swap (web → SwiftUI) costs zero core change; interim throwaway is bounded
   to UI code.
-- Credentials never reach a device; mobile is a thin client by construction.
-- Desktop **and** browser from a single web build.
+- **macOS + Windows** from a single Tauri build now; browser/iOS reachable later
+  over the same MCP surface without a core rewrite.
+- Local desktop core resolves creds from the standard AWS chain — no new
+  credential-hosting story required for the current scope.
 
 **Negative / costs**
-- The interim web UI is discarded when native skins land (accepted).
-- A new **streamable-HTTP** transport + a **remote-core hosting** story (auth,
-  where it runs) are now on the roadmap.
+- The interim web UI is discarded when a platform goes native (macOS → SwiftUI).
+  Windows may keep the web skin indefinitely — acceptable.
+- Enabling browser/iOS later pulls in the deferred **streamable-HTTP** transport
+  and a **remote-core hosting** story (auth, where it runs).
 - Polling has latency/refresh-rate limits until streaming is added.
 
 **Neutral**
@@ -139,7 +150,11 @@ environment/action panel.
 
 - **Authorization.** A human-facing console sharpens the need for per-caller
   authz beyond the AWS credential ceiling (ADR-2 §deferred). Where does identity
-  live — the core service, an existing broker, OIDC?
-- **Remote-core hosting.** Where the streamable-HTTP core runs, and how a
-  browser/iOS client authenticates to it.
+  live — the core service, an existing broker, OIDC? Relevant even for the local
+  desktop scope once more than one operator uses it.
+- **iOS / browser (deferred option).** Enabling these later requires the
+  streamable-HTTP transport, a **remote-core hosting** story, and client auth.
+  Tracked as an option, not scheduled.
+- **Windows-native.** Whether Windows ever leaves the Tauri web skin for a native
+  toolkit, or keeps it long-term.
 - **Streaming.** The subscribe/push channel that replaces polling.
