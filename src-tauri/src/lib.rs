@@ -2,6 +2,7 @@ mod mcp;
 
 use mcp::McpClient;
 use serde_json::{json, Value};
+use tauri::Manager;
 
 /// Default cluster for the desktop core, mirroring `oab-mcp`'s own default.
 fn default_cluster() -> String {
