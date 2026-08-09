@@ -62,8 +62,7 @@ impl RuntimeDriver for EcsDriver {
         };
 
         // `identity_verified` latches once `lastStatus` has ever reached RUNNING.
-        let identity_verified =
-            verified_before || task.last_status == EcsLastStatus::Running;
+        let identity_verified = verified_before || task.last_status == EcsLastStatus::Running;
 
         // Faulted on an unhealthy check, an unknown/unobservable status
         // (node lost), or a lost lease.
@@ -105,7 +104,13 @@ mod tests {
     #[test]
     fn activating_task_projects_to_starting() {
         let d = EcsDriver.project(
-            &task(EcsLastStatus::Activating, false, EcsHealth::Unknown, false, false),
+            &task(
+                EcsLastStatus::Activating,
+                false,
+                EcsHealth::Unknown,
+                false,
+                false,
+            ),
             false,
         );
         assert_eq!(d.classify(), AgentState::Starting);
@@ -114,7 +119,13 @@ mod tests {
     #[test]
     fn running_healthy_task_projects_to_running() {
         let d = EcsDriver.project(
-            &task(EcsLastStatus::Running, false, EcsHealth::Healthy, true, true),
+            &task(
+                EcsLastStatus::Running,
+                false,
+                EcsHealth::Healthy,
+                true,
+                true,
+            ),
             true,
         );
         assert_eq!(d.classify(), AgentState::Running);
@@ -124,7 +135,13 @@ mod tests {
     fn unhealthy_after_verified() {
         // Was RUNNING before, now healthStatus UNHEALTHY ⇒ Unhealthy (not Starting).
         let d = EcsDriver.project(
-            &task(EcsLastStatus::Running, false, EcsHealth::Unhealthy, true, false),
+            &task(
+                EcsLastStatus::Running,
+                false,
+                EcsHealth::Unhealthy,
+                true,
+                false,
+            ),
             true,
         );
         assert_eq!(d.classify(), AgentState::Unhealthy);
@@ -134,7 +151,13 @@ mod tests {
     fn node_lost_unknown_is_unhealthy_not_stopped() {
         // Unknown health while verified ⇒ Unhealthy(fenced), not Stopped.
         let d = EcsDriver.project(
-            &task(EcsLastStatus::Running, false, EcsHealth::Unknown, false, false),
+            &task(
+                EcsLastStatus::Running,
+                false,
+                EcsHealth::Unknown,
+                false,
+                false,
+            ),
             true,
         );
         assert_eq!(d.classify(), AgentState::Unhealthy);
@@ -143,7 +166,13 @@ mod tests {
     #[test]
     fn desired_stopped_is_stopping_while_observable() {
         let d = EcsDriver.project(
-            &task(EcsLastStatus::Deactivating, true, EcsHealth::Healthy, true, false),
+            &task(
+                EcsLastStatus::Deactivating,
+                true,
+                EcsHealth::Healthy,
+                true,
+                false,
+            ),
             true,
         );
         assert_eq!(d.classify(), AgentState::Stopping);
