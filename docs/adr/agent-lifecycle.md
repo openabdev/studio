@@ -24,7 +24,7 @@ is this agent in" that: any engineer reads at a glance; is identical regardless
 of the runtime underneath; and is what the control plane observes and the
 director acts on.
 
-Humans direct; agents do the control. The control plane must classify every
+Humans direct; agents do control. The control plane must classify every
 agent, at any moment, into **exactly one** state.
 
 ## 2. Decision Drivers
@@ -41,12 +41,17 @@ agent, at any moment, into **exactly one** state.
 
 Every agent is in exactly one of **6 states**, discriminated by four observable
 axes — `desiredStatus` (running / stopped), `accepting_work` (bool), `health`
-(in-sync & authorized / not), and `identity_verified` (a **latching** bit: set
+(lease/probe/authz in-sync & authorized — **not** version-skew, which is healthy
+and routes to Paused / not), and `identity_verified` (a **latching** bit: set
 true the first time the agent reaches Running, never cleared). The latch is what
 separates `Starting` (never verified) from `Unhealthy` (was verified, now
 faulted) — without it their `(desiredStatus, accepting_work, health)` tuples
 collide. It is CP-observable per runtime: ECS `lastStatus` ever reached RUNNING /
 k8s ever Ready / compose ever healthy.
+
+`Stopping` and `Stopped` share `desiredStatus==stopped` and are **not** separated
+by the four axes; the discriminator is a fifth signal — **process liveness /
+terminality** (graceful window open vs. absorbing, per principle 3).
 
 ```mermaid
 stateDiagram-v2
@@ -112,7 +117,7 @@ unobservable; death `cause` enum; turn-level busy/idle.
    the discriminators `(desiredStatus, accepting_work, health, identity_verified)`;
    the machine never changes per runtime.
 6. **Two predicates, kept apart.** *Dispatch new work* = `state == Running`
-   (single field). *Doing in-flight work* = `Running ∪ Paused ∪ Stopping`(within
+   (single field). *Doing in-flight work* = `Running ∪ Paused ∪ Stopping` (within
    deadline) — a cordoned (Paused) agent still finishes its current turn / MCP
    call. Don't collapse them into one sentence.
 
@@ -134,10 +139,10 @@ an ECS-only coincidence.
 
 | canonical | ECS | k8s / GKE | docker-compose |
 |---|---|---|---|
-| Starting | PROVISIONING / PENDING / **ACTIVATING** (ENI + secret inject) | Pending / ContainerCreating / startupProbe pending | created / starting |
+| Starting | **PROVISIONING** (ENI) / PENDING / ACTIVATING (image pull + secret inject) | Pending / ContainerCreating / startupProbe pending | created / starting |
 | Running | RUNNING + health OK + desiredStatus RUNNING | Running + readinessProbe True + lease valid | healthy *(healthcheck required)* |
 | Paused | RUNNING + health OK + CP/director cordon (`accepting_work=false`) | Ready but cordoned (CP/director) | running + CP/director cordon |
-| Unhealthy | RUNNING + healthStatus UNHEALTHY / lease lost *(attribute, not a task state)* | readiness/liveness fail; **Unknown (node lost) → Unhealthy(fenced) + epoch fence**; CrashLoopBackOff | healthcheck fail; `docker pause` (SIGSTOP) → healthcheck stall → Unhealthy |
+| Unhealthy | RUNNING + healthStatus UNHEALTHY / lease lost *(attribute, not a task state)* | readiness/liveness fail; **Unknown (node lost) → Unhealthy(fenced) + epoch fence**; CrashLoopBackOff | healthcheck fail; `docker pause` (cgroup freezer) → healthcheck stall → Unhealthy |
 | Stopping | desiredStatus STOPPED *(DEACTIVATING only if in a target group / service-discovery; else RUNNING→STOPPING)* | deletionTimestamp != null (Terminating: preStop + grace) | stop requested (stop_grace_period) |
 | Stopped | STOPPED + stopCode (enum) | deleted; *preempted* = the reclaim edge | exited |
 

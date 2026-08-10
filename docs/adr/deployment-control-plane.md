@@ -51,7 +51,7 @@ Vendor-specific terms (ECS/task/ARN/S3/Fargate…) appear **only** inside a
 | **Spec** | Desired: `identity + version + scale + admission + runtime + configRef` | `.spec` |
 | **admission** | Spec field (`accepting_work`): may this Instance take new work | — (app/CP-level, orthogonal to `Ready`) |
 | **Instance.Status** | Observed per Instance: `phase + conditions + …` | Pod `.status` |
-| **phase** | Field on an **Instance**'s Status; value is an `AgentState` — **Instance-level only** | Pod `.status.phase` |
+| **phase** | Field on an **Instance**'s Status; value is an `AgentState` — **Instance-level only** | ≈ Pod `.status.phase` (ours is *derived* from phase + conditions + probes + deletionTimestamp; see §4 traps) |
 | **Deployment.Status** | Observed per Deployment: replica counters `desired/current/ready/available` + Conditions — **not** an `AgentState` | Deployment `.status` |
 | **AgentState** | The 6 lifecycle states (ADR-1) | — |
 | **Discriminators** | `desiredStatus · accepting_work · health · identity_verified` | ADR-1 |
@@ -66,7 +66,9 @@ of Spec** (ADR-1). A driver observes native signals and projects them onto:
 - **Instance-level** — `Instance.status.phase` is one `AgentState` (ADR-1's
   `classify()`), plus `conditions[]` (ready, superseded, …).
 - **Deployment-level** — `Deployment.status` is **replica counters**
-  (`desired / current / ready / available`) + Deployment `conditions[]` (e.g.
+  (`current / ready / available` counters, plus `desired` — which in k8s is
+  spec-sourced (`.spec.replicas`), not a `.status` field; service-level in ECS)
+  + Deployment `conditions[]` (e.g.
   `Available`, `Progressing`). **It is NOT an `AgentState`**: a Deployment with N
   Instances (say one `Running`, one `Unhealthy`) has no single lifecycle value —
   it has *counts*. (Mirrors k8s exactly: a Pod has a `phase`; a Deployment has
@@ -82,6 +84,8 @@ here (see §7).
 k8s has no single lifecycle enum; it is `phase + conditions + probes +
 deletionTimestamp`. Traps to document so k8s intuition doesn't misread us:
 
+- **`Starting`** = k8s `phase=Pending` / `ContainerCreating`, or `Running` before
+  the `Ready` latch (pre-`identity_verified`) — the 6th state, mapped to pre-`Ready`.
 - **`Running` is stricter than k8s** — ours = k8s `phase=Running ∧ Ready=True`.
 - **`Paused` has no per-Pod k8s analog**, and is **not** k8s `Deployment.spec.paused` (that is rollout-pause).
 - **`Stopping`** = k8s "Terminating" (`deletionTimestamp≠null`), which is not a `.status.phase` value.
@@ -121,7 +125,7 @@ One idempotent primitive: **`apply(Spec)`** — converge observed toward desired
   resumable.
 - **dry-run / diff**: every write supports a preview that returns *what would
   change* without mutating — a safety valve, and important for agents (look
-  before leap). See §6 for `dry_run` as a first-class tool parameter.
+  before you leap). See §6 for `dry_run` as a first-class tool parameter.
 
 ## 6. MCP adapter
 
