@@ -10,8 +10,10 @@ name: nightly
 # only builds + publishes the .dmg.
 
 on:
+  push:
+    branches: [main] # every merge to main → rebuild the rolling nightly
   schedule:
-    - cron: "17 18 * * *" # 18:17 UTC ≈ 02:17 Asia/Taipei
+    - cron: "17 18 * * *" # 18:17 UTC ≈ 02:17 Asia/Taipei (safety net)
   workflow_dispatch:
 
 concurrency:
