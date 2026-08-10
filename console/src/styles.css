@@ -85,6 +85,31 @@ body {
 .status.err {
   color: var(--s-unhealthy);
 }
+.update-btn {
+  appearance: none;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  padding: 3px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.update-btn:hover:not(:disabled) {
+  color: var(--text);
+  border-color: var(--s-starting);
+}
+.update-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+/* A build is waiting — draw the eye to it. */
+.update-btn.has-update {
+  color: #fff;
+  background: var(--s-starting);
+  border-color: var(--s-starting);
+}
 
 .content {
   display: flex;
