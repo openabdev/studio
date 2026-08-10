@@ -43,6 +43,15 @@ function flag(target: string): void {
 const activity = logEl ? createPane(logEl, () => flag("log")) : null;
 const mcp = mcpEl ? createPane(mcpEl, () => flag("mcpio")) : null;
 
+// Build stamp (injected by vite) — shown under the brand and logged on launch,
+// so it's obvious which commit this build is.
+const BUILD = `v${__APP_VERSION__} · ${__BUILD_SHA__}`;
+const buildEl = document.getElementById("build-info");
+if (buildEl) {
+  buildEl.textContent = BUILD;
+  buildEl.title = `built ${__BUILD_TIME__}`;
+}
+
 function note(level: Level, msg: string): void {
   activity?.push({ cls: `lv-${level}`, tag: level.toUpperCase(), msg });
 }
@@ -96,7 +105,7 @@ async function startCore(): Promise<void> {
 // Boot order matters: subscribe to the log streams FIRST, then start the core,
 // so the spawn → handshake → ready lifecycle lines are captured, not lost.
 async function boot(): Promise<void> {
-  note("info", "console loaded");
+  note("info", `OAB Studio ${BUILD} (built ${__BUILD_TIME__})`);
   if (activity && mcp) await bindBackend(activity, mcp);
   if (clusterLabel) clusterLabel.textContent = CLUSTER;
   note("info", `polling cluster "${CLUSTER}" every ${POLL_MS / 1000}s`);
