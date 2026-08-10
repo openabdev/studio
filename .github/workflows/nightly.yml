@@ -1,0 +1,75 @@
+name: nightly
+
+# Nightly desktop build, pinned to the tip of the default branch (main).
+# Scheduled workflows run only from the default branch and check out main by
+# default, so this always builds "latest master". Publishes a single rolling
+# `nightly` pre-release (durable download URL, unlike 7-day run artifacts).
+#
+# Auto-update (the installed app pulling this) is a follow-on: it additionally
+# needs a Tauri updater signing key + a latest.json on the release. This job
+# only builds + publishes the .dmg.
+
+on:
+  schedule:
+    - cron: "17 18 * * *" # 18:17 UTC ≈ 02:17 Asia/Taipei
+  workflow_dispatch:
+
+concurrency:
+  group: nightly
+  cancel-in-progress: true
+
+permissions:
+  contents: write # publish the rolling nightly release
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4 # default ref = main (scheduled)
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Build the web skin
+        run: |
+          npm --prefix console ci
+          npm --prefix console run build
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            src-tauri -> target
+      # Build the oab-mcp sidecar and stage it for `externalBin`. Harmless on
+      # main revisions that predate the sidecar (the binary is simply unused).
+      - name: Build oab-mcp sidecar (arm64)
+        run: |
+          cargo build --release -p oab-mcp --target aarch64-apple-darwin
+          mkdir -p src-tauri/binaries
+          cp target/aarch64-apple-darwin/release/oab-mcp \
+            src-tauri/binaries/oab-mcp-aarch64-apple-darwin
+      - name: Install Tauri CLI
+        run: npm install -g @tauri-apps/cli@^2
+      - name: Bundle (.app + .dmg)
+        working-directory: src-tauri
+        run: tauri build --target aarch64-apple-darwin
+      - name: Publish rolling nightly pre-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          sha="$(git rev-parse --short HEAD)"
+          stamp="$(date -u +%Y-%m-%dT%H:%MZ)"
+          dmg="$(ls src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg | head -1)"
+          echo "publishing $dmg for main@$sha"
+          # Roll the single `nightly` release forward to this commit.
+          gh release delete nightly --yes --cleanup-tag 2>/dev/null || true
+          gh release create nightly "$dmg" \
+            --prerelease \
+            --target "$GITHUB_SHA" \
+            --title "Nightly ($sha)" \
+            --notes "Automated nightly build of \`main\` @ \`$sha\` ($stamp). Native arm64, unsigned/ad-hoc — first launch: right-click → Open, or \`xattr -dr com.apple.quarantine\`."
