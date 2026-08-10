@@ -1,0 +1,119 @@
+name: nightly
+
+# Nightly desktop build, pinned to the tip of the default branch (main).
+# Scheduled workflows run only from the default branch and check out main by
+# default, so this always builds "latest master". Publishes a single rolling
+# `nightly` pre-release (durable download URL, unlike 7-day run artifacts).
+#
+# When the checked-out app carries updater config (bundle.createUpdaterArtifacts
+# + plugins.updater.pubkey — landing with the remote-upgrade feature), this also
+# signs the bundle and publishes `latest.json` so the installed app's "檢查更新"
+# button can pull it. On pre-updater revisions of main those steps are inert (no
+# .app.tar.gz is produced), so the workflow stays forward-compatible.
+
+on:
+  push:
+    branches: [main] # every merge to main → rebuild the rolling nightly
+  schedule:
+    - cron: "17 18 * * *" # 18:17 UTC ≈ 02:17 Asia/Taipei (safety net)
+  workflow_dispatch:
+
+concurrency:
+  group: nightly
+  cancel-in-progress: true
+
+permissions:
+  contents: write # publish the rolling nightly release
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4 # default ref = main (scheduled)
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      # Give each nightly a monotonic version so the updater can tell builds
+      # apart (a static 0.1.0 would never compare as "newer"). Prerelease-tagged
+      # so it sorts below any real 0.1.0 release. No-op for update detection on
+      # pre-updater main, but harmless.
+      - name: Stamp a monotonic nightly version
+        run: |
+          ver="0.1.0-nightly.$(date -u +%Y%m%d%H%M)"
+          node -e "const fs=require('fs');const f='src-tauri/tauri.conf.json';const j=JSON.parse(fs.readFileSync(f,'utf8'));j.version='$ver';fs.writeFileSync(f,JSON.stringify(j,null,2)+'\n')"
+          echo "NIGHTLY_VERSION=$ver" >> "$GITHUB_ENV"
+          echo "stamped $ver"
+      - name: Build the web skin
+        run: |
+          npm --prefix console ci
+          npm --prefix console run build
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            src-tauri -> target
+      # Build the oab-mcp sidecar and stage it for `externalBin`. Harmless on
+      # main revisions that predate the sidecar (the binary is simply unused).
+      - name: Build oab-mcp sidecar (arm64)
+        run: |
+          cargo build --release -p oab-mcp --target aarch64-apple-darwin
+          mkdir -p src-tauri/binaries
+          cp target/aarch64-apple-darwin/release/oab-mcp \
+            src-tauri/binaries/oab-mcp-aarch64-apple-darwin
+      - name: Install Tauri CLI
+        run: npm install -g @tauri-apps/cli@^2
+      # Signing keys are only consumed when the app opts into updater artifacts
+      # (bundle.createUpdaterArtifacts). Absent that, they're ignored.
+      - name: Bundle (.app + .dmg, signed when updater-enabled)
+        working-directory: src-tauri
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: tauri build --target aarch64-apple-darwin
+      - name: Publish rolling nightly pre-release (+ latest.json when signed)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          sha="$(git rev-parse --short HEAD)"
+          stamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          base="src-tauri/target/aarch64-apple-darwin/release/bundle"
+          dmg="$(ls "$base"/dmg/*.dmg | head -1)"
+          # The updater consumes the .app.tar.gz (+ .sig), produced only when the
+          # app enables updater artifacts. May be absent on pre-updater main.
+          tarball="$(ls "$base"/macos/*.app.tar.gz 2>/dev/null | head -1 || true)"
+          sig="${tarball:+${tarball}.sig}"
+
+          assets=("$dmg")
+          [ -n "$tarball" ] && assets+=("$tarball")
+
+          echo "publishing for main@$sha: ${assets[*]}"
+          gh release delete nightly --yes --cleanup-tag 2>/dev/null || true
+          gh release create nightly "${assets[@]}" \
+            --prerelease \
+            --target "$GITHUB_SHA" \
+            --title "Nightly ($sha)" \
+            --notes "Automated nightly build of \`main\` @ \`$sha\` ($stamp). Native arm64, ad-hoc signed — first launch: right-click → Open, or \`xattr -dr com.apple.quarantine\`."
+
+          # Updater manifest: only when we actually produced a signed tarball.
+          if [ -n "$tarball" ] && [ -f "$sig" ]; then
+            url="$(gh release view nightly --json assets \
+              -q '.assets[] | select(.name|endswith(".app.tar.gz")) | .url')"
+            jq -n \
+              --arg v "${NIGHTLY_VERSION:-0.1.0}" \
+              --arg d "$stamp" \
+              --arg u "$url" \
+              --arg s "$(cat "$sig")" \
+              '{version:$v, pub_date:$d, platforms:{"darwin-aarch64":{signature:$s, url:$u}}}' \
+              > latest.json
+            gh release upload nightly latest.json --clobber
+            echo "published latest.json ($NIGHTLY_VERSION) → $url"
+          else
+            echo "no updater artifacts (pre-updater build) — skipped latest.json"
+          fi
