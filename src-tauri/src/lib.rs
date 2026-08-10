@@ -3,10 +3,41 @@ mod mcp;
 use mcp::McpClient;
 use serde_json::{json, Value};
 use tauri::{Emitter, Manager};
+use tokio::sync::Mutex as AsyncMutex;
+
+/// Holds the core client once the frontend has asked us to start it. Kept behind
+/// an async mutex so `deploy_list` can wait for (and share) a single core.
+#[derive(Default)]
+struct Core(AsyncMutex<Option<McpClient>>);
 
 /// Default cluster for the desktop core, mirroring `oab-mcp`'s own default.
 fn default_cluster() -> String {
     std::env::var("OAB_CLUSTER").unwrap_or_else(|_| "oab".to_string())
+}
+
+/// Start the core sidecar. Called by the frontend *after* it has subscribed to
+/// the log streams, so no lifecycle line is emitted before anyone is listening.
+/// Idempotent.
+#[tauri::command]
+async fn start_core(app: tauri::AppHandle, core: tauri::State<'_, Core>) -> Result<(), String> {
+    let mut guard = core.0.lock().await;
+    if guard.is_some() {
+        return Ok(());
+    }
+    let _ = app.emit("app-log", json!({ "level": "info", "msg": "OAB Studio starting…" }));
+    match McpClient::spawn(&app, &default_cluster()).await {
+        Ok(client) => {
+            *guard = Some(client);
+            Ok(())
+        }
+        Err(e) => {
+            let _ = app.emit(
+                "app-log",
+                json!({ "level": "error", "msg": format!("failed to start core: {e}") }),
+            );
+            Err(e)
+        }
+    }
 }
 
 /// List services (`deploy_list`) then fetch each one's per-instance 6-state
@@ -40,15 +71,22 @@ async fn roster_over_mcp(client: &McpClient, cluster: &str) -> Result<Vec<Value>
 }
 
 /// Bridge command: the deployment roster in the console's read-model shape,
-/// sourced entirely through the bundled `oab-mcp` sidecar. Errors are surfaced
-/// both to the caller and to the log pane.
+/// sourced through the bundled `oab-mcp` sidecar. Errors go to the caller and
+/// the log pane.
 #[tauri::command]
 async fn deploy_list(
-    client: tauri::State<'_, McpClient>,
+    core: tauri::State<'_, Core>,
     cluster: Option<String>,
 ) -> Result<Vec<Value>, String> {
     let cluster = cluster.unwrap_or_else(default_cluster);
-    match roster_over_mcp(client.inner(), &cluster).await {
+    let client = {
+        let guard = core.0.lock().await;
+        guard
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| "core not started yet".to_string())?
+    };
+    match roster_over_mcp(&client, &cluster).await {
         Ok(v) => Ok(v),
         Err(e) => {
             client.log("error", &format!("deploy_list: {e}"));
@@ -69,33 +107,10 @@ pub fn run() {
                         .build(),
                 )?;
             }
-            let handle = app.handle().clone();
-            // First line the log pane shows — proves the window is alive even
-            // before the core comes up.
-            let _ = handle.emit(
-                "app-log",
-                json!({ "level": "info", "msg": "OAB Studio starting…" }),
-            );
-            // Start the control-plane core as a child and stash the MCP client
-            // for the bridge command. Failure is logged (and shown in the pane)
-            // rather than leaving a silently half-wired app.
-            tauri::async_runtime::block_on(async move {
-                match McpClient::spawn(&handle, &default_cluster()).await {
-                    Ok(client) => {
-                        handle.manage(client);
-                    }
-                    Err(e) => {
-                        log::error!("failed to start oab-mcp core: {e}");
-                        let _ = handle.emit(
-                            "app-log",
-                            json!({ "level": "error", "msg": format!("failed to start core: {e}") }),
-                        );
-                    }
-                }
-            });
+            app.manage(Core::default());
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![deploy_list])
+        .invoke_handler(tauri::generate_handler![start_core, deploy_list])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

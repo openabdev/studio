@@ -203,6 +203,13 @@ impl McpClient {
             .and_then(|c| c.get("text"))
             .and_then(Value::as_str)
             .ok_or_else(|| format!("{name}: unexpected tool result shape: {result}"))?;
-        serde_json::from_str::<Value>(text).map_err(|e| format!("{name}: decode payload: {e}"))
+        // A failed tool call comes back as a successful JSON-RPC result with
+        // `isError: true` and the message as text — surface it verbatim instead
+        // of trying to JSON-decode an error sentence.
+        if result.get("isError").and_then(Value::as_bool).unwrap_or(false) {
+            return Err(format!("{name}: {text}"));
+        }
+        serde_json::from_str::<Value>(text)
+            .map_err(|e| format!("{name}: decode payload: {e} — raw: {text}"))
     }
 }
