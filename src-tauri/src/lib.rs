@@ -1,5 +1,7 @@
+mod config;
 mod mcp;
 
+use config::McpConfig;
 use mcp::McpClient;
 use serde_json::{json, Value};
 use tauri::{Emitter, Manager};
@@ -10,22 +12,27 @@ use tokio::sync::Mutex as AsyncMutex;
 #[derive(Default)]
 struct Core(AsyncMutex<Option<McpClient>>);
 
-/// Default cluster for the desktop core, mirroring `oab-mcp`'s own default.
-fn default_cluster() -> String {
-    std::env::var("OAB_CLUSTER").unwrap_or_else(|_| "oab".to_string())
-}
+/// The current `oab-mcp` connection target, loaded from disk at startup and
+/// updated by the Config tab. `start_core` / `set_config` spawn the sidecar from
+/// this, so the target is explicit rather than inherited from the host default.
+struct ConfigState(AsyncMutex<McpConfig>);
 
 /// Start the core sidecar. Called by the frontend *after* it has subscribed to
 /// the log streams, so no lifecycle line is emitted before anyone is listening.
 /// Idempotent.
 #[tauri::command]
-async fn start_core(app: tauri::AppHandle, core: tauri::State<'_, Core>) -> Result<(), String> {
+async fn start_core(
+    app: tauri::AppHandle,
+    core: tauri::State<'_, Core>,
+    config: tauri::State<'_, ConfigState>,
+) -> Result<(), String> {
     let mut guard = core.0.lock().await;
     if guard.is_some() {
         return Ok(());
     }
     let _ = app.emit("app-log", json!({ "level": "info", "msg": "OAB Studio starting…" }));
-    match McpClient::spawn(&app, &default_cluster()).await {
+    let cfg = config.0.lock().await.clone();
+    match McpClient::spawn(&app, &cfg).await {
         Ok(client) => {
             *guard = Some(client);
             Ok(())
@@ -34,6 +41,48 @@ async fn start_core(app: tauri::AppHandle, core: tauri::State<'_, Core>) -> Resu
             let _ = app.emit(
                 "app-log",
                 json!({ "level": "error", "msg": format!("failed to start core: {e}") }),
+            );
+            Err(e)
+        }
+    }
+}
+
+/// Return the current `oab-mcp` target so the Config tab can populate its form.
+#[tauri::command]
+async fn get_config(config: tauri::State<'_, ConfigState>) -> Result<McpConfig, String> {
+    Ok(config.0.lock().await.clone())
+}
+
+/// Persist a new target, then reload the core so the sidecar picks it up: kill
+/// the running child and spawn a fresh one with the new env. The frontend's next
+/// poll then hits the reconfigured core.
+#[tauri::command]
+async fn set_config(
+    app: tauri::AppHandle,
+    core: tauri::State<'_, Core>,
+    config: tauri::State<'_, ConfigState>,
+    new_config: McpConfig,
+) -> Result<(), String> {
+    config::save(&app, &new_config)?;
+    *config.0.lock().await = new_config.clone();
+
+    let mut guard = core.0.lock().await;
+    if let Some(old) = guard.take() {
+        let _ = app.emit(
+            "app-log",
+            json!({ "level": "info", "msg": "config saved — reloading core…" }),
+        );
+        old.shutdown().await;
+    }
+    match McpClient::spawn(&app, &new_config).await {
+        Ok(client) => {
+            *guard = Some(client);
+            Ok(())
+        }
+        Err(e) => {
+            let _ = app.emit(
+                "app-log",
+                json!({ "level": "error", "msg": format!("core reload failed: {e}") }),
             );
             Err(e)
         }
@@ -76,9 +125,13 @@ async fn roster_over_mcp(client: &McpClient, cluster: &str) -> Result<Vec<Value>
 #[tauri::command]
 async fn deploy_list(
     core: tauri::State<'_, Core>,
+    config: tauri::State<'_, ConfigState>,
     cluster: Option<String>,
 ) -> Result<Vec<Value>, String> {
-    let cluster = cluster.unwrap_or_else(default_cluster);
+    let cluster = match cluster {
+        Some(c) => c,
+        None => config.0.lock().await.cluster.clone(),
+    };
     let client = {
         let guard = core.0.lock().await;
         guard
@@ -108,9 +161,16 @@ pub fn run() {
                 )?;
             }
             app.manage(Core::default());
+            let cfg = config::load(app.handle());
+            app.manage(ConfigState(AsyncMutex::new(cfg)));
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![start_core, deploy_list])
+        .invoke_handler(tauri::generate_handler![
+            start_core,
+            deploy_list,
+            get_config,
+            set_config
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

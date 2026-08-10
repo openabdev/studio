@@ -1,9 +1,12 @@
 import { defaultSource } from "./source";
 import { renderRoster } from "./render";
 import { createPane, bindBackend, type Level } from "./log";
+import { initConfigTab, type McpConfig } from "./config";
 
 const POLL_MS = 5000;
-const CLUSTER = "oab";
+// The polled cluster, seeded to the default and updated by the Config tab once
+// the backend reports (or the user saves) the persisted target.
+let cluster = "oab";
 
 const roster = document.getElementById("roster");
 const clusterLabel = document.getElementById("cluster-label");
@@ -57,7 +60,7 @@ let lastError = "";
 async function tick(): Promise<void> {
   if (!roster) return;
   try {
-    const deployments = await source.listDeployments(CLUSTER);
+    const deployments = await source.listDeployments(cluster);
     renderRoster(roster, deployments);
     if (lastError) {
       note("info", `roster recovered — ${deployments.length} deployment(s)`);
@@ -93,13 +96,28 @@ async function startCore(): Promise<void> {
   }
 }
 
+// Reflect a (possibly changed) target in the polled cluster + header label.
+function applyConfig(cfg: McpConfig): void {
+  cluster = cfg.cluster || "oab";
+  if (clusterLabel) clusterLabel.textContent = cluster;
+}
+
 // Boot order matters: subscribe to the log streams FIRST, then start the core,
 // so the spawn → handshake → ready lifecycle lines are captured, not lost.
 async function boot(): Promise<void> {
   note("info", "console loaded");
   if (activity && mcp) await bindBackend(activity, mcp);
-  if (clusterLabel) clusterLabel.textContent = CLUSTER;
-  note("info", `polling cluster "${CLUSTER}" every ${POLL_MS / 1000}s`);
+  if (clusterLabel) clusterLabel.textContent = cluster;
+  // Config tab: populates from the persisted target, and on save reloads the
+  // core then refreshes the roster against the new cluster.
+  initConfigTab({
+    onLoaded: applyConfig,
+    onSaved: (cfg) => {
+      applyConfig(cfg);
+      void tick();
+    },
+  });
+  note("info", `polling cluster "${cluster}" every ${POLL_MS / 1000}s`);
   await startCore();
   void tick();
   window.setInterval(() => void tick(), POLL_MS);

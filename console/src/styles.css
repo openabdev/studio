@@ -236,3 +236,72 @@ td.counts.warn {
 .s-stopped {
   background: var(--s-stopped);
 }
+
+/* Config pane — pin the oab-mcp target (profile / region / cluster). */
+.pane.config {
+  padding: 16px 18px 20px;
+}
+.config-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-width: 420px;
+}
+.config-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.config-form input {
+  font: inherit;
+  font-size: 13px;
+  padding: 7px 9px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+}
+.config-form input:focus {
+  outline: none;
+  border-color: var(--s-starting);
+}
+.config-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 4px;
+}
+#cfg-save {
+  appearance: none;
+  font: inherit;
+  font-size: 12px;
+  padding: 7px 14px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--s-starting);
+  color: #fff;
+  cursor: pointer;
+}
+#cfg-save:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.config-status {
+  font-size: 12px;
+  color: var(--muted);
+}
+.config-status.ok {
+  color: var(--ok);
+}
+.config-status.err {
+  color: var(--s-unhealthy);
+}
+.config-hint {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--muted);
+  max-width: 420px;
+}

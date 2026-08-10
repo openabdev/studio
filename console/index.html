@@ -19,9 +19,53 @@
         <nav class="tabs" id="tabs">
           <button class="tab is-active" data-target="log">Activity</button>
           <button class="tab" data-target="mcpio">MCP · oab-mcp</button>
+          <button class="tab" data-target="config">Config</button>
         </nav>
         <div id="log" class="log pane"></div>
         <div id="mcpio" class="log pane mcpio" hidden></div>
+        <div id="config" class="pane config" hidden>
+          <form id="config-form" class="config-form" autocomplete="off">
+            <label
+              >AWS profile
+              <input
+                id="cfg-profile"
+                name="profile"
+                type="text"
+                placeholder="e.g. brettchien"
+                spellcheck="false"
+              />
+            </label>
+            <label
+              >AWS region
+              <input
+                id="cfg-region"
+                name="region"
+                type="text"
+                placeholder="e.g. ap-east-2"
+                spellcheck="false"
+              />
+            </label>
+            <label
+              >Cluster
+              <input
+                id="cfg-cluster"
+                name="cluster"
+                type="text"
+                placeholder="oab"
+                spellcheck="false"
+              />
+            </label>
+            <div class="config-actions">
+              <button type="submit" id="cfg-save">Save &amp; reload core</button>
+              <span class="config-status" id="cfg-status"></span>
+            </div>
+            <p class="config-hint">
+              Saving pins the oab-mcp sidecar to this profile / region and
+              restarts it. Leave profile or region blank to fall back to the host
+              default credential chain.
+            </p>
+          </form>
+        </div>
       </section>
       <section id="roster" class="roster-wrap"></section>
     </main>
