@@ -71,7 +71,26 @@ Push at **two independent boundaries**, landed in two phases.
   or out-of-order events. Events are best-effort; the periodic resync is the
   correctness backstop.
 
-### 3.3 User-facing notifications (consumer, not mechanism)
+### 3.3 Provider-native event sources — normalized to one contract
+
+EventBridge is the **AWS instance** of a general pattern: every provider already
+emits its own change stream. The connection descriptor (per-`oab-mcp`, the
+fleet-registry direction) owns the adapter that maps each into the same MCP
+`resources/updated`; the skin never learns which provider is underneath.
+
+| Provider | Native event source | Notes |
+|---|---|---|
+| **AWS / ECS** | EventBridge — `ECS Task State Change`, `ECS Service Action` | delivered via a rule → target (SQS/listener) |
+| **Kubernetes** | **Watch API** — `?watch=true&resourceVersion=…` on Deployments/Pods (client-go **informer** = list→watch→cache→resync); plus the **Events API** (`Event` objects: `CrashLoopBackOff`, `OOMKilled`, … as ADR-1 Unhealthy *reasons*) | most native of the set |
+| others | provider stream (poll bridge if none) | must normalize to the same contract |
+
+**Kubernetes bakes in our reconciliation model.** A dropped watch — or a
+`resourceVersion` too old (`410 Gone`) — forces the informer to **re-list**;
+that relist *is* the §3.2 reconciliation resync, provided by the protocol rather
+than bolted on. It is the reference shape the ECS adapter emulates (EventBridge
+for deltas + a periodic ECS resync for repair).
+
+### 3.4 User-facing notifications (consumer, not mechanism)
 
 OS/mobile "push notifications" (a macOS notification when a watched deployment
 enters `Unhealthy`/`Stopped`) are a **downstream consumer** of the same event
@@ -120,9 +139,10 @@ Kept out of scope for the mechanism ADR; unlocked by it.
 - **Reconciliation interval** — how stale is acceptable between resyncs.
 - **Authorization** — who may subscribe (unchanged from ADR-2/ADR-3: currently
   the AWS-credential ceiling only; per-caller authz still deferred).
-- **Multi-account / multi-vendor** — k8s watch API and other providers give
-  their own event streams; the descriptor abstraction must normalize them to the
-  same `resources/updated` contract.
+- **Multi-account / multi-vendor** — each provider's native stream (§3.3:
+  EventBridge, k8s watch+events, …) must normalize to the same
+  `resources/updated`; open points are cross-account EventBridge aggregation and
+  where the k8s watch connection lives (in-core vs a per-cluster bridge).
 
 ## 7. More Information
 
