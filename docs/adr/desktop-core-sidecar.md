@@ -9,8 +9,8 @@
 
 ## 1. Context & Problem
 
-ADR-3 says the desktop "runs the core locally over stdio (MCP)". Slice-2 took a
-shortcut: the Tauri `deploy_list` command linked `studio-cp` as a Rust
+ADR-3 says the desktop "runs the core locally over stdio (MCP)". The slice-2
+wiring took a shortcut: the Tauri `deploy_list` command linked `studio-cp` as a Rust
 dependency and called `observe_services` **in-process**, bypassing `oab-mcp`
 entirely. That left **two divergent paths to the same core** — agents via the
 MCP server, the desktop via a direct crate call — so the skin never actually
@@ -48,7 +48,7 @@ and talks to it as a first-class MCP client:
   (`deploy_apply` / `deploy_scale` / `deploy_delete`) are now one `call_tool`
   away when the GUI is ready for them.
 - ✅ Bundle no longer statically links the aws-sdk into the shell.
-- ⚠️ The `.app` carries the `oab-mcp` binary (~larger bundle) and must ship the
+- ⚠️ The `.app` carries the `oab-mcp` binary (a larger bundle) and must ship the
   matching per-arch sidecar; CI builds `oab-mcp` for the target triple and
   places it under `src-tauri/binaries/` before `tauri build`.
 - ⚠️ Startup now depends on the sidecar spawning + handshaking; failure is
