@@ -1,7 +1,7 @@
 # ADR: Push notifications — event-driven read-model over polling
 
 - **Status:** Proposed
-- **Supersedes (for live updates):** ADR-3's "polling first, streaming later" — this is the "later".
+- **Realizes:** ADR-3's deferred "streaming later" for live updates (it does not supersede ADR-3; it fulfills the part ADR-3 punted).
 - **Builds on:** ADR-2 (control-plane read-model + MCP), ADR-1 (6-state lifecycle).
 
 > Deployment state should **arrive as events**, not be discovered by polling.
@@ -112,11 +112,12 @@ Kept out of scope for the mechanism ADR; unlocked by it.
 
 ## 5. Consequences
 
-- **The core becomes stateful**: it holds a cached read-model + a subscriber set,
-  with reconnect/replay semantics (on `subscribe`, send current state first,
-  then deltas). Previously each `deploy_list` was stateless.
+- **The core becomes stateful**: it holds a cached read-model + a subscriber set.
+  A new subscriber reads current state (`resources/read`), then receives
+  `resources/updated` deltas; on reconnect it re-reads to re-sync. Previously each
+  `deploy_list` was stateless.
 - **Desktop MCP client** must handle id-less notifications (small change to the
-  Phase-0 sidecar reader; see [desktop-core-sidecar](desktop-core-sidecar.md)).
+  sidecar reader introduced in PR #9 / the sidecar ADR, once that lands).
 - **Transport ceiling**: stdio carries server→client notifications fine for the
   local desktop core. Remote/iOS skins (ADR-3 deferred) need a streaming
   transport (streamable-HTTP/SSE) before they can subscribe — this ADR does not
