@@ -62,6 +62,14 @@ body {
   color: var(--muted);
   font-weight: 500;
 }
+.brand .build {
+  display: block;
+  margin-top: 2px;
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
 
 .meta {
   display: flex;
@@ -76,6 +84,93 @@ body {
 }
 .status.err {
   color: var(--s-unhealthy);
+}
+
+.content {
+  display: flex;
+  flex-direction: column;
+}
+
+/* Two tabbed panes — the first display, so launch + core lifecycle and the raw
+   MCP interaction are one click apart and visible immediately. */
+.logs {
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+}
+.tabs {
+  display: flex;
+  gap: 4px;
+  padding: 6px 12px 0;
+}
+.tab {
+  position: relative;
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  padding: 6px 12px;
+  border-radius: 6px 6px 0 0;
+  cursor: pointer;
+}
+.tab:hover {
+  color: var(--text);
+}
+.tab.is-active {
+  color: var(--text);
+  background: var(--bg);
+  box-shadow: inset 0 -2px 0 var(--s-starting);
+}
+/* Unread dot: the hidden tab got new lines. */
+.tab.has-new::after {
+  content: "";
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--warn);
+}
+.log {
+  font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  max-height: 46vh;
+  overflow: auto;
+  padding: 10px 18px 12px;
+}
+.logline {
+  display: flex;
+  gap: 10px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.logline .lt {
+  color: var(--muted);
+  flex: 0 0 auto;
+}
+.logline .ll {
+  flex: 0 0 auto;
+  width: 42px;
+  color: var(--muted);
+}
+.lv-warn .ll {
+  color: var(--warn);
+}
+.lv-error .ll,
+.lv-error .lm {
+  color: var(--s-unhealthy);
+}
+
+/* MCP interaction pane — → out (request), ← in (response). */
+.mcpio .lm {
+  color: var(--muted);
+}
+.io-out .ll {
+  color: var(--s-starting);
+}
+.io-in .ll {
+  color: var(--ok);
 }
 
 .roster-wrap {

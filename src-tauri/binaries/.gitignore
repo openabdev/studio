@@ -1,0 +1,4 @@
+# The `oab-mcp` sidecar (oab-mcp-<target-triple>) is built and copied here by
+# CI (and by local `tauri build` after `cargo build -p oab-mcp`) — not committed.
+*
+!.gitignore

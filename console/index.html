@@ -8,13 +8,25 @@
   </head>
   <body>
     <header class="topbar">
-      <div class="brand">OAB <span>Studio</span></div>
+      <div class="brand">OAB <span>Studio</span>
+        <span class="build" id="build-info"></span>
+      </div>
       <div class="meta">
         <span class="cluster" id="cluster-label"></span>
         <span class="status" id="poll-status"></span>
       </div>
     </header>
-    <main id="roster" class="roster-wrap"></main>
+    <main class="content">
+      <section class="logs">
+        <nav class="tabs" id="tabs">
+          <button class="tab is-active" data-target="log">Activity</button>
+          <button class="tab" data-target="mcpio">MCP · oab-mcp</button>
+        </nav>
+        <div id="log" class="log pane"></div>
+        <div id="mcpio" class="log pane mcpio" hidden></div>
+      </section>
+      <section id="roster" class="roster-wrap"></section>
+    </main>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>
