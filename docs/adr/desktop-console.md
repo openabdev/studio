@@ -46,8 +46,10 @@ Constraints that shape the design:
 - **One control surface for humans and agents** — the GUI drives the *same* MCP
   tools an agent does; no parallel command path that can diverge.
 - **Skin is swappable** — web now, SwiftUI later, with **zero change to core**.
-- **Credentials stay server-side** — the device authenticates to a core service;
-  AWS keys never leave the cloud boundary.
+- **Credentials can stay server-side (remote/mobile)** — a remote/mobile client
+  authenticates to a core service and holds no AWS keys; the **local desktop
+  resolves creds on-device, like a CLI** (§3.2). Keys leaving the boundary is
+  only avoided on the deferred remote path, not the desktop-now path.
 - **Iteration speed for a visual dashboard** — reuse the mature web charting /
   table / layout ecosystem for the first console.
 - **Reuse what exists** — `studio-cp` (read/write model) and `oab-mcp` (tools).
@@ -86,12 +88,13 @@ current desktop scope.
 
 ### 3.3 Interim skin: Tauri
 
-The first skin is a **web front-end wrapped by Tauri**, which covers **macOS and
-Windows** (and Linux) from one build. Rationale: the interim UI is throwaway on
+The first skin is a **web front-end wrapped by Tauri**, which covers **macOS,
+Windows** (and Linux) from **one codebase** — each platform built on its own CI
+runner (Tauri does not cross-compile; one `tauri build` does not emit both). Rationale: the interim UI is throwaway on
 platforms that go native (macOS → SwiftUI), so optimize for speed and polish on a
 dense dashboard — where the web ecosystem wins — and get two desktop platforms
 now for free. The same web UI **doubles as a browser console** later (talking
-MCP-over-HTTP once that transport lands). Tauri's Rust backend is a **thin bridge
+streamable-HTTP once that transport lands). Tauri's Rust backend is a **thin bridge
 only** — it spawns/connects the local `oab-mcp` (or embeds `studio-cp` and
 re-exposes the same MCP surface to the webview); it does **not** introduce a
 second Rust command API that could drift from MCP.
@@ -115,7 +118,7 @@ environment/action panel.
 - Humans and agents share one control surface; no divergent command path.
 - Skin swap (web → SwiftUI) costs zero core change; interim throwaway is bounded
   to UI code.
-- **macOS + Windows** from a single Tauri build now; browser/iOS reachable later
+- **macOS + Windows** from one Tauri codebase now (built per-platform); browser/iOS reachable later
   over the same MCP surface without a core rewrite.
 - Local desktop core resolves creds from the standard AWS chain — no new
   credential-hosting story required for the current scope.
