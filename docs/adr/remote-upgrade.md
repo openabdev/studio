@@ -45,7 +45,7 @@ is out of scope here.
 
 Core and skin ship as **one signed bundle per platform**. The app embeds
 `tauri-plugin-updater`; on launch (and on demand) it checks the manifest,
-and if a newer version exists, downloads → **verifies the update signature** →
+and if a newer version exists, downloads → **verifies the updater signature** →
 installs → relaunches. One update moves both layers; there is no separate
 skin-only channel this phase (the ADR-3 "split" option is explicitly deferred —
 see §5).
@@ -74,8 +74,11 @@ serves it at a stable `releases/latest/download/latest.json` URL).
 
 The updater signature is **required** for auto-update and is cheap (a generated
 keypair). OS code-signing is a separate, paid prerequisite for a clean install
-experience; until it exists we ship **unsigned dev builds** (OS shows a warning;
-acceptable for internal/operator use).
+experience; until it exists we ship **ad-hoc-signed dev builds** (Tauri's
+default; on Apple Silicon a *truly* unsigned app will not launch at all). They
+run, but first-launch is gated by a Gatekeeper prompt — right-click → Open, or
+`xattr -dr com.apple.quarantine` — not a passive warning. Acceptable for
+internal/operator use.
 
 ### 3.4 Release trigger & versioning
 
@@ -113,7 +116,7 @@ pre-release channel (separate manifest) is a later addition if needed.
   update path and the security surface of loading code outside the signed
   bundle. Deferred; not worth it for a throwaway interim skin.
 - **App stores (Mac App Store / MS Store).** OS-trusted distribution + updates,
-  but store review latency, sandbox constraints, and a control-plane tool fits
+  but store review latency and sandbox constraints fit a control-plane tool
   poorly. Possible much later for reach, not for the operator tool.
 - **Manual downloads.** No auto-update; rejected — defeats the purpose.
 
