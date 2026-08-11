@@ -3,6 +3,7 @@ mod mcp;
 use mcp::McpClient;
 use serde_json::{json, Value};
 use tauri::{Emitter, Manager};
+use tauri_plugin_updater::UpdaterExt;
 use tokio::sync::Mutex as AsyncMutex;
 
 /// Holds the core client once the frontend has asked us to start it. Kept behind
@@ -95,10 +96,59 @@ async fn deploy_list(
     }
 }
 
+/// What the frontend needs to render the "update available" state: the version
+/// on the release vs. what's running, plus the release notes.
+#[derive(serde::Serialize)]
+struct UpdateInfo {
+    version: String,
+    current: String,
+    notes: Option<String>,
+}
+
+/// Ask the release endpoint whether a newer signed build exists. Returns `None`
+/// when we're already current. Drives the topbar "檢查更新" button.
+#[tauri::command]
+async fn check_update(app: tauri::AppHandle) -> Result<Option<UpdateInfo>, String> {
+    let updater = app.updater().map_err(|e| e.to_string())?;
+    match updater.check().await.map_err(|e| e.to_string())? {
+        Some(update) => Ok(Some(UpdateInfo {
+            version: update.version.clone(),
+            current: update.current_version.clone(),
+            notes: update.body.clone(),
+        })),
+        None => Ok(None),
+    }
+}
+
+/// Download + verify + install the pending update, then restart into it. The
+/// bundle's minisign signature is checked against the embedded pubkey before it
+/// is applied, so a tampered release can't be installed.
+#[tauri::command]
+async fn install_update(app: tauri::AppHandle) -> Result<(), String> {
+    let updater = app.updater().map_err(|e| e.to_string())?;
+    let Some(update) = updater.check().await.map_err(|e| e.to_string())? else {
+        return Err("no update available".to_string());
+    };
+    let _ = app.emit(
+        "app-log",
+        json!({ "level": "info", "msg": format!("downloading update v{}…", update.version) }),
+    );
+    update
+        .download_and_install(|_chunk, _total| {}, || {})
+        .await
+        .map_err(|e| e.to_string())?;
+    let _ = app.emit(
+        "app-log",
+        json!({ "level": "info", "msg": "update installed — restarting…" }),
+    );
+    app.restart();
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             if cfg!(debug_assertions) {
                 app.handle().plugin(
@@ -110,7 +160,12 @@ pub fn run() {
             app.manage(Core::default());
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![start_core, deploy_list])
+        .invoke_handler(tauri::generate_handler![
+            start_core,
+            deploy_list,
+            check_update,
+            install_update
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

@@ -89,17 +89,84 @@ async function tick(): Promise<void> {
   }
 }
 
+// The Tauri command bridge — present only inside the desktop shell (the browser
+// build has no `__TAURI__`, so callers no-op / hide their UI).
+type Invoke = <T>(cmd: string, args?: Record<string, unknown>) => Promise<T>;
+function tauriInvoke(): Invoke | undefined {
+  return (globalThis as { __TAURI__?: { core?: { invoke?: Invoke } } }).__TAURI__?.core
+    ?.invoke;
+}
+
 // Ask the backend to start the core — only meaningful inside the Tauri shell.
 async function startCore(): Promise<void> {
-  const invoke = (
-    globalThis as { __TAURI__?: { core?: { invoke?: (c: string) => Promise<unknown> } } }
-  ).__TAURI__?.core?.invoke;
+  const invoke = tauriInvoke();
   if (!invoke) return; // browser build — MockSource, no core
   try {
     await invoke("start_core");
   } catch (e) {
     note("error", `start_core: ${errText(e)}`);
   }
+}
+
+// Remote upgrade: the topbar "檢查更新" button. First click checks the nightly
+// release; if a newer signed build exists, the button turns into an install
+// action that downloads, verifies, and restarts into it. Desktop-only — hidden
+// in the browser build (no command bridge).
+interface UpdateInfo {
+  version: string;
+  current: string;
+  notes: string | null;
+}
+function setupUpdater(): void {
+  const el = document.getElementById("update-btn") as HTMLButtonElement | null;
+  const invoke = tauriInvoke();
+  if (!el || !invoke) return; // browser build — no updater
+  el.hidden = false;
+  let pending: UpdateInfo | null = null;
+
+  const reset = (): void => {
+    pending = null;
+    el.textContent = "檢查更新";
+    el.classList.remove("has-update");
+  };
+
+  async function check(btn: HTMLButtonElement, inv: Invoke): Promise<void> {
+    btn.disabled = true;
+    btn.textContent = "檢查中…";
+    try {
+      const info = await inv<UpdateInfo | null>("check_update");
+      if (info) {
+        pending = info;
+        btn.textContent = `更新到 v${info.version} ↻`;
+        btn.classList.add("has-update");
+        note("info", `發現新版 v${info.version}（目前 v${info.current}）— 按按鈕安裝並重啟`);
+      } else {
+        note("info", "已是最新版");
+        btn.textContent = "已是最新版";
+        window.setTimeout(reset, 4000);
+      }
+    } catch (e) {
+      reset();
+      note("error", `檢查更新失敗：${errText(e)}`);
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  async function install(btn: HTMLButtonElement, inv: Invoke): Promise<void> {
+    btn.disabled = true;
+    btn.textContent = "安裝中…";
+    try {
+      // On success the backend restarts the app, so this may never resolve.
+      await inv("install_update");
+    } catch (e) {
+      btn.disabled = false;
+      btn.textContent = pending ? `更新到 v${pending.version} ↻` : "檢查更新";
+      note("error", `安裝更新失敗：${errText(e)}`);
+    }
+  }
+
+  el.addEventListener("click", () => void (pending ? install(el, invoke) : check(el, invoke)));
 }
 
 // Boot order matters: subscribe to the log streams FIRST, then start the core,
@@ -109,6 +176,7 @@ async function boot(): Promise<void> {
   if (activity && mcp) await bindBackend(activity, mcp);
   if (clusterLabel) clusterLabel.textContent = CLUSTER;
   note("info", `polling cluster "${CLUSTER}" every ${POLL_MS / 1000}s`);
+  setupUpdater();
   await startCore();
   void tick();
   window.setInterval(() => void tick(), POLL_MS);
