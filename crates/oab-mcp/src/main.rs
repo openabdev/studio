@@ -5,7 +5,7 @@
 //! tools over **stdio**, so an agent operates the OAB control plane as a
 //! first-class client:
 //!
-//! - read: `deploy_list`, `deploy_get`, `get_agent_states`
+//! - read: `deploy_list`, `deploy_get`, `get_agent_states`, `deploy_events`
 //! - write: `deploy_apply`, `deploy_scale`, `deploy_delete`
 //!
 //! Every tool is a thin dispatch into `studio-cp`; this crate owns only the
@@ -40,7 +40,7 @@ const INSTRUCTIONS: &str = "OAB Studio control plane. Observe deployments and \
 per-instance lifecycle states (6-state model), and drive writes (apply a \
 manifest, scale, delete). Reads are safe; writes mutate live ECS services.";
 
-/// The six-tool read/write surface. Argument shapes are plain JSON Schema.
+/// The seven-tool read/write surface. Argument shapes are plain JSON Schema.
 fn tools() -> Vec<Tool> {
     vec![
         Tool::new(
@@ -72,6 +72,20 @@ fn tools() -> Vec<Tool> {
                 "type": "object",
                 "properties": {
                     "service": { "type": "string", "description": "Optional: limit to one service." },
+                    "cluster": { "type": "string", "description": "ECS cluster (defaults to the server's configured cluster)." }
+                }
+            })),
+        ),
+        Tool::new(
+            "deploy_events",
+            "Read recent ECS control-plane events (task/service/deployment state changes) archived from EventBridge — the lifecycle timeline DescribeTasks cannot show (task stops + reasons, service impairment, deployments). NOTE: a container health-check flip while a task stays RUNNING is not emitted by ECS and will not appear here.",
+            as_map(json!({
+                "type": "object",
+                "properties": {
+                    "service": { "type": "string", "description": "Optional: limit to one OAB service (oab-{namespace}-{name} or bare agent name)." },
+                    "since_minutes": { "type": "integer", "description": "Look-back window in minutes (default 1440 = 24h)." },
+                    "limit": { "type": "integer", "description": "Max events, newest first (default 50, max 1000)." },
+                    "log_group": { "type": "string", "description": "CloudWatch Logs group the events are archived to (default $OAB_EVENTS_LOG_GROUP, else /oab/ecs-events)." },
                     "cluster": { "type": "string", "description": "ECS cluster (defaults to the server's configured cluster)." }
                 }
             })),
@@ -132,6 +146,18 @@ fn deployment_json(d: &scp::Deployment) -> Value {
             .iter()
             .map(|i| json!({ "id": i.id, "state": format!("{:?}", i.phase) }))
             .collect::<Vec<_>>(),
+    })
+}
+
+fn event_json(e: &scp::EcsEvent) -> Value {
+    json!({
+        "time": e.time,
+        "type": e.detail_type,
+        "service": e.service,
+        "last_status": e.last_status,
+        "desired_status": e.desired_status,
+        "stop_code": e.stop_code,
+        "reason": e.reason,
     })
 }
 
@@ -200,6 +226,45 @@ impl OabMcp {
             }
         }
         Ok(json!({ "cluster": cluster, "instances": instances }))
+    }
+
+    async fn t_events(&self, args: &Map<String, Value>) -> Result<Value> {
+        let cluster = self.cluster(args);
+        let service = args.get("service").and_then(Value::as_str);
+        let since_minutes = args
+            .get("since_minutes")
+            .and_then(Value::as_i64)
+            .unwrap_or(1440)
+            .max(1);
+        let limit = args
+            .get("limit")
+            .and_then(Value::as_i64)
+            .unwrap_or(50)
+            .clamp(1, 1000) as i32;
+        let log_group = args
+            .get("log_group")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .unwrap_or_else(|| {
+                std::env::var("OAB_EVENTS_LOG_GROUP")
+                    .unwrap_or_else(|_| scp::DEFAULT_EVENTS_LOG_GROUP.to_string())
+            });
+
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        let since_ms = now_ms - since_minutes * 60_000;
+
+        let events =
+            scp::observe_events(&self.aws, &log_group, &cluster, service, since_ms, limit).await?;
+        Ok(json!({
+            "cluster": cluster,
+            "log_group": log_group,
+            "since_minutes": since_minutes,
+            "count": events.len(),
+            "events": events.iter().map(event_json).collect::<Vec<_>>(),
+        }))
     }
 
     async fn t_apply(&self, args: &Map<String, Value>) -> Result<Value> {
@@ -287,6 +352,7 @@ impl ServerHandler for OabMcp {
             "deploy_list" => self.t_list(args).await,
             "deploy_get" => self.t_get(args).await,
             "get_agent_states" => self.t_states(args).await,
+            "deploy_events" => self.t_events(args).await,
             "deploy_apply" => self.t_apply(args).await,
             "deploy_scale" => self.t_scale(args).await,
             "deploy_delete" => self.t_delete(args).await,
@@ -324,7 +390,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn catalog_advertises_the_six_named_tools() {
+    fn catalog_advertises_the_seven_named_tools() {
         let catalog = serde_json::to_value(tools()).expect("tools serialize");
         let names: Vec<String> = catalog
             .as_array()
@@ -332,17 +398,37 @@ mod tests {
             .iter()
             .map(|t| t["name"].as_str().expect("tool has a name").to_string())
             .collect();
-        assert_eq!(names.len(), 6);
+        assert_eq!(names.len(), 7);
         for expected in [
             "deploy_list",
             "deploy_get",
             "get_agent_states",
+            "deploy_events",
             "deploy_apply",
             "deploy_scale",
             "deploy_delete",
         ] {
             assert!(names.contains(&expected.to_string()), "missing {expected}");
         }
+    }
+
+    #[test]
+    fn event_json_carries_normalized_fields() {
+        let e = scp::EcsEvent {
+            time: "2026-08-11T04:42:00Z".into(),
+            detail_type: "ECS Task State Change".into(),
+            service: Some("oab-prod-mira".into()),
+            cluster_arn: Some("arn:aws:ecs:ap-east-2:1:cluster/oab".into()),
+            last_status: Some("STOPPED".into()),
+            desired_status: Some("STOPPED".into()),
+            stop_code: Some("EssentialContainerExited".into()),
+            reason: Some("Essential container in task exited".into()),
+        };
+        let v = event_json(&e);
+        assert_eq!(v["type"], "ECS Task State Change");
+        assert_eq!(v["service"], "oab-prod-mira");
+        assert_eq!(v["last_status"], "STOPPED");
+        assert_eq!(v["stop_code"], "EssentialContainerExited");
     }
 
     #[test]

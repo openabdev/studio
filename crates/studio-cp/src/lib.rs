@@ -13,7 +13,7 @@
 //! clean and upstream-contributable.
 
 pub use agent_lifecycle::AgentState;
-pub use oabctl::ServiceStatus;
+pub use oabctl::{EcsEvent, ServiceStatus, DEFAULT_EVENTS_LOG_GROUP};
 
 /// Observe all OAB services in `cluster` — a thin passthrough over oabctl's
 /// library status API.
@@ -134,6 +134,22 @@ pub async fn observe_deployment(
     let Some(svc) = svc else { return Ok(None) };
     let instances = oabctl::instance_status(aws_config, cluster, service).await?;
     Ok(Some(build_deployment(&svc, &instances)))
+}
+
+/// Observe recent ECS control-plane **events** for the cluster (optionally one
+/// service) — the lifecycle timeline `observe_deployment` cannot show, read
+/// back from the EventBridge → CloudWatch Logs archive. Thin passthrough to
+/// oabctl; newest first. See [`oabctl::fetch_ecs_events`] for the caveat that
+/// container-health flips are not emitted by ECS.
+pub async fn observe_events(
+    aws_config: &aws_config::SdkConfig,
+    log_group: &str,
+    cluster: &str,
+    service: Option<&str>,
+    since_ms: i64,
+    limit: i32,
+) -> anyhow::Result<Vec<EcsEvent>> {
+    oabctl::fetch_ecs_events(aws_config, log_group, Some(cluster), service, since_ms, limit).await
 }
 
 // ---- Write side (ADR-2 write model) ------------------------------------
