@@ -142,7 +142,7 @@ fn tools() -> Vec<Tool> {
         ),
         Tool::new(
             "runtime_context",
-            "Show the effective runtime identity/context this control plane resolved for a cluster/fleet: the acting principal (STS caller ARN), its kind (role vs static user), account (scope), region (location), a best-effort credential-source hint, and the fleet binding in effect (if any). Read-only; answers \"who am I acting as, against what account?\" and surfaces silent credential fallback.",
+            "Show the effective runtime identity/context this control plane resolved for a cluster/fleet: the acting principal (STS caller ARN), its kind (role vs static user), account (scope), region (location), a best-effort credential-source hint, the fleet binding in effect (if any), and — when the binding declares an expected_principal — whether the resolved identity matches it (identity_matches; a non-blocking IdentityMismatch when false). Read-only; answers \"who am I acting as, against what account?\" and surfaces silent credential fallback.",
             as_map(json!({
                 "type": "object",
                 "properties": {
@@ -359,7 +359,14 @@ impl OabMcp {
         let cluster = self.cluster(args);
         let aws = self.aws_for(&cluster).await;
         let ctx = scp::observe_identity(&aws).await?;
-        let binding = self.bindings.for_cluster(&cluster).map(|b| {
+        let binding = self.bindings.for_cluster(&cluster);
+        let expected = binding.and_then(|b| b.expected_principal.clone());
+        // Reconcile: expected (declared) vs actual (resolved). null when no
+        // expectation is declared. Non-blocking — a warning signal, not a gate.
+        let identity_matches = expected
+            .as_ref()
+            .map(|e| scp::principal_matches(e, &ctx.principal));
+        let binding = binding.map(|b| {
             json!({
                 "name": b.name,
                 "profile": b.profile,
@@ -376,6 +383,8 @@ impl OabMcp {
             "source": ctx.source,
             "caller_id": ctx.caller_id,
             "binding": binding,
+            "expected_principal": expected,
+            "identity_matches": identity_matches,
         }))
     }
 
