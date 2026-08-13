@@ -437,6 +437,7 @@ impl OabMcp {
                 json!({
                     "name": b.name,
                     "cluster": b.cluster,
+                    "members": b.members,
                     "region": b.region,
                     "profile": b.profile,
                     "expected_principal": b.expected_principal,
