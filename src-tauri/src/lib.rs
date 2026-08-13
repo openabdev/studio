@@ -145,6 +145,30 @@ async fn fleet_config(core: tauri::State<'_, Core>) -> Result<Value, String> {
     }
 }
 
+/// Bridge command: persist the edited `fleets.toml` text (ADR #19 slice C) via
+/// the sidecar's `fleet_config_write` tool, which validates + writes + hot-reloads
+/// and returns the reloaded config. A parse error surfaces to the editor.
+#[tauri::command]
+async fn fleet_config_write(core: tauri::State<'_, Core>, text: String) -> Result<Value, String> {
+    let client = {
+        let guard = core.0.lock().await;
+        guard
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| "core not started yet".to_string())?
+    };
+    match client
+        .call_tool("fleet_config_write", json!({ "text": text }))
+        .await
+    {
+        Ok(v) => Ok(v),
+        Err(e) => {
+            client.log("error", &format!("fleet_config_write: {e}"));
+            Err(e)
+        }
+    }
+}
+
 /// What the frontend needs to render the "update available" state: the version
 /// on the release vs. what's running, plus the release notes.
 #[derive(serde::Serialize)]
@@ -214,6 +238,7 @@ pub fn run() {
             deploy_list,
             runtime_context,
             fleet_config,
+            fleet_config_write,
             check_update,
             install_update
         ])

@@ -425,3 +425,74 @@ td.counts.warn {
   color: var(--muted);
   margin: 0;
 }
+.cfg-edit {
+  margin-left: auto;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg);
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  padding: 3px 10px;
+}
+.cfg-edit:hover {
+  color: var(--text);
+  border-color: var(--s-starting);
+}
+
+/* ---- fleets.toml editor (slice C) ---- */
+.cfg-editor-wrap {
+  margin: 0 0 12px;
+}
+.cfg-editor-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+.cfg-editor-path {
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.cfg-editor-spacer {
+  flex: 1;
+}
+.cfg-btn {
+  cursor: pointer;
+  border: 1px solid var(--s-starting);
+  border-radius: 5px;
+  background: var(--s-starting);
+  color: #fff;
+  font: inherit;
+  font-size: 12px;
+  padding: 4px 12px;
+}
+.cfg-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.cfg-btn-ghost {
+  background: var(--bg);
+  color: var(--muted);
+  border-color: var(--border);
+}
+.cfg-btn-ghost:hover {
+  color: var(--text);
+}
+.cfg-editor-mount {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+  font-size: 13px;
+}
+.cfg-editor-mount .cm-editor {
+  max-height: 320px;
+}
+.cfg-editor-error {
+  margin-top: 6px;
+  color: var(--s-unhealthy);
+  font-size: 12px;
+  white-space: pre-wrap;
+}

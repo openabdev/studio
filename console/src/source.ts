@@ -11,6 +11,9 @@ export interface Source {
   listDeployments(cluster?: string): Promise<Deployment[]>;
   runtimeContext(cluster?: string): Promise<RuntimeContext>;
   fleetConfig(): Promise<FleetConfig>;
+  // Persist the raw TOML `text` of the config file, returning the reloaded
+  // config. Rejects (without writing) when the text doesn't parse.
+  writeFleetConfig(text: string): Promise<FleetConfig>;
 }
 
 // Fixture-backed source for the standalone / browser build — no core required.
@@ -23,6 +26,11 @@ export class MockSource implements Source {
   }
   async fleetConfig(): Promise<FleetConfig> {
     return structuredClone(FIXTURE_FLEET_CONFIG);
+  }
+  // Browser preview: no core, so "saving" just echoes the text back (no
+  // persistence, no server-side TOML validation).
+  async writeFleetConfig(text: string): Promise<FleetConfig> {
+    return { ...structuredClone(FIXTURE_FLEET_CONFIG), text };
   }
 }
 
@@ -53,6 +61,9 @@ export class TauriSource implements Source {
   }
   async fleetConfig(): Promise<FleetConfig> {
     return this.invoke()<FleetConfig>("fleet_config");
+  }
+  async writeFleetConfig(text: string): Promise<FleetConfig> {
+    return this.invoke()<FleetConfig>("fleet_config_write", { text });
   }
 }
 
