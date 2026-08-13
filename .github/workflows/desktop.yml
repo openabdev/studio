@@ -20,45 +20,14 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # Stage 1: cheap Linux compile-validation of the Tauri app + MCP client wiring.
-  # We build the `oab-mcp` sidecar for the Linux triple and place it under
-  # binaries/ so `externalBin` resolves, then `cargo build` the desktop shell.
-  # (macOS is the only shipped target for now — this stage is just a fast Rust
-  # gate before the 30-min bundle below.)
-  compile-linux:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Tauri Linux system deps
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev \
-            libayatana-appindicator3-dev patchelf
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-      - name: Build the web skin
-        run: |
-          npm --prefix console ci
-          npm --prefix console run build
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: |
-            . -> target
-            src-tauri -> target
-      - name: Build oab-mcp sidecar (linux)
-        run: |
-          cargo build --release -p oab-mcp
-          mkdir -p src-tauri/binaries
-          cp target/release/oab-mcp \
-            "src-tauri/binaries/oab-mcp-$(rustc -vV | sed -n 's/host: //p')"
-      - name: cargo build (studio-desktop)
-        working-directory: src-tauri
-        run: cargo build
-
-  # Stage 2: bundle the macOS app on GitHub's free macOS runner (public repo).
+  # macOS is the only shipped target for now, so we compile/bundle only on osx.
+  # The Linux compile-validation stage (a fast Rust gate that `cargo build`s the
+  # desktop shell on ubuntu) is disabled for now — re-enable it by reverting this
+  # change when a Linux / universal target is on the roadmap. The macOS bundle
+  # below still compiles `src-tauri` via `tauri build`, so the Rust bridge is
+  # covered.
+  #
+  # Bundle the macOS app on GitHub's free macOS runner (public repo).
   # Native arm64, UNSIGNED for now (Gatekeeper: right-click → Open, or
   # `xattr -dr com.apple.quarantine`). The `oab-mcp` core is bundled as a
   # sidecar and spawned by the app at launch. Universal + code-signing + updater
