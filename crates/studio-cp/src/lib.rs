@@ -120,24 +120,16 @@ pub fn build_deployment(svc: &ServiceStatus, instances: &[InstanceStatus]) -> De
     }
 }
 
-/// The canonical ECS service name for a Deployment: `oab-{namespace}-{name}`.
-///
-/// ECS identity APIs (`ListTasks` / `DescribeServices` / `UpdateService`) key on
-/// this full name — never the display short name (`orca`). Resolve to it before
-/// any call that filters by `service_name`, or ECS 404s with
-/// `ServiceNotFoundException`.
-fn canonical_service_name(namespace: &str, name: &str) -> String {
-    format!("oab-{namespace}-{name}")
-}
-
-/// Find the service a caller's `service` selector refers to, accepting **either**
-/// the full ECS name `oab-{ns}-{name}` **or** the display short name `{name}`.
-/// Centralising this is what lets [`observe_deployment`] map a short name back to
-/// the full ECS name before it reaches a `service_name` filter.
-fn find_service<'a>(service: &str, services: &'a [ServiceStatus]) -> Option<&'a ServiceStatus> {
+/// Resolve a caller's `service` selector to the matched service, accepting
+/// **either** the full ECS name (`oab-{ns}-{name}`) **or** the display short
+/// name (`{name}`). [`observe_deployment`] passes the resolved service's
+/// `service_name` straight to `instance_status` with no further transformation,
+/// so a test over this fully covers the "a short selector must query tasks by
+/// the full ECS name" guarantee.
+fn resolve_service<'a>(service: &str, services: &'a [ServiceStatus]) -> Option<&'a ServiceStatus> {
     services
         .iter()
-        .find(|s| service == canonical_service_name(&s.namespace, &s.name) || service == s.name)
+        .find(|s| service == s.service_name || service == s.name)
 }
 
 /// Observe one Deployment end-to-end: service-level counters + per-Instance
@@ -149,15 +141,15 @@ pub async fn observe_deployment(
     service: &str,
 ) -> anyhow::Result<Option<Deployment>> {
     let services = oabctl::service_status(aws_config, cluster).await?;
-    let Some(svc) = find_service(service, &services) else {
+    let Some(svc) = resolve_service(service, &services) else {
         return Ok(None);
     };
-    // `service` may be the display short name (e.g. `orca`); ECS `ListTasks`
-    // only accepts the full name, so query by the resolved canonical name rather
-    // than passing the caller's string straight through — passing a short name
-    // through here is exactly what surfaced as `ServiceNotFoundException`.
-    let full = canonical_service_name(&svc.namespace, &svc.name);
-    let instances = oabctl::instance_status(aws_config, cluster, &full).await?;
+    // Query tasks by the authoritative ECS service name ECS handed back — never
+    // the caller's (possibly short) selector, and never a `format!`-rebuilt name
+    // (wrong for services that don't fit the `oab-<ns>-<name>` shape). A short
+    // name reaching `ListTasks` is exactly what surfaced as
+    // `ServiceNotFoundException`.
+    let instances = oabctl::instance_status(aws_config, cluster, &svc.service_name).await?;
     Ok(Some(build_deployment(svc, &instances)))
 }
 
@@ -482,6 +474,7 @@ mod tests {
         ServiceStatus {
             name: "orca".into(),
             namespace: "prod".into(),
+            service_name: "oab-prod-orca".into(),
             cpu: "512".into(),
             memory: "1024".into(),
             capacity: "FARGATE".into(),
@@ -493,6 +486,7 @@ mod tests {
 
     fn svc_named(namespace: &str, name: &str) -> ServiceStatus {
         ServiceStatus {
+            service_name: format!("oab-{namespace}-{name}"),
             name: name.into(),
             namespace: namespace.into(),
             ..svc(1, 1)
@@ -500,23 +494,31 @@ mod tests {
     }
 
     #[test]
-    fn service_selector_resolves_to_full_ecs_name() {
+    fn observe_deployment_resolves_selector_to_full_ecs_service_name() {
         let services = vec![svc_named("prod", "orca"), svc_named("prod", "mira")];
 
-        // Regression: a display short name (`orca`) must resolve to the FULL ECS
-        // service name before it reaches `instance_status`/`ListTasks`, or ECS
-        // 404s with `ServiceNotFoundException`. Pre-fix, `observe_deployment`
-        // matched on the short name but then queried tasks with it verbatim.
-        let s = find_service("orca", &services).expect("short name matches");
-        assert_eq!(canonical_service_name(&s.namespace, &s.name), "oab-prod-orca");
+        // `observe_deployment` passes the resolved service's `service_name`
+        // verbatim to `instance_status`/`ListTasks`. Regression: a display short
+        // name (`orca`) must resolve to the FULL ECS name, or ECS 404s with
+        // `ServiceNotFoundException` (pre-fix it queried with the short name).
+        assert_eq!(
+            resolve_service("orca", &services)
+                .expect("short name matches")
+                .service_name,
+            "oab-prod-orca"
+        );
 
         // The full name resolves to itself.
-        let s = find_service("oab-prod-mira", &services).expect("full name matches");
-        assert_eq!(canonical_service_name(&s.namespace, &s.name), "oab-prod-mira");
+        assert_eq!(
+            resolve_service("oab-prod-mira", &services)
+                .expect("full name matches")
+                .service_name,
+            "oab-prod-mira"
+        );
 
         // An unknown selector is a clean miss — the Deployment then reports
         // not-found rather than issuing a doomed ECS query.
-        assert!(find_service("nope", &services).is_none());
+        assert!(resolve_service("nope", &services).is_none());
     }
 
     #[test]

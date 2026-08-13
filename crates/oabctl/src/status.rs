@@ -16,6 +16,12 @@ pub struct ServiceStatus {
     /// Agent name (the `{name}` in `oab-{namespace}-{name}`).
     pub name: String,
     pub namespace: String,
+    /// Full ECS service name exactly as ECS returned it (`oab-{namespace}-{name}`).
+    /// Carried verbatim so downstream ECS calls (`ListTasks`) query by the
+    /// authoritative name instead of rebuilding it from `namespace`/`name` —
+    /// rebuilding is wrong for any service that doesn't fit the `oab-<ns>-<name>`
+    /// shape (where the parser falls back to `namespace = "?"`).
+    pub service_name: String,
     pub cpu: String,
     pub memory: String,
     pub capacity: String,
@@ -112,6 +118,7 @@ pub async fn service_status(
             out.push(ServiceStatus {
                 name: agent_name,
                 namespace,
+                service_name: svc_name.to_string(),
                 cpu,
                 memory,
                 capacity,
