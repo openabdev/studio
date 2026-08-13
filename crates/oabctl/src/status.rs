@@ -143,6 +143,11 @@ pub struct InstanceStatus {
     pub last_status: String,
     /// ECS container `healthStatus`: HEALTHY/UNHEALTHY/UNKNOWN.
     pub health_status: String,
+    /// Whether the task definition declares a container health check. Lets the
+    /// read model tell "no probe" (UNKNOWN forever, benign) apart from a defined
+    /// check whose signal is UNKNOWN (lost). Best-effort: `false` if the task
+    /// definition can't be read.
+    pub health_check_defined: bool,
     /// `desiredStatus == STOPPED`.
     pub desired_stopped: bool,
     /// ECS `stopCode` when stopped (else `None`).
@@ -190,6 +195,10 @@ pub async fn instance_status(
         }
     }
 
+    // Whether a task definition declares a container health check, cached by ARN
+    // so a service's tasks (which share a task def) cost one DescribeTaskDefinition.
+    let mut hc_cache: std::collections::HashMap<String, bool> = std::collections::HashMap::new();
+
     let mut out = Vec::new();
     for chunk in task_arns.chunks(100) {
         let resp = ecs
@@ -200,6 +209,10 @@ pub async fn instance_status(
             .await
             .context("failed to describe ECS tasks")?;
         for task in resp.tasks() {
+            let health_check_defined = match task.task_definition_arn() {
+                Some(arn) => task_def_has_health_check(&ecs, arn, &mut hc_cache).await,
+                None => false,
+            };
             out.push(InstanceStatus {
                 id: task.task_arn().unwrap_or("-").to_string(),
                 last_status: task.last_status().unwrap_or("UNKNOWN").to_string(),
@@ -207,6 +220,7 @@ pub async fn instance_status(
                     .health_status()
                     .map(|h| h.as_str().to_string())
                     .unwrap_or_else(|| "UNKNOWN".to_string()),
+                health_check_defined,
                 desired_stopped: task.desired_status() == Some("STOPPED"),
                 stop_code: task.stop_code().map(|c| c.as_str().to_string()),
             });
@@ -214,4 +228,31 @@ pub async fn instance_status(
     }
 
     Ok(out)
+}
+
+/// Does this task definition declare a container health check? Cached by ARN.
+/// Best-effort: on any read error (e.g. missing `ecs:DescribeTaskDefinition`),
+/// returns `false` so an UNKNOWN health reads as benign (no probe) rather than
+/// faulting the instance on a permission gap.
+async fn task_def_has_health_check(
+    ecs: &aws_sdk_ecs::Client,
+    arn: &str,
+    cache: &mut std::collections::HashMap<String, bool>,
+) -> bool {
+    if let Some(v) = cache.get(arn) {
+        return *v;
+    }
+    let defined = match ecs.describe_task_definition().task_definition(arn).send().await {
+        Ok(resp) => resp
+            .task_definition()
+            .map(|td| {
+                td.container_definitions()
+                    .iter()
+                    .any(|c| c.health_check().is_some())
+            })
+            .unwrap_or(false),
+        Err(_) => false,
+    };
+    cache.insert(arn.to_string(), defined);
+    defined
 }
