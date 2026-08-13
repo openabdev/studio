@@ -1,11 +1,16 @@
-import type { Deployment, RuntimeContext } from "./types";
-import { FIXTURE_DEPLOYMENTS, FIXTURE_RUNTIME_CONTEXT } from "./fixtures";
+import type { Deployment, FleetConfig, RuntimeContext } from "./types";
+import {
+  FIXTURE_DEPLOYMENTS,
+  FIXTURE_FLEET_CONFIG,
+  FIXTURE_RUNTIME_CONTEXT,
+} from "./fixtures";
 
 // A read source for the console. Desktop (Tauri → studio-cp) and the standalone
 // browser build implement this identically, so the UI never knows which it is.
 export interface Source {
   listDeployments(cluster?: string): Promise<Deployment[]>;
   runtimeContext(cluster?: string): Promise<RuntimeContext>;
+  fleetConfig(): Promise<FleetConfig>;
 }
 
 // Fixture-backed source for the standalone / browser build — no core required.
@@ -15,6 +20,9 @@ export class MockSource implements Source {
   }
   async runtimeContext(): Promise<RuntimeContext> {
     return structuredClone(FIXTURE_RUNTIME_CONTEXT);
+  }
+  async fleetConfig(): Promise<FleetConfig> {
+    return structuredClone(FIXTURE_FLEET_CONFIG);
   }
 }
 
@@ -42,6 +50,9 @@ export class TauriSource implements Source {
   }
   async runtimeContext(cluster?: string): Promise<RuntimeContext> {
     return this.invoke()<RuntimeContext>("runtime_context", { cluster });
+  }
+  async fleetConfig(): Promise<FleetConfig> {
+    return this.invoke()<FleetConfig>("fleet_config");
   }
 }
 

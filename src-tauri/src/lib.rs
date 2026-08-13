@@ -124,6 +124,27 @@ async fn runtime_context(
     }
 }
 
+/// Bridge command: the declarative fleet-binding config (ADR #19), sourced
+/// through the bundled `oab-mcp` sidecar's `fleet_config` tool. The console
+/// renders the configured fleets and lets the operator switch the active one.
+#[tauri::command]
+async fn fleet_config(core: tauri::State<'_, Core>) -> Result<Value, String> {
+    let client = {
+        let guard = core.0.lock().await;
+        guard
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| "core not started yet".to_string())?
+    };
+    match client.call_tool("fleet_config", json!({})).await {
+        Ok(v) => Ok(v),
+        Err(e) => {
+            client.log("error", &format!("fleet_config: {e}"));
+            Err(e)
+        }
+    }
+}
+
 /// What the frontend needs to render the "update available" state: the version
 /// on the release vs. what's running, plus the release notes.
 #[derive(serde::Serialize)]
@@ -192,6 +213,7 @@ pub fn run() {
             start_core,
             deploy_list,
             runtime_context,
+            fleet_config,
             check_update,
             install_update
         ])

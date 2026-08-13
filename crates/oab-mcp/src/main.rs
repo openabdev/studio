@@ -6,7 +6,7 @@
 //! first-class client:
 //!
 //! - read: `deploy_list`, `deploy_get`, `get_agent_states`, `deploy_events`,
-//!   `runtime_context`
+//!   `runtime_context`, `fleet_config`
 //! - write: `deploy_apply`, `deploy_scale`, `deploy_delete`
 //!
 //! Every tool is a thin dispatch into `studio-cp`; this crate owns only the
@@ -37,6 +37,9 @@ struct OabMcp {
     /// Declarative fleet → managing-credential bindings (ADR: Per-Fleet
     /// managing identity).
     bindings: Arc<scp::FleetBindings>,
+    /// Where the bindings were loaded from (surfaced by `fleet_config` so the
+    /// operator knows which file to edit); `None` when no config dir resolved.
+    bindings_path: Option<String>,
     /// Per-cluster resolved configs, memoized so a binding is resolved once.
     resolved: Arc<Mutex<HashMap<String, aws_config::SdkConfig>>>,
 }
@@ -49,7 +52,7 @@ const INSTRUCTIONS: &str = "OAB Studio control plane. Observe deployments and \
 per-instance lifecycle states (6-state model), and drive writes (apply a \
 manifest, scale, delete). Reads are safe; writes mutate live ECS services.";
 
-/// The seven-tool read/write surface. Argument shapes are plain JSON Schema.
+/// The read/write tool surface. Argument shapes are plain JSON Schema.
 fn tools() -> Vec<Tool> {
     vec![
         Tool::new(
@@ -148,6 +151,14 @@ fn tools() -> Vec<Tool> {
                 "properties": {
                     "cluster": { "type": "string", "description": "Resolve the identity the fleet binding for this cluster selects (defaults to the server's configured cluster)." }
                 }
+            })),
+        ),
+        Tool::new(
+            "fleet_config",
+            "List the configured per-fleet managing-credential bindings (ADR: Per-Fleet managing identity): each fleet's name, target cluster, AWS profile and region, and expected_principal, plus the config file path they load from and the server's default cluster. Read-only; the declarative 'declare' side of the config→switch→observe→reconcile loop. Profiles are names, not secrets.",
+            as_map(json!({
+                "type": "object",
+                "properties": {}
             })),
         ),
     ]
@@ -388,6 +399,32 @@ impl OabMcp {
         }))
     }
 
+    /// The declarative fleet-binding config, read-only: which credential manages
+    /// which fleet/cluster, plus the file it loads from and the default cluster.
+    /// The `declare` side of the loop — what a config panel renders and switches
+    /// between. Profiles are names, never secret material.
+    fn t_fleet_config(&self, _args: &Map<String, Value>) -> Result<Value> {
+        let fleets: Vec<Value> = self
+            .bindings
+            .fleets
+            .iter()
+            .map(|b| {
+                json!({
+                    "name": b.name,
+                    "cluster": b.cluster,
+                    "region": b.region,
+                    "profile": b.profile,
+                    "expected_principal": b.expected_principal,
+                })
+            })
+            .collect();
+        Ok(json!({
+            "path": self.bindings_path,
+            "default_cluster": self.default_cluster,
+            "fleets": fleets,
+        }))
+    }
+
     async fn t_delete(&self, args: &Map<String, Value>) -> Result<Value> {
         let cluster = self.cluster(args);
         let resource = args
@@ -454,6 +491,7 @@ impl ServerHandler for OabMcp {
             "deploy_scale" => self.t_scale(args).await,
             "deploy_delete" => self.t_delete(args).await,
             "runtime_context" => self.t_runtime_context(args).await,
+            "fleet_config" => self.t_fleet_config(args),
             other => {
                 return Err(McpError::invalid_params(
                     format!("unknown tool {other:?}"),
@@ -476,8 +514,9 @@ async fn main() -> anyhow::Result<()> {
     let default_cluster = std::env::var("OAB_CLUSTER").unwrap_or_else(|_| "oab".to_string());
     // Fleet → managing-credential bindings are strictly opt-in: a missing file
     // yields an empty set. Warn on stderr only (stdout is the MCP JSON-RPC wire).
-    let bindings = match scp::default_bindings_path() {
-        Some(path) => scp::load_bindings(&path).unwrap_or_else(|e| {
+    let bindings_path = scp::default_bindings_path();
+    let bindings = match &bindings_path {
+        Some(path) => scp::load_bindings(path).unwrap_or_else(|e| {
             eprintln!(
                 "warning: failed to load fleet bindings from {}: {e:#}",
                 path.display()
@@ -490,6 +529,7 @@ async fn main() -> anyhow::Result<()> {
         aws,
         default_cluster,
         bindings: Arc::new(bindings),
+        bindings_path: bindings_path.map(|p| p.display().to_string()),
         resolved: Arc::new(Mutex::new(HashMap::new())),
     };
     let service = server.serve(rmcp::transport::stdio()).await?;
@@ -510,7 +550,7 @@ mod tests {
             .iter()
             .map(|t| t["name"].as_str().expect("tool has a name").to_string())
             .collect();
-        assert_eq!(names.len(), 8);
+        assert_eq!(names.len(), 9);
         for expected in [
             "deploy_list",
             "deploy_get",
@@ -520,6 +560,7 @@ mod tests {
             "deploy_scale",
             "deploy_delete",
             "runtime_context",
+            "fleet_config",
         ] {
             assert!(names.contains(&expected.to_string()), "missing {expected}");
         }
