@@ -5,7 +5,8 @@
 //! tools over **stdio**, so an agent operates the OAB control plane as a
 //! first-class client:
 //!
-//! - read: `deploy_list`, `deploy_get`, `get_agent_states`, `deploy_events`
+//! - read: `deploy_list`, `deploy_get`, `get_agent_states`, `deploy_events`,
+//!   `runtime_context`
 //! - write: `deploy_apply`, `deploy_scale`, `deploy_delete`
 //!
 //! Every tool is a thin dispatch into `studio-cp`; this crate owns only the
@@ -129,6 +130,14 @@ fn tools() -> Vec<Tool> {
                     "namespace": { "type": "string", "description": "Namespace (default \"default\")." }
                 },
                 "required": ["resource", "name"]
+            })),
+        ),
+        Tool::new(
+            "runtime_context",
+            "Show the effective runtime identity/context this control plane resolved: the acting principal (STS caller ARN), its kind (role vs static user), account (scope), region (location), and a best-effort credential-source hint. Read-only; answers \"who am I acting as, against what account?\" and surfaces silent credential fallback.",
+            as_map(json!({
+                "type": "object",
+                "properties": {}
             })),
         ),
     ]
@@ -298,6 +307,18 @@ impl OabMcp {
         )
     }
 
+    async fn t_runtime_context(&self, _args: &Map<String, Value>) -> Result<Value> {
+        let ctx = scp::observe_identity(&self.aws).await?;
+        Ok(json!({
+            "principal": ctx.principal,
+            "principal_kind": ctx.principal_kind,
+            "scope": ctx.scope,
+            "location": ctx.location,
+            "source": ctx.source,
+            "caller_id": ctx.caller_id,
+        }))
+    }
+
     async fn t_delete(&self, args: &Map<String, Value>) -> Result<Value> {
         let cluster = self.cluster(args);
         let resource = args
@@ -356,6 +377,7 @@ impl ServerHandler for OabMcp {
             "deploy_apply" => self.t_apply(args).await,
             "deploy_scale" => self.t_scale(args).await,
             "deploy_delete" => self.t_delete(args).await,
+            "runtime_context" => self.t_runtime_context(args).await,
             other => {
                 return Err(McpError::invalid_params(
                     format!("unknown tool {other:?}"),
@@ -390,7 +412,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn catalog_advertises_the_seven_named_tools() {
+    fn catalog_advertises_the_named_tools() {
         let catalog = serde_json::to_value(tools()).expect("tools serialize");
         let names: Vec<String> = catalog
             .as_array()
@@ -398,7 +420,7 @@ mod tests {
             .iter()
             .map(|t| t["name"].as_str().expect("tool has a name").to_string())
             .collect();
-        assert_eq!(names.len(), 7);
+        assert_eq!(names.len(), 8);
         for expected in [
             "deploy_list",
             "deploy_get",
@@ -407,6 +429,7 @@ mod tests {
             "deploy_apply",
             "deploy_scale",
             "deploy_delete",
+            "runtime_context",
         ] {
             assert!(names.contains(&expected.to_string()), "missing {expected}");
         }

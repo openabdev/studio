@@ -152,6 +152,89 @@ pub async fn observe_events(
     oabctl::fetch_ecs_events(aws_config, log_group, Some(cluster), service, since_ms, limit).await
 }
 
+// ---- Effective runtime identity/context (ADR: Per-Fleet managing identity) --
+//
+// Read-only observation of *who this control plane is actually acting as*. The
+// silent-fallback incident (a static `[default]` profile shadowing the intended
+// task role, an IAM user in the wrong account) had no signal surfacing the
+// resolved principal; this makes it observable — the value a Fleet↔account
+// binding is later reconciled against.
+
+/// The **effective** runtime identity/context a driver resolved. Generic and
+/// read-only; vendor specifics (STS ARN / account / region) are produced here
+/// and surfaced upward unchanged.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeContext {
+    /// Effective acting principal — the STS caller ARN.
+    pub principal: String,
+    /// Coarse kind of the principal: `"role"` (assumed-role / role) vs `"user"`
+    /// (static IAM user) vs `"unknown"`. A `user/...` where a task role was
+    /// expected is the exact shape of the credential-fallback incident.
+    pub principal_kind: String,
+    /// Account / project boundary — the AWS account id.
+    pub scope: String,
+    /// Region / zone the config resolved to (empty if unset).
+    pub location: String,
+    /// Best-effort hint of where the credential came from, inferred from the
+    /// process environment. Not authoritative — richer provenance is later work.
+    pub source: String,
+    /// Opaque STS caller `UserId` (support/correlation).
+    pub caller_id: String,
+}
+
+/// Classify a caller ARN as a role vs a static user vs unknown.
+fn principal_kind(arn: &str) -> &'static str {
+    if arn.contains(":assumed-role/") || arn.contains(":role/") {
+        "role"
+    } else if arn.contains(":user/") {
+        "user"
+    } else {
+        "unknown"
+    }
+}
+
+/// Best-effort classification of the credential source from the environment. An
+/// honest hint only: the AWS SDK does not expose which chain provider won, so we
+/// infer from the same signals that decide it.
+fn credential_source_hint() -> String {
+    if std::env::var_os("AWS_CONTAINER_CREDENTIALS_RELATIVE_URI").is_some()
+        || std::env::var_os("AWS_CONTAINER_CREDENTIALS_FULL_URI").is_some()
+    {
+        "container-credentials (task/pod role)".to_string()
+    } else if std::env::var_os("AWS_ACCESS_KEY_ID").is_some() {
+        "static keys (env)".to_string()
+    } else if let Ok(profile) = std::env::var("AWS_PROFILE") {
+        format!("named profile: {profile}")
+    } else {
+        "default credential chain".to_string()
+    }
+}
+
+/// Observe the **effective** runtime identity/context the given AWS config
+/// resolves to: a live STS `GetCallerIdentity`, the config's region, and an
+/// environment-derived source hint. Read-only — makes the resolved principal
+/// visible (the signal the silent-fallback incident lacked).
+pub async fn observe_identity(
+    aws_config: &aws_config::SdkConfig,
+) -> anyhow::Result<RuntimeContext> {
+    let ident = aws_sdk_sts::Client::new(aws_config)
+        .get_caller_identity()
+        .send()
+        .await?;
+    let principal = ident.arn().unwrap_or_default().to_string();
+    Ok(RuntimeContext {
+        principal_kind: principal_kind(&principal).to_string(),
+        principal,
+        scope: ident.account().unwrap_or_default().to_string(),
+        location: aws_config
+            .region()
+            .map(|r| r.as_ref().to_string())
+            .unwrap_or_default(),
+        source: credential_source_hint(),
+        caller_id: ident.user_id().unwrap_or_default().to_string(),
+    })
+}
+
 // ---- Write side (ADR-2 write model) ------------------------------------
 //
 // The read side above observes; these mutate. Each is a thin passthrough to
@@ -276,5 +359,18 @@ mod tests {
         assert_eq!(d.ready, 1); // one Running, one Starting
         assert_eq!(d.instances[0].phase, AgentState::Running);
         assert_eq!(d.instances[1].phase, AgentState::Starting);
+    }
+
+    #[test]
+    fn principal_kind_distinguishes_role_from_static_user() {
+        assert_eq!(
+            principal_kind("arn:aws:sts::504190915686:assumed-role/openab-orca-task-role/sid"),
+            "role"
+        );
+        assert_eq!(
+            principal_kind("arn:aws:iam::916371022086:user/brett.chien"),
+            "user"
+        );
+        assert_eq!(principal_kind("arn:aws:iam::1:root"), "unknown");
     }
 }
