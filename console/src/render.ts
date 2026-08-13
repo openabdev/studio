@@ -163,6 +163,7 @@ export function fleetConfigHtml(
       <div class="cfg-head">
         <span class="cfg-label">fleets</span>
         ${path}
+        <button class="cfg-edit" type="button" data-action="edit-config">Edit config</button>
       </div>
       ${body}
     </div>`;

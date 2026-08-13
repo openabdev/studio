@@ -19,6 +19,17 @@
     </header>
     <main class="content">
       <section id="config" class="config-wrap"></section>
+      <section id="config-editor" class="cfg-editor-wrap" hidden>
+        <div class="cfg-editor-head">
+          <span class="cfg-label">edit fleets.toml</span>
+          <span class="cfg-editor-path" id="cfg-editor-path"></span>
+          <span class="cfg-editor-spacer"></span>
+          <button class="cfg-btn" id="cfg-save" type="button">Save</button>
+          <button class="cfg-btn cfg-btn-ghost" id="cfg-cancel" type="button">Cancel</button>
+        </div>
+        <div id="cfg-editor-mount" class="cfg-editor-mount"></div>
+        <div class="cfg-editor-error" id="cfg-editor-error" hidden></div>
+      </section>
       <section id="identity" class="identity-wrap"></section>
       <section class="logs">
         <nav class="tabs" id="tabs">

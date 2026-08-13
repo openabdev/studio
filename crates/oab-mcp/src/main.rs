@@ -7,7 +7,7 @@
 //!
 //! - read: `deploy_list`, `deploy_get`, `get_agent_states`, `deploy_events`,
 //!   `runtime_context`, `fleet_config`
-//! - write: `deploy_apply`, `deploy_scale`, `deploy_delete`
+//! - write: `deploy_apply`, `deploy_scale`, `deploy_delete`, `fleet_config_write`
 //!
 //! Every tool is a thin dispatch into `studio-cp`; this crate owns only the
 //! wire (JSON) representation and argument plumbing. Cluster defaults to
@@ -23,7 +23,7 @@ use rmcp::service::{RequestContext, RoleServer};
 use rmcp::{ErrorData as McpError, ServiceExt};
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use studio_cp as scp;
 
 /// The control-plane server. Holds the shared AWS config and the default
@@ -35,8 +35,9 @@ struct OabMcp {
     aws: aws_config::SdkConfig,
     default_cluster: String,
     /// Declarative fleet → managing-credential bindings (ADR: Per-Fleet
-    /// managing identity).
-    bindings: Arc<scp::FleetBindings>,
+    /// managing identity). Behind an `RwLock` so the write tools can hot-reload
+    /// it after editing the config file, without a restart.
+    bindings: Arc<RwLock<scp::FleetBindings>>,
     /// Where the bindings were loaded from (surfaced by `fleet_config` so the
     /// operator knows which file to edit); `None` when no config dir resolved.
     bindings_path: Option<String>,
@@ -161,6 +162,17 @@ fn tools() -> Vec<Tool> {
                 "properties": {}
             })),
         ),
+        Tool::new(
+            "fleet_config_write",
+            "Persist the whole fleet-binding config from raw TOML `text` (what the UI's editor holds), then hot-reload. Validates the text parses before writing — a bad edit never lands on disk — and the bytes are stored verbatim, so comments/layout are preserved. Returns the updated fleet_config. Write tool: overwrites the operator's fleets.toml.",
+            as_map(json!({
+                "type": "object",
+                "properties": {
+                    "text": { "type": "string", "description": "Full TOML document for fleets.toml (a list of [[fleet]] tables)." }
+                },
+                "required": ["text"]
+            })),
+        ),
     ]
 }
 
@@ -205,9 +217,14 @@ impl OabMcp {
     /// cluster's calls run under its credential, not whatever ambient
     /// `[default]` the chain resolves first.
     async fn aws_for(&self, cluster: &str) -> aws_config::SdkConfig {
-        let binding = match self.bindings.for_cluster(cluster) {
-            Some(b) if b.profile.is_some() || b.region.is_some() => b.clone(),
-            _ => return self.aws.clone(),
+        // Short read-lock: clone the governing binding, then drop the guard
+        // before any await (never hold a std lock across .await).
+        let binding = {
+            let guard = self.bindings.read().unwrap();
+            match guard.for_cluster(cluster) {
+                Some(b) if b.profile.is_some() || b.region.is_some() => b.clone(),
+                _ => return self.aws.clone(),
+            }
         };
         if let Some(cfg) = self.resolved.lock().unwrap().get(cluster) {
             return cfg.clone();
@@ -370,21 +387,27 @@ impl OabMcp {
         let cluster = self.cluster(args);
         let aws = self.aws_for(&cluster).await;
         let ctx = scp::observe_identity(&aws).await?;
-        let binding = self.bindings.for_cluster(&cluster);
-        let expected = binding.and_then(|b| b.expected_principal.clone());
+        // Snapshot the governing binding under a short read-lock (no await held).
+        let (binding, expected) = {
+            let guard = self.bindings.read().unwrap();
+            match guard.for_cluster(&cluster) {
+                Some(b) => (
+                    Some(json!({
+                        "name": b.name,
+                        "profile": b.profile,
+                        "region": b.region,
+                        "expected_principal": b.expected_principal,
+                    })),
+                    b.expected_principal.clone(),
+                ),
+                None => (None, None),
+            }
+        };
         // Reconcile: expected (declared) vs actual (resolved). null when no
         // expectation is declared. Non-blocking — a warning signal, not a gate.
         let identity_matches = expected
             .as_ref()
             .map(|e| scp::principal_matches(e, &ctx.principal));
-        let binding = binding.map(|b| {
-            json!({
-                "name": b.name,
-                "profile": b.profile,
-                "region": b.region,
-                "expected_principal": b.expected_principal,
-            })
-        });
         Ok(json!({
             "cluster": cluster,
             "principal": ctx.principal,
@@ -406,6 +429,8 @@ impl OabMcp {
     fn t_fleet_config(&self, _args: &Map<String, Value>) -> Result<Value> {
         let fleets: Vec<Value> = self
             .bindings
+            .read()
+            .unwrap()
             .fleets
             .iter()
             .map(|b| {
@@ -418,11 +443,44 @@ impl OabMcp {
                 })
             })
             .collect();
+        // Raw file text so the UI's TOML editor loads the actual file (comments
+        // and all); empty when there's no path or the file doesn't exist yet.
+        let text = match &self.bindings_path {
+            Some(p) => scp::read_bindings_text(std::path::Path::new(p)).unwrap_or_default(),
+            None => String::new(),
+        };
         Ok(json!({
             "path": self.bindings_path,
             "default_cluster": self.default_cluster,
             "fleets": fleets,
+            "text": text,
         }))
+    }
+
+    /// The config file to edit, or an error when no config dir resolved (the
+    /// write tool needs a concrete path).
+    fn bindings_path(&self) -> Result<std::path::PathBuf> {
+        self.bindings_path
+            .as_ref()
+            .map(std::path::PathBuf::from)
+            .ok_or_else(|| anyhow::anyhow!("no fleet config path resolved; cannot write bindings"))
+    }
+
+    /// Write tool: persist the whole `fleets.toml` from the editor's `text`
+    /// after validating it parses (a bad edit never lands on disk), then
+    /// hot-reload — swap in the reparsed bindings and drop the memoized
+    /// per-cluster configs (a changed profile/region invalidates them). Returns
+    /// the new `fleet_config`.
+    fn t_fleet_write(&self, args: &Map<String, Value>) -> Result<Value> {
+        let text = args
+            .get("text")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("missing required arg: text"))?;
+        let path = self.bindings_path()?;
+        let next = scp::save_bindings_text(&path, text)?;
+        *self.bindings.write().unwrap() = next;
+        self.resolved.lock().unwrap().clear();
+        self.t_fleet_config(args)
     }
 
     async fn t_delete(&self, args: &Map<String, Value>) -> Result<Value> {
@@ -492,6 +550,7 @@ impl ServerHandler for OabMcp {
             "deploy_delete" => self.t_delete(args).await,
             "runtime_context" => self.t_runtime_context(args).await,
             "fleet_config" => self.t_fleet_config(args),
+            "fleet_config_write" => self.t_fleet_write(args),
             other => {
                 return Err(McpError::invalid_params(
                     format!("unknown tool {other:?}"),
@@ -528,7 +587,7 @@ async fn main() -> anyhow::Result<()> {
     let server = OabMcp {
         aws,
         default_cluster,
-        bindings: Arc::new(bindings),
+        bindings: Arc::new(RwLock::new(bindings)),
         bindings_path: bindings_path.map(|p| p.display().to_string()),
         resolved: Arc::new(Mutex::new(HashMap::new())),
     };
@@ -550,7 +609,7 @@ mod tests {
             .iter()
             .map(|t| t["name"].as_str().expect("tool has a name").to_string())
             .collect();
-        assert_eq!(names.len(), 9);
+        assert_eq!(names.len(), 10);
         for expected in [
             "deploy_list",
             "deploy_get",
@@ -561,6 +620,7 @@ mod tests {
             "deploy_delete",
             "runtime_context",
             "fleet_config",
+            "fleet_config_write",
         ] {
             assert!(names.contains(&expected.to_string()), "missing {expected}");
         }

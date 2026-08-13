@@ -154,12 +154,23 @@ describe("fleetConfigHtml", () => {
 
   it("renders an empty state with the config path when no fleets", () => {
     const html = fleetConfigHtml(
-      { path: "~/.config/oab-studio/fleets.toml", default_cluster: "oab", fleets: [] },
+      {
+        path: "~/.config/oab-studio/fleets.toml",
+        default_cluster: "oab",
+        fleets: [],
+        text: "",
+      },
       "oab",
     );
     expect(html).toContain("No fleets configured");
     expect(html).toContain("fleets.toml");
     expect(html).not.toContain("cfg-fleet");
+  });
+
+  it("always offers the Edit config action (even with fleets)", () => {
+    expect(fleetConfigHtml(FIXTURE_FLEET_CONFIG, "oab")).toContain(
+      'data-action="edit-config"',
+    );
   });
 
   it("renders an unavailable state for null", () => {
