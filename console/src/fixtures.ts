@@ -83,4 +83,19 @@ export const FIXTURE_FLEET_CONFIG: FleetConfig = {
       expected_principal: null,
     },
   ],
+  text: `# OAB Studio fleet bindings — which credential manages which fleet.
+
+[[fleet]]
+name = "prod"
+cluster = "oab"
+region = "ap-east-2"
+profile = "orca-prod"
+expected_principal = "arn:aws:iam::504190915686:role/openab-orca-task-role"
+
+[[fleet]]
+name = "staging"
+cluster = "oab-staging"
+region = "ap-southeast-1"
+profile = "orca-staging"
+`,
 };

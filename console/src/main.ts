@@ -2,6 +2,10 @@ import { defaultSource } from "./source";
 import { renderRoster, renderIdentity, renderFleetConfig } from "./render";
 import type { FleetConfig } from "./types";
 import { createPane, bindBackend, type Level } from "./log";
+import { EditorView, basicSetup } from "codemirror";
+import { EditorState } from "@codemirror/state";
+import { StreamLanguage } from "@codemirror/language";
+import { toml } from "@codemirror/legacy-modes/mode/toml";
 
 const POLL_MS = 5000;
 const DEFAULT_CLUSTER = "oab";
@@ -15,6 +19,12 @@ let fleetConfig: FleetConfig | null = null;
 const roster = document.getElementById("roster");
 const identityEl = document.getElementById("identity");
 const configEl = document.getElementById("config");
+const editorSection = document.getElementById("config-editor");
+const editorMount = document.getElementById("cfg-editor-mount");
+const editorError = document.getElementById("cfg-editor-error");
+const editorPathEl = document.getElementById("cfg-editor-path");
+const saveBtn = document.getElementById("cfg-save") as HTMLButtonElement | null;
+const cancelBtn = document.getElementById("cfg-cancel") as HTMLButtonElement | null;
 const clusterLabel = document.getElementById("cluster-label");
 const pollStatus = document.getElementById("poll-status");
 const logEl = document.getElementById("log");
@@ -138,10 +148,74 @@ function selectCluster(cluster: string): void {
   void tick();
 }
 
-// One delegated listener: a click on any fleet button switches to its cluster.
+// ---- fleets.toml editor (ADR #19 slice C: the "edit" side) -------------------
+// A CodeMirror TOML editor over the raw config file. Kept imperative (CM owns
+// real DOM) and separate from the re-rendered config panel, so switching fleets
+// never wipes an open editor.
+let editorView: EditorView | null = null;
+
+function showEditorError(msg: string | null): void {
+  if (!editorError) return;
+  editorError.textContent = msg ?? "";
+  editorError.hidden = !msg;
+}
+
+function openEditor(): void {
+  if (!editorSection || !editorMount) return;
+  showEditorError(null);
+  if (editorPathEl) editorPathEl.textContent = fleetConfig?.path ?? "";
+  editorView?.destroy();
+  editorView = new EditorView({
+    parent: editorMount,
+    state: EditorState.create({
+      doc: fleetConfig?.text ?? "",
+      extensions: [basicSetup, StreamLanguage.define(toml)],
+    }),
+  });
+  editorSection.hidden = false;
+  editorView.focus();
+}
+
+function closeEditor(): void {
+  editorView?.destroy();
+  editorView = null;
+  if (editorSection) editorSection.hidden = true;
+  showEditorError(null);
+}
+
+async function saveEditor(): Promise<void> {
+  if (!editorView || !saveBtn) return;
+  const text = editorView.state.doc.toString();
+  saveBtn.disabled = true;
+  showEditorError(null);
+  try {
+    // The backend validates the TOML and rejects (without writing) on error.
+    fleetConfig = await source.writeFleetConfig(text);
+    if (configEl) renderFleetConfig(configEl, fleetConfig, activeCluster);
+    note("info", "fleet config saved");
+    closeEditor();
+    // A binding change may alter the active fleet's credential — re-observe.
+    void refreshIdentity();
+  } catch (e) {
+    showEditorError(`save failed — ${errText(e)}`);
+  } finally {
+    saveBtn.disabled = false;
+  }
+}
+
+saveBtn?.addEventListener("click", () => void saveEditor());
+cancelBtn?.addEventListener("click", () => closeEditor());
+
+// One delegated listener on the config panel: "Edit config" opens the editor;
+// a click on any fleet button switches to its cluster.
 if (configEl) {
   configEl.addEventListener("click", (ev) => {
-    const btn = (ev.target as HTMLElement).closest<HTMLElement>("[data-cluster]");
+    const target = ev.target as HTMLElement;
+    if (target.closest('[data-action="edit-config"]')) {
+      openEditor();
+      return;
+    }
+    const btn = target.closest<HTMLElement>("[data-cluster]");
     if (btn?.dataset.cluster) selectCluster(btn.dataset.cluster);
   });
 }

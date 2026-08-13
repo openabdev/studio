@@ -62,6 +62,9 @@ export interface FleetConfig {
   path: string | null;
   default_cluster: string;
   fleets: FleetConfigEntry[];
+  // Raw TOML text of the config file (what the editor loads/saves); empty when
+  // no file exists yet.
+  text: string;
 }
 
 // The effective runtime identity/context the control plane resolved for a

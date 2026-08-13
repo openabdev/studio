@@ -371,6 +371,53 @@ fn role_identity(arn: &str) -> Option<(String, String)> {
     Some((account, name))
 }
 
+// ---- Fleet-binding editing (raw-text, whole-file) ------------------------
+//
+// The write half of the config panel: the operator edits `fleets.toml` as text
+// (a TOML editor in the UI), and we persist their exact bytes after validating
+// they parse — so comments and layout are preserved trivially (verbatim write),
+// with no format-preserving library. Still operator credential *selection*, not
+// per-caller authz (ADR-2 authz stays deferred).
+
+/// The raw text of the bindings file, or an empty string when it doesn't exist
+/// yet (so the editor opens a blank buffer rather than erroring).
+pub fn read_bindings_text(path: &std::path::Path) -> anyhow::Result<String> {
+    match std::fs::read_to_string(path) {
+        Ok(t) => Ok(t),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Write `text` to `path` atomically: create the parent dir if needed, write a
+/// sibling temp file, then rename over the target so a crash can't leave a
+/// half-written config.
+pub fn write_bindings_atomic(path: &std::path::Path, text: &str) -> anyhow::Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let name = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("fleets.toml");
+    let tmp = path.with_file_name(format!("{name}.tmp"));
+    std::fs::write(&tmp, text)?;
+    std::fs::rename(&tmp, path)?;
+    Ok(())
+}
+
+/// Validate `text` parses as a bindings file and, if so, persist it verbatim,
+/// returning the parsed set for the caller to hot-reload. A parse error is
+/// returned **before** anything is written, so a bad edit never lands on disk.
+pub fn save_bindings_text(
+    path: &std::path::Path,
+    text: &str,
+) -> anyhow::Result<FleetBindings> {
+    let parsed: FleetBindings = toml::from_str(text)?;
+    write_bindings_atomic(path, text)?;
+    Ok(parsed)
+}
+
 // ---- Write side (ADR-2 write model) ------------------------------------
 //
 // The read side above observes; these mutate. Each is a thin passthrough to
@@ -568,6 +615,40 @@ profile = "appier-sg"
         assert_eq!(prod.profile.as_deref(), Some("orca-prod"));
         assert_eq!(prod.region.as_deref(), Some("ap-east-2"));
         assert!(b.for_cluster("nope").is_none());
+    }
+
+    #[test]
+    fn save_bindings_round_trips_and_preserves_text_verbatim() {
+        let dir = std::env::temp_dir().join(format!("oab-fleets-save-{}", std::process::id()));
+        let path = dir.join("fleets.toml");
+        let _ = std::fs::remove_dir_all(&dir);
+        let text = "# my fleets\n\n[[fleet]]\nname = \"prod\"\ncluster = \"oab\"\nprofile = \"orca-prod\"\n";
+        let parsed = save_bindings_text(&path, text).expect("save");
+        assert_eq!(parsed.fleets.len(), 1);
+        assert_eq!(parsed.for_cluster("oab").unwrap().profile.as_deref(), Some("orca-prod"));
+        // written verbatim — comment and layout preserved exactly
+        assert_eq!(read_bindings_text(&path).unwrap(), text);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn save_bindings_rejects_invalid_toml_without_writing() {
+        let dir = std::env::temp_dir().join(format!("oab-fleets-bad-{}", std::process::id()));
+        let path = dir.join("fleets.toml");
+        let _ = std::fs::remove_dir_all(&dir);
+        // not-a-table for `fleet` — must fail to parse as FleetBindings
+        let bad = "fleet = \"nope\"\n";
+        assert!(save_bindings_text(&path, bad).is_err());
+        // nothing was written
+        assert!(!path.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn read_bindings_text_missing_file_is_empty() {
+        let path = std::env::temp_dir().join("oab-fleets-does-not-exist-xyz.toml");
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(read_bindings_text(&path).unwrap(), "");
     }
 
     #[test]
