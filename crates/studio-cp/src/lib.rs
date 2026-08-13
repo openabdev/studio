@@ -120,20 +120,45 @@ pub fn build_deployment(svc: &ServiceStatus, instances: &[InstanceStatus]) -> De
     }
 }
 
+/// The canonical ECS service name for a Deployment: `oab-{namespace}-{name}`.
+///
+/// ECS identity APIs (`ListTasks` / `DescribeServices` / `UpdateService`) key on
+/// this full name — never the display short name (`orca`). Resolve to it before
+/// any call that filters by `service_name`, or ECS 404s with
+/// `ServiceNotFoundException`.
+fn canonical_service_name(namespace: &str, name: &str) -> String {
+    format!("oab-{namespace}-{name}")
+}
+
+/// Find the service a caller's `service` selector refers to, accepting **either**
+/// the full ECS name `oab-{ns}-{name}` **or** the display short name `{name}`.
+/// Centralising this is what lets [`observe_deployment`] map a short name back to
+/// the full ECS name before it reaches a `service_name` filter.
+fn find_service<'a>(service: &str, services: &'a [ServiceStatus]) -> Option<&'a ServiceStatus> {
+    services
+        .iter()
+        .find(|s| service == canonical_service_name(&s.namespace, &s.name) || service == s.name)
+}
+
 /// Observe one Deployment end-to-end: service-level counters + per-Instance
-/// phases. `service` is the ECS service name (`oab-{namespace}-{name}`).
+/// phases. `service` may be the full ECS name (`oab-{namespace}-{name}`) **or**
+/// the display short name (`{name}`) — both resolve to the same Deployment.
 pub async fn observe_deployment(
     aws_config: &aws_config::SdkConfig,
     cluster: &str,
     service: &str,
 ) -> anyhow::Result<Option<Deployment>> {
-    let svc = oabctl::service_status(aws_config, cluster)
-        .await?
-        .into_iter()
-        .find(|s| service == format!("oab-{}-{}", s.namespace, s.name) || service == s.name);
-    let Some(svc) = svc else { return Ok(None) };
-    let instances = oabctl::instance_status(aws_config, cluster, service).await?;
-    Ok(Some(build_deployment(&svc, &instances)))
+    let services = oabctl::service_status(aws_config, cluster).await?;
+    let Some(svc) = find_service(service, &services) else {
+        return Ok(None);
+    };
+    // `service` may be the display short name (e.g. `orca`); ECS `ListTasks`
+    // only accepts the full name, so query by the resolved canonical name rather
+    // than passing the caller's string straight through — passing a short name
+    // through here is exactly what surfaced as `ServiceNotFoundException`.
+    let full = canonical_service_name(&svc.namespace, &svc.name);
+    let instances = oabctl::instance_status(aws_config, cluster, &full).await?;
+    Ok(Some(build_deployment(svc, &instances)))
 }
 
 /// Observe recent ECS control-plane **events** for the cluster (optionally one
@@ -464,6 +489,34 @@ mod tests {
             desired,
             status: "ACTIVE".into(),
         }
+    }
+
+    fn svc_named(namespace: &str, name: &str) -> ServiceStatus {
+        ServiceStatus {
+            name: name.into(),
+            namespace: namespace.into(),
+            ..svc(1, 1)
+        }
+    }
+
+    #[test]
+    fn service_selector_resolves_to_full_ecs_name() {
+        let services = vec![svc_named("prod", "orca"), svc_named("prod", "mira")];
+
+        // Regression: a display short name (`orca`) must resolve to the FULL ECS
+        // service name before it reaches `instance_status`/`ListTasks`, or ECS
+        // 404s with `ServiceNotFoundException`. Pre-fix, `observe_deployment`
+        // matched on the short name but then queried tasks with it verbatim.
+        let s = find_service("orca", &services).expect("short name matches");
+        assert_eq!(canonical_service_name(&s.namespace, &s.name), "oab-prod-orca");
+
+        // The full name resolves to itself.
+        let s = find_service("oab-prod-mira", &services).expect("full name matches");
+        assert_eq!(canonical_service_name(&s.namespace, &s.name), "oab-prod-mira");
+
+        // An unknown selector is a clean miss — the Deployment then reports
+        // not-found rather than issuing a doomed ECS query.
+        assert!(find_service("nope", &services).is_none());
     }
 
     #[test]

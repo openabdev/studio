@@ -151,6 +151,18 @@ pub async fn instance_status(
     cluster: &str,
     service: &str,
 ) -> Result<Vec<InstanceStatus>> {
+    // ECS `ListTasks` filters by the FULL service name (`oab-{ns}-{name}`); a
+    // display short name (`orca`) silently 404s as `ServiceNotFoundException`.
+    // Fail loud at the boundary so the mistake is unambiguous rather than an
+    // opaque AWS error — callers resolve the full name in
+    // `studio_cp::observe_deployment` before reaching here.
+    if !service.starts_with("oab-") {
+        anyhow::bail!(
+            "instance_status: expected full ECS service name `oab-<ns>-<name>`, got `{service}` \
+             — a short/display name never matches an ECS service_name filter"
+        );
+    }
+
     let ecs = aws_sdk_ecs::Client::new(aws_config);
 
     // List task ARNs for the service (paginated).
