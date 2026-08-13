@@ -1,4 +1,9 @@
-import type { AgentState, Deployment, RuntimeContext } from "./types";
+import type {
+  AgentState,
+  Deployment,
+  FleetConfig,
+  RuntimeContext,
+} from "./types";
 
 const STATE_CLASS: Record<AgentState, string> = {
   Starting: "s-starting",
@@ -112,4 +117,61 @@ export function identityHtml(ctx: RuntimeContext | null): string {
 
 export function renderIdentity(el: HTMLElement, ctx: RuntimeContext | null): void {
   el.innerHTML = identityHtml(ctx);
+}
+
+// ---- Fleet config panel (ADR #19: the "declare" side) ------------------------
+
+function credLine(f: FleetConfig["fleets"][number]): string {
+  // Profile-first (assume-role is later work); region pins the fleet's location.
+  const parts = [f.profile ?? "default chain", f.region].filter(
+    (p): p is string => Boolean(p),
+  );
+  return parts.map(escapeHtml).join(" · ");
+}
+
+function fleetButton(
+  f: FleetConfig["fleets"][number],
+  activeCluster: string,
+): string {
+  const active = f.cluster === activeCluster;
+  const cls = active ? "cfg-fleet is-active" : "cfg-fleet";
+  return `<button class="${cls}" type="button" data-cluster="${escapeHtml(f.cluster)}" aria-pressed="${active}">
+      <span class="cfg-name">${escapeHtml(f.name || f.cluster)}</span>
+      <span class="cfg-cluster">${escapeHtml(f.cluster)}</span>
+      <span class="cfg-cred">${credLine(f)}</span>
+    </button>`;
+}
+
+// Pure: the fleet-binding config -> the config panel HTML. Each fleet is a
+// button that switches the active cluster (the "switch" step). `activeCluster`
+// marks which one is currently selected. An empty config still renders — it
+// shows where to add bindings, which is exactly the "no panel for config" gap.
+export function fleetConfigHtml(
+  cfg: FleetConfig | null,
+  activeCluster: string,
+): string {
+  if (!cfg) {
+    return `<div class="config"><span class="muted">fleet config unavailable</span></div>`;
+  }
+  const path = cfg.path
+    ? `<span class="cfg-path" title="edit this file to configure fleets"><code>${escapeHtml(cfg.path)}</code></span>`
+    : "";
+  const body = cfg.fleets.length
+    ? `<div class="cfg-list">${cfg.fleets.map((f) => fleetButton(f, activeCluster)).join("")}</div>`
+    : `<p class="cfg-empty">No fleets configured — add <code>[[fleet]]</code> entries to the config file above. Managing <code>${escapeHtml(cfg.default_cluster)}</code> via the default credential chain.</p>`;
+  return `<div class="config">
+      <div class="cfg-head">
+        <span class="cfg-label">fleets</span>
+        ${path}
+      </div>
+      ${body}
+    </div>`;
+}
+
+export function renderFleetConfig(
+  el: HTMLElement,
+  cfg: FleetConfig | null,
+  activeCluster: string,
+): void {
+  el.innerHTML = fleetConfigHtml(cfg, activeCluster);
 }

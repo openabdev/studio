@@ -1,12 +1,20 @@
 import { defaultSource } from "./source";
-import { renderRoster, renderIdentity } from "./render";
+import { renderRoster, renderIdentity, renderFleetConfig } from "./render";
+import type { FleetConfig } from "./types";
 import { createPane, bindBackend, type Level } from "./log";
 
 const POLL_MS = 5000;
-const CLUSTER = "oab";
+const DEFAULT_CLUSTER = "oab";
+
+// The active fleet's cluster drives every read (roster + identity) and, through
+// oab-mcp's per-cluster binding, which credential/account we manage as. Selecting
+// a fleet in the config panel is the "switch" step of the ADR #19 loop.
+let activeCluster = DEFAULT_CLUSTER;
+let fleetConfig: FleetConfig | null = null;
 
 const roster = document.getElementById("roster");
 const identityEl = document.getElementById("identity");
+const configEl = document.getElementById("config");
 const clusterLabel = document.getElementById("cluster-label");
 const pollStatus = document.getElementById("poll-status");
 const logEl = document.getElementById("log");
@@ -67,7 +75,7 @@ let lastError = "";
 async function tick(): Promise<void> {
   if (!roster) return;
   try {
-    const deployments = await source.listDeployments(CLUSTER);
+    const deployments = await source.listDeployments(activeCluster);
     renderRoster(roster, deployments);
     if (lastError) {
       note("info", `roster recovered — ${deployments.length} deployment(s)`);
@@ -96,11 +104,46 @@ async function tick(): Promise<void> {
 async function refreshIdentity(): Promise<void> {
   if (!identityEl) return;
   try {
-    renderIdentity(identityEl, await source.runtimeContext(CLUSTER));
+    renderIdentity(identityEl, await source.runtimeContext(activeCluster));
   } catch (e) {
     note("error", `identity: ${errText(e)}`);
     renderIdentity(identityEl, null);
   }
+}
+
+// The fleet-binding config panel (ADR #19 "declare"). Fetched once on boot; the
+// bindings are read at core startup, so they don't change under us at runtime.
+async function refreshConfig(): Promise<void> {
+  if (!configEl) return;
+  try {
+    fleetConfig = await source.fleetConfig();
+    renderFleetConfig(configEl, fleetConfig, activeCluster);
+  } catch (e) {
+    note("error", `fleet config: ${errText(e)}`);
+    fleetConfig = null;
+    renderFleetConfig(configEl, null, activeCluster);
+  }
+}
+
+// Switch the active fleet: re-point every read at its cluster (and thus its
+// bound credential) and refresh immediately, so "switch fleet" == "switch
+// managing account" the ADR calls for. No-op if it's already active.
+function selectCluster(cluster: string): void {
+  if (!cluster || cluster === activeCluster) return;
+  activeCluster = cluster;
+  if (clusterLabel) clusterLabel.textContent = activeCluster;
+  note("info", `switched to cluster "${activeCluster}"`);
+  if (configEl) renderFleetConfig(configEl, fleetConfig, activeCluster);
+  void refreshIdentity();
+  void tick();
+}
+
+// One delegated listener: a click on any fleet button switches to its cluster.
+if (configEl) {
+  configEl.addEventListener("click", (ev) => {
+    const btn = (ev.target as HTMLElement).closest<HTMLElement>("[data-cluster]");
+    if (btn?.dataset.cluster) selectCluster(btn.dataset.cluster);
+  });
 }
 
 // The Tauri command bridge — present only inside the desktop shell (the browser
@@ -188,10 +231,11 @@ function setupUpdater(): void {
 async function boot(): Promise<void> {
   note("info", `OAB Studio ${BUILD} (built ${__BUILD_TIME__})`);
   if (activity && mcp) await bindBackend(activity, mcp);
-  if (clusterLabel) clusterLabel.textContent = CLUSTER;
-  note("info", `polling cluster "${CLUSTER}" every ${POLL_MS / 1000}s`);
+  if (clusterLabel) clusterLabel.textContent = activeCluster;
+  note("info", `polling cluster "${activeCluster}" every ${POLL_MS / 1000}s`);
   setupUpdater();
   await startCore();
+  void refreshConfig();
   void refreshIdentity();
   void tick();
   window.setInterval(() => void tick(), POLL_MS);

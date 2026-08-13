@@ -354,3 +354,74 @@ td.counts.warn {
   margin-top: 8px;
   color: var(--ok);
 }
+
+/* ---- Fleet config panel (ADR #19: the "declare" side) ---- */
+.config-wrap {
+  margin: 0 0 12px;
+}
+.config {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  padding: 10px 12px;
+  font-size: 13px;
+}
+.cfg-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.cfg-label {
+  color: var(--muted);
+  text-transform: uppercase;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+}
+.cfg-path {
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.cfg-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 8px;
+}
+.cfg-fleet {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  text-align: left;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg);
+  color: var(--text);
+  padding: 8px 10px;
+  font: inherit;
+}
+.cfg-fleet:hover {
+  border-color: var(--s-starting);
+}
+.cfg-fleet.is-active {
+  border-left-color: var(--s-starting);
+  box-shadow: inset 0 0 0 1px var(--s-starting);
+}
+.cfg-name {
+  font-weight: 600;
+}
+.cfg-cluster {
+  color: var(--muted);
+  font-size: 12px;
+}
+.cfg-cred {
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.cfg-empty {
+  color: var(--muted);
+  margin: 0;
+}

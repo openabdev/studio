@@ -1,4 +1,4 @@
-import type { Deployment, RuntimeContext } from "./types";
+import type { Deployment, FleetConfig, RuntimeContext } from "./types";
 
 // Stand-in data so the console renders without a live core. Mirrors the shape
 // studio-cp's `deploy_list` / `deploy_get` return. Swapped for the Tauri source
@@ -58,4 +58,29 @@ export const FIXTURE_RUNTIME_CONTEXT: RuntimeContext = {
   },
   expected_principal: "arn:aws:iam::504190915686:role/openab-orca-task-role",
   identity_matches: true,
+};
+
+// Stand-in fleet-binding config so the browser build renders the config panel
+// without a core. Two fleets on different accounts — the shape the panel lets
+// the operator switch between.
+export const FIXTURE_FLEET_CONFIG: FleetConfig = {
+  path: "~/.config/oab-studio/fleets.toml",
+  default_cluster: "oab",
+  fleets: [
+    {
+      name: "prod",
+      cluster: "oab",
+      region: "ap-east-2",
+      profile: "orca-prod",
+      expected_principal:
+        "arn:aws:iam::504190915686:role/openab-orca-task-role",
+    },
+    {
+      name: "staging",
+      cluster: "oab-staging",
+      region: "ap-southeast-1",
+      profile: "orca-staging",
+      expected_principal: null,
+    },
+  ],
 };

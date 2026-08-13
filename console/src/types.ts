@@ -43,6 +43,27 @@ export interface FleetBinding {
   expected_principal: string | null;
 }
 
+// One configured fleet → managing-credential binding — mirrors an entry of
+// oab-mcp's `fleet_config` tool (ADR #19). `cluster` is the switch key: selecting
+// a fleet makes subsequent calls target its cluster (and thus its credential).
+export interface FleetConfigEntry {
+  name: string;
+  cluster: string;
+  region: string | null;
+  profile: string | null;
+  expected_principal: string | null;
+}
+
+// The declarative fleet-binding config — mirrors oab-mcp's `fleet_config` tool
+// (ADR #19). `path` is the file the bindings load from (so the panel can show
+// where to edit them); `default_cluster` is the fallback target when no fleet is
+// selected.
+export interface FleetConfig {
+  path: string | null;
+  default_cluster: string;
+  fleets: FleetConfigEntry[];
+}
+
 // The effective runtime identity/context the control plane resolved for a
 // cluster — mirrors oab-mcp's `runtime_context` tool (ADR #19). `identity_matches`
 // is `null` when the binding declares no `expected_principal`.
