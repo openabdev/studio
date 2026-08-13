@@ -61,6 +61,7 @@ pub fn instance_phase(inst: &InstanceStatus, verified_before: bool) -> AgentStat
         last_status,
         desired_status_stopped: inst.desired_stopped,
         health,
+        health_check_defined: inst.health_check_defined,
         lease_valid: true,    // CP-level, not ECS-observable
         accepting_work: true, // CP-level admission, not ECS-observable
     };
@@ -480,6 +481,7 @@ mod tests {
             id: "arn".into(),
             last_status: last.into(),
             health_status: health.into(),
+            health_check_defined: false, // default: no ECS health check (common for OAB agents)
             desired_stopped: stopped,
             stop_code: None,
         }
@@ -507,6 +509,26 @@ mod tests {
             instance_phase(&inst("RUNNING", "UNHEALTHY", false), true),
             AgentState::Unhealthy
         );
+    }
+
+    #[test]
+    fn running_unknown_without_health_check_maps_to_running() {
+        // The reported bug: orca/mira run fine but define no ECS health check, so
+        // healthStatus is UNKNOWN forever — that must read as Running, not Unhealthy.
+        assert_eq!(
+            instance_phase(&inst("RUNNING", "UNKNOWN", false), true),
+            AgentState::Running
+        );
+    }
+
+    #[test]
+    fn running_unknown_with_defined_health_check_maps_to_unhealthy() {
+        // A *defined* check reporting UNKNOWN (lost signal) still fences.
+        let i = InstanceStatus {
+            health_check_defined: true,
+            ..inst("RUNNING", "UNKNOWN", false)
+        };
+        assert_eq!(instance_phase(&i, true), AgentState::Unhealthy);
     }
 
     #[test]
