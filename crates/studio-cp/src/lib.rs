@@ -260,15 +260,26 @@ pub async fn observe_identity(
 // (observed membership/lease state); the two may fold together later. Selecting
 // a binding is credential *selection*, not per-caller authz.
 
-/// A declarative binding of a managed fleet/cluster to the credential that
-/// should manage it. Profile-first (assume-role is later work).
+/// A declarative binding of a managed fleet to the credential that should manage
+/// it, plus the fleet's members. Profile-first (assume-role is later work).
+///
+/// A fleet groups agents by *usage*, decoupled from the physical cluster: two
+/// fleets may share a `cluster` (and one credential) while listing different
+/// `members`. `members` empty ⇒ the fleet covers the whole cluster (back-compat
+/// with the old cluster-granular binding).
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct FleetBinding {
-    /// Fleet label (display / selection).
+    /// Fleet name — its identity (the `[fleet.<name>]` key, or the `name` field
+    /// of a legacy `[[fleet]]` entry).
     #[serde(default)]
     pub name: String,
-    /// ECS cluster this binding governs — the match key against a call's target.
+    /// ECS cluster this fleet's members live in (drives the managing credential;
+    /// credential resolution stays cluster/account-granular).
     pub cluster: String,
+    /// Service names in this fleet (e.g. `oab-prod-orca`). Empty ⇒ the whole
+    /// cluster (legacy behavior).
+    #[serde(default)]
+    pub members: Vec<String>,
     /// Region to pin for this fleet.
     #[serde(default)]
     pub region: Option<String>,
@@ -281,17 +292,83 @@ pub struct FleetBinding {
     pub expected_principal: Option<String>,
 }
 
-/// Parsed fleet-binding file: a list of `[[fleet]]` tables.
+/// The body of a `[fleet.<name>]` table — the fields of a [`FleetBinding`] minus
+/// `name`, which is the table key.
+#[derive(Debug, Clone, serde::Deserialize)]
+struct FleetBody {
+    cluster: String,
+    #[serde(default)]
+    members: Vec<String>,
+    #[serde(default)]
+    region: Option<String>,
+    #[serde(default)]
+    profile: Option<String>,
+    #[serde(default)]
+    expected_principal: Option<String>,
+}
+
+/// Accepts both the current `[fleet.<name>]` map form and the legacy `[[fleet]]`
+/// array form, so an existing config keeps parsing unchanged.
+#[derive(serde::Deserialize)]
+#[serde(untagged)]
+enum FleetsDoc {
+    /// `[fleet.<name>]` — name is the table key.
+    Named {
+        #[serde(default)]
+        fleet: std::collections::BTreeMap<String, FleetBody>,
+    },
+    /// `[[fleet]]` — name is a field (legacy).
+    Array {
+        #[serde(default)]
+        fleet: Vec<FleetBinding>,
+    },
+}
+
+impl From<FleetsDoc> for FleetBindings {
+    fn from(doc: FleetsDoc) -> Self {
+        let fleets = match doc {
+            FleetsDoc::Named { fleet } => fleet
+                .into_iter()
+                .map(|(name, b)| FleetBinding {
+                    name,
+                    cluster: b.cluster,
+                    members: b.members,
+                    region: b.region,
+                    profile: b.profile,
+                    expected_principal: b.expected_principal,
+                })
+                .collect(),
+            FleetsDoc::Array { fleet } => fleet,
+        };
+        FleetBindings { fleets }
+    }
+}
+
+/// Parsed fleet-binding file, canonicalized to a list. Deserializes from either
+/// `[fleet.<name>]` (current) or `[[fleet]]` (legacy).
 #[derive(Debug, Clone, Default, serde::Deserialize)]
+#[serde(from = "FleetsDoc")]
 pub struct FleetBindings {
-    #[serde(default, rename = "fleet")]
     pub fleets: Vec<FleetBinding>,
 }
 
 impl FleetBindings {
-    /// The binding governing `cluster`, if any (first match wins).
+    /// The fleet governing `cluster`, if any (first match) — used for credential
+    /// resolution, which stays cluster/account-granular.
     pub fn for_cluster(&self, cluster: &str) -> Option<&FleetBinding> {
         self.fleets.iter().find(|b| b.cluster == cluster)
+    }
+
+    /// The fleet whose explicit `members` contain `service`, if any.
+    pub fn fleet_for_service(&self, service: &str) -> Option<&FleetBinding> {
+        self.fleets
+            .iter()
+            .find(|b| b.members.iter().any(|m| m == service))
+    }
+
+    /// A fleet by name.
+    pub fn get(&self, name: &str) -> Option<&FleetBinding> {
+        self.fleets.iter().find(|b| b.name == name)
     }
 }
 
@@ -637,6 +714,52 @@ profile = "appier-sg"
         assert_eq!(prod.profile.as_deref(), Some("orca-prod"));
         assert_eq!(prod.region.as_deref(), Some("ap-east-2"));
         assert!(b.for_cluster("nope").is_none());
+        // legacy entries have no explicit members ⇒ whole-cluster fleet
+        assert!(prod.members.is_empty());
+    }
+
+    #[test]
+    fn named_fleets_parse_with_members_and_share_a_cluster() {
+        // The new `[fleet.<name>]` form: orca and mira are two fleets on one
+        // cluster, grouped by explicit members.
+        let doc = r#"
+[fleet.orca]
+cluster = "oab"
+region = "ap-east-2"
+profile = "oab-fleet"
+members = ["oab-prod-orca"]
+
+[fleet.mira]
+cluster = "oab"
+region = "ap-east-2"
+profile = "oab-fleet"
+members = ["oab-prod-mira"]
+"#;
+        let b: FleetBindings = toml::from_str(doc).expect("parse named fleets");
+        assert_eq!(b.fleets.len(), 2);
+        let orca = b.get("orca").expect("orca fleet");
+        assert_eq!(orca.cluster, "oab");
+        assert_eq!(orca.members, vec!["oab-prod-orca".to_string()]);
+        assert_eq!(orca.profile.as_deref(), Some("oab-fleet"));
+        // both fleets resolve to the same cluster (shared credential)
+        assert_eq!(b.get("mira").unwrap().cluster, "oab");
+        // membership routing
+        assert_eq!(
+            b.fleet_for_service("oab-prod-mira").map(|f| f.name.as_str()),
+            Some("mira")
+        );
+        assert!(b.fleet_for_service("oab-prod-nope").is_none());
+        // credential resolution still finds a governing fleet by cluster
+        assert!(b.for_cluster("oab").is_some());
+    }
+
+    #[test]
+    fn empty_config_and_no_fleet_key_parse_to_empty() {
+        assert!(toml::from_str::<FleetBindings>("").unwrap().fleets.is_empty());
+        assert!(toml::from_str::<FleetBindings>("# just a comment\n")
+            .unwrap()
+            .fleets
+            .is_empty());
     }
 
     #[test]
