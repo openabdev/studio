@@ -16,6 +16,12 @@ pub struct ServiceStatus {
     /// Agent name (the `{name}` in `oab-{namespace}-{name}`).
     pub name: String,
     pub namespace: String,
+    /// Full ECS service name exactly as ECS returned it (`oab-{namespace}-{name}`).
+    /// Carried verbatim so downstream ECS calls (`ListTasks`) query by the
+    /// authoritative name instead of rebuilding it from `namespace`/`name` —
+    /// rebuilding is wrong for any service that doesn't fit the `oab-<ns>-<name>`
+    /// shape (where the parser falls back to `namespace = "?"`).
+    pub service_name: String,
     pub cpu: String,
     pub memory: String,
     pub capacity: String,
@@ -112,6 +118,7 @@ pub async fn service_status(
             out.push(ServiceStatus {
                 name: agent_name,
                 namespace,
+                service_name: svc_name.to_string(),
                 cpu,
                 memory,
                 capacity,
@@ -151,6 +158,18 @@ pub async fn instance_status(
     cluster: &str,
     service: &str,
 ) -> Result<Vec<InstanceStatus>> {
+    // ECS `ListTasks` filters by the FULL service name (`oab-{ns}-{name}`); a
+    // display short name (`orca`) silently 404s as `ServiceNotFoundException`.
+    // Fail loud at the boundary so the mistake is unambiguous rather than an
+    // opaque AWS error — callers resolve the full name in
+    // `studio_cp::observe_deployment` before reaching here.
+    if !service.starts_with("oab-") {
+        anyhow::bail!(
+            "instance_status: expected full ECS service name `oab-<ns>-<name>`, got `{service}` \
+             — a short/display name never matches an ECS service_name filter"
+        );
+    }
+
     let ecs = aws_sdk_ecs::Client::new(aws_config);
 
     // List task ARNs for the service (paginated).

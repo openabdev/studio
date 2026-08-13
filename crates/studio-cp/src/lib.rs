@@ -120,20 +120,37 @@ pub fn build_deployment(svc: &ServiceStatus, instances: &[InstanceStatus]) -> De
     }
 }
 
+/// Resolve a caller's `service` selector to the matched service, accepting
+/// **either** the full ECS name (`oab-{ns}-{name}`) **or** the display short
+/// name (`{name}`). [`observe_deployment`] passes the resolved service's
+/// `service_name` straight to `instance_status` with no further transformation,
+/// so a test over this fully covers the "a short selector must query tasks by
+/// the full ECS name" guarantee.
+fn resolve_service<'a>(service: &str, services: &'a [ServiceStatus]) -> Option<&'a ServiceStatus> {
+    services
+        .iter()
+        .find(|s| service == s.service_name || service == s.name)
+}
+
 /// Observe one Deployment end-to-end: service-level counters + per-Instance
-/// phases. `service` is the ECS service name (`oab-{namespace}-{name}`).
+/// phases. `service` may be the full ECS name (`oab-{namespace}-{name}`) **or**
+/// the display short name (`{name}`) — both resolve to the same Deployment.
 pub async fn observe_deployment(
     aws_config: &aws_config::SdkConfig,
     cluster: &str,
     service: &str,
 ) -> anyhow::Result<Option<Deployment>> {
-    let svc = oabctl::service_status(aws_config, cluster)
-        .await?
-        .into_iter()
-        .find(|s| service == format!("oab-{}-{}", s.namespace, s.name) || service == s.name);
-    let Some(svc) = svc else { return Ok(None) };
-    let instances = oabctl::instance_status(aws_config, cluster, service).await?;
-    Ok(Some(build_deployment(&svc, &instances)))
+    let services = oabctl::service_status(aws_config, cluster).await?;
+    let Some(svc) = resolve_service(service, &services) else {
+        return Ok(None);
+    };
+    // Query tasks by the authoritative ECS service name ECS handed back — never
+    // the caller's (possibly short) selector, and never a `format!`-rebuilt name
+    // (wrong for services that don't fit the `oab-<ns>-<name>` shape). A short
+    // name reaching `ListTasks` is exactly what surfaced as
+    // `ServiceNotFoundException`.
+    let instances = oabctl::instance_status(aws_config, cluster, &svc.service_name).await?;
+    Ok(Some(build_deployment(svc, &instances)))
 }
 
 /// Observe recent ECS control-plane **events** for the cluster (optionally one
@@ -457,6 +474,7 @@ mod tests {
         ServiceStatus {
             name: "orca".into(),
             namespace: "prod".into(),
+            service_name: "oab-prod-orca".into(),
             cpu: "512".into(),
             memory: "1024".into(),
             capacity: "FARGATE".into(),
@@ -464,6 +482,43 @@ mod tests {
             desired,
             status: "ACTIVE".into(),
         }
+    }
+
+    fn svc_named(namespace: &str, name: &str) -> ServiceStatus {
+        ServiceStatus {
+            service_name: format!("oab-{namespace}-{name}"),
+            name: name.into(),
+            namespace: namespace.into(),
+            ..svc(1, 1)
+        }
+    }
+
+    #[test]
+    fn observe_deployment_resolves_selector_to_full_ecs_service_name() {
+        let services = vec![svc_named("prod", "orca"), svc_named("prod", "mira")];
+
+        // `observe_deployment` passes the resolved service's `service_name`
+        // verbatim to `instance_status`/`ListTasks`. Regression: a display short
+        // name (`orca`) must resolve to the FULL ECS name, or ECS 404s with
+        // `ServiceNotFoundException` (pre-fix it queried with the short name).
+        assert_eq!(
+            resolve_service("orca", &services)
+                .expect("short name matches")
+                .service_name,
+            "oab-prod-orca"
+        );
+
+        // The full name resolves to itself.
+        assert_eq!(
+            resolve_service("oab-prod-mira", &services)
+                .expect("full name matches")
+                .service_name,
+            "oab-prod-mira"
+        );
+
+        // An unknown selector is a clean miss — the Deployment then reports
+        // not-found rather than issuing a doomed ECS query.
+        assert!(resolve_service("nope", &services).is_none());
     }
 
     #[test]
