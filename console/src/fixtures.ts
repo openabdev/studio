@@ -1,4 +1,4 @@
-import type { Deployment } from "./types";
+import type { Deployment, RuntimeContext } from "./types";
 
 // Stand-in data so the console renders without a live core. Mirrors the shape
 // studio-cp's `deploy_list` / `deploy_get` return. Swapped for the Tauri source
@@ -37,3 +37,25 @@ export const FIXTURE_DEPLOYMENTS: Deployment[] = [
     instances: [],
   },
 ];
+
+// Stand-in identity so the browser build renders the panel without a core.
+// A healthy example: a task role that matches its binding's expectation.
+export const FIXTURE_RUNTIME_CONTEXT: RuntimeContext = {
+  cluster: "oab",
+  principal:
+    "arn:aws:sts::504190915686:assumed-role/openab-orca-task-role/session",
+  principal_kind: "role",
+  scope: "504190915686",
+  location: "ap-east-2",
+  source: "container-credentials (task/pod role)",
+  caller_id: "AROAEXAMPLE:session",
+  binding: {
+    name: "prod",
+    profile: null,
+    region: "ap-east-2",
+    expected_principal:
+      "arn:aws:iam::504190915686:role/openab-orca-task-role",
+  },
+  expected_principal: "arn:aws:iam::504190915686:role/openab-orca-task-role",
+  identity_matches: true,
+};

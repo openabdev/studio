@@ -269,3 +269,88 @@ td.counts.warn {
 .s-stopped {
   background: var(--s-stopped);
 }
+
+/* ---- Runtime identity / context panel (ADR #19) ---- */
+.identity-wrap {
+  margin: 0 0 12px;
+}
+.identity {
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--s-running);
+  border-radius: 6px;
+  background: var(--panel);
+  padding: 10px 12px;
+  font-size: 13px;
+}
+.identity.mismatch {
+  border-left-color: var(--s-unhealthy);
+}
+.identity.ok {
+  border-left-color: var(--ok);
+}
+.id-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.id-label {
+  color: var(--muted);
+  text-transform: uppercase;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+}
+.id-cluster {
+  font-weight: 600;
+}
+.id-as {
+  color: var(--muted);
+}
+.kind {
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-size: 11px;
+  font-weight: 600;
+  border: 1px solid var(--border);
+}
+.kind.k-role {
+  color: var(--ok);
+}
+.kind.k-user {
+  color: var(--s-unhealthy);
+}
+.kind.k-unknown {
+  color: var(--muted);
+}
+.id-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 4px 16px;
+}
+.id-field {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  min-width: 0;
+}
+.id-field .k {
+  color: var(--muted);
+  min-width: 64px;
+  flex: none;
+}
+.id-field code {
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.id-warn {
+  margin-top: 8px;
+  color: var(--s-unhealthy);
+  font-weight: 600;
+}
+.id-warn code {
+  font-weight: 400;
+}
+.id-ok {
+  margin-top: 8px;
+  color: var(--ok);
+}

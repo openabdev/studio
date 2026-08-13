@@ -96,6 +96,34 @@ async fn deploy_list(
     }
 }
 
+/// Bridge command: the effective runtime identity/context for a cluster (ADR
+/// #19), sourced through the bundled `oab-mcp` sidecar's `runtime_context` tool.
+/// The console renders "who am I managing this cluster as, against what account".
+#[tauri::command]
+async fn runtime_context(
+    core: tauri::State<'_, Core>,
+    cluster: Option<String>,
+) -> Result<Value, String> {
+    let cluster = cluster.unwrap_or_else(default_cluster);
+    let client = {
+        let guard = core.0.lock().await;
+        guard
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| "core not started yet".to_string())?
+    };
+    match client
+        .call_tool("runtime_context", json!({ "cluster": cluster }))
+        .await
+    {
+        Ok(v) => Ok(v),
+        Err(e) => {
+            client.log("error", &format!("runtime_context: {e}"));
+            Err(e)
+        }
+    }
+}
+
 /// What the frontend needs to render the "update available" state: the version
 /// on the release vs. what's running, plus the release notes.
 #[derive(serde::Serialize)]
@@ -163,6 +191,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             start_core,
             deploy_list,
+            runtime_context,
             check_update,
             install_update
         ])

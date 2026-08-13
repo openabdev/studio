@@ -1,11 +1,12 @@
 import { defaultSource } from "./source";
-import { renderRoster } from "./render";
+import { renderRoster, renderIdentity } from "./render";
 import { createPane, bindBackend, type Level } from "./log";
 
 const POLL_MS = 5000;
 const CLUSTER = "oab";
 
 const roster = document.getElementById("roster");
+const identityEl = document.getElementById("identity");
 const clusterLabel = document.getElementById("cluster-label");
 const pollStatus = document.getElementById("poll-status");
 const logEl = document.getElementById("log");
@@ -86,6 +87,19 @@ async function tick(): Promise<void> {
       pollStatus.textContent = `error: ${msg}`;
       pollStatus.classList.add("err");
     }
+  }
+}
+
+// The effective managing identity for this cluster (ADR #19). Fetched once on
+// boot and refreshed when the roster recovers — it changes rarely, so it does
+// not need the 5s poll (and each call is a live STS lookup server-side).
+async function refreshIdentity(): Promise<void> {
+  if (!identityEl) return;
+  try {
+    renderIdentity(identityEl, await source.runtimeContext(CLUSTER));
+  } catch (e) {
+    note("error", `identity: ${errText(e)}`);
+    renderIdentity(identityEl, null);
   }
 }
 
@@ -178,6 +192,7 @@ async function boot(): Promise<void> {
   note("info", `polling cluster "${CLUSTER}" every ${POLL_MS / 1000}s`);
   setupUpdater();
   await startCore();
+  void refreshIdentity();
   void tick();
   window.setInterval(() => void tick(), POLL_MS);
 }
