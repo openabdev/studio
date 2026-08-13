@@ -22,15 +22,23 @@ use rmcp::model::{
 use rmcp::service::{RequestContext, RoleServer};
 use rmcp::{ErrorData as McpError, ServiceExt};
 use serde_json::{json, Map, Value};
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use studio_cp as scp;
 
 /// The control-plane server. Holds the shared AWS config and the default
 /// cluster; cheap to clone (one handler per session).
 #[derive(Clone)]
 struct OabMcp {
+    /// Fallback AWS config (the default credential chain), used when no fleet
+    /// binding governs the target cluster.
     aws: aws_config::SdkConfig,
     default_cluster: String,
+    /// Declarative fleet → managing-credential bindings (ADR: Per-Fleet
+    /// managing identity).
+    bindings: Arc<scp::FleetBindings>,
+    /// Per-cluster resolved configs, memoized so a binding is resolved once.
+    resolved: Arc<Mutex<HashMap<String, aws_config::SdkConfig>>>,
 }
 
 fn as_map(v: Value) -> Arc<Map<String, Value>> {
@@ -134,10 +142,12 @@ fn tools() -> Vec<Tool> {
         ),
         Tool::new(
             "runtime_context",
-            "Show the effective runtime identity/context this control plane resolved: the acting principal (STS caller ARN), its kind (role vs static user), account (scope), region (location), and a best-effort credential-source hint. Read-only; answers \"who am I acting as, against what account?\" and surfaces silent credential fallback.",
+            "Show the effective runtime identity/context this control plane resolved for a cluster/fleet: the acting principal (STS caller ARN), its kind (role vs static user), account (scope), region (location), a best-effort credential-source hint, and the fleet binding in effect (if any). Read-only; answers \"who am I acting as, against what account?\" and surfaces silent credential fallback.",
             as_map(json!({
                 "type": "object",
-                "properties": {}
+                "properties": {
+                    "cluster": { "type": "string", "description": "Resolve the identity the fleet binding for this cluster selects (defaults to the server's configured cluster)." }
+                }
             })),
         ),
     ]
@@ -178,9 +188,30 @@ impl OabMcp {
             .unwrap_or_else(|| self.default_cluster.clone())
     }
 
+    /// The AWS config to act as for `cluster`: the fleet binding's credential
+    /// when one governs it (resolved once, then memoized), else the default
+    /// chain. This is where the per-fleet **switch** takes effect — a bound
+    /// cluster's calls run under its credential, not whatever ambient
+    /// `[default]` the chain resolves first.
+    async fn aws_for(&self, cluster: &str) -> aws_config::SdkConfig {
+        let binding = match self.bindings.for_cluster(cluster) {
+            Some(b) if b.profile.is_some() || b.region.is_some() => b.clone(),
+            _ => return self.aws.clone(),
+        };
+        if let Some(cfg) = self.resolved.lock().unwrap().get(cluster) {
+            return cfg.clone();
+        }
+        let cfg = scp::resolve_binding_config(&binding).await;
+        self.resolved
+            .lock()
+            .unwrap()
+            .insert(cluster.to_string(), cfg.clone());
+        cfg
+    }
+
     async fn t_list(&self, args: &Map<String, Value>) -> Result<Value> {
         let cluster = self.cluster(args);
-        let svcs = scp::observe_services(&self.aws, &cluster).await?;
+        let svcs = scp::observe_services(&self.aws_for(&cluster).await, &cluster).await?;
         let deployments: Vec<Value> = svcs
             .iter()
             .map(|s| {
@@ -205,7 +236,7 @@ impl OabMcp {
             .get("service")
             .and_then(Value::as_str)
             .ok_or_else(|| anyhow::anyhow!("missing required arg: service"))?;
-        match scp::observe_deployment(&self.aws, &cluster, service).await? {
+        match scp::observe_deployment(&self.aws_for(&cluster).await, &cluster, service).await? {
             Some(d) => Ok(deployment_json(&d)),
             None => Ok(json!({ "found": false, "service": service })),
         }
@@ -215,7 +246,7 @@ impl OabMcp {
         let cluster = self.cluster(args);
         let services: Vec<String> = match args.get("service").and_then(Value::as_str) {
             Some(s) => vec![s.to_string()],
-            None => scp::observe_services(&self.aws, &cluster)
+            None => scp::observe_services(&self.aws_for(&cluster).await, &cluster)
                 .await?
                 .into_iter()
                 .map(|s| s.name)
@@ -223,7 +254,9 @@ impl OabMcp {
         };
         let mut instances = Vec::new();
         for svc in services {
-            if let Some(d) = scp::observe_deployment(&self.aws, &cluster, &svc).await? {
+            if let Some(d) =
+                scp::observe_deployment(&self.aws_for(&cluster).await, &cluster, &svc).await?
+            {
                 for inst in &d.instances {
                     instances.push(json!({
                         "service": d.name,
@@ -265,8 +298,15 @@ impl OabMcp {
             .unwrap_or(0);
         let since_ms = now_ms - since_minutes * 60_000;
 
-        let events =
-            scp::observe_events(&self.aws, &log_group, &cluster, service, since_ms, limit).await?;
+        let events = scp::observe_events(
+            &self.aws_for(&cluster).await,
+            &log_group,
+            &cluster,
+            service,
+            since_ms,
+            limit,
+        )
+        .await?;
         Ok(json!({
             "cluster": cluster,
             "log_group": log_group,
@@ -283,7 +323,8 @@ impl OabMcp {
             .and_then(Value::as_str)
             .ok_or_else(|| anyhow::anyhow!("missing required arg: manifest_yaml"))?;
         let wait = args.get("wait").and_then(Value::as_bool).unwrap_or(false);
-        let report = scp::apply_deployment(&self.aws, manifest, &cluster, wait).await?;
+        let report =
+            scp::apply_deployment(&self.aws_for(&cluster).await, manifest, &cluster, wait).await?;
         Ok(json!({ "ok": true, "services_applied": report.services.len() }))
     }
 
@@ -301,21 +342,40 @@ impl OabMcp {
             args.get("size")
                 .and_then(Value::as_i64)
                 .ok_or_else(|| anyhow::anyhow!("missing or invalid arg: size"))? as i32;
-        scp::scale_deployment(&self.aws, &cluster, namespace, name, size).await?;
+        scp::scale_deployment(
+            &self.aws_for(&cluster).await,
+            &cluster,
+            namespace,
+            name,
+            size,
+        )
+        .await?;
         Ok(
             json!({ "ok": true, "cluster": cluster, "namespace": namespace, "name": name, "size": size }),
         )
     }
 
-    async fn t_runtime_context(&self, _args: &Map<String, Value>) -> Result<Value> {
-        let ctx = scp::observe_identity(&self.aws).await?;
+    async fn t_runtime_context(&self, args: &Map<String, Value>) -> Result<Value> {
+        let cluster = self.cluster(args);
+        let aws = self.aws_for(&cluster).await;
+        let ctx = scp::observe_identity(&aws).await?;
+        let binding = self.bindings.for_cluster(&cluster).map(|b| {
+            json!({
+                "name": b.name,
+                "profile": b.profile,
+                "region": b.region,
+                "expected_principal": b.expected_principal,
+            })
+        });
         Ok(json!({
+            "cluster": cluster,
             "principal": ctx.principal,
             "principal_kind": ctx.principal_kind,
             "scope": ctx.scope,
             "location": ctx.location,
             "source": ctx.source,
             "caller_id": ctx.caller_id,
+            "binding": binding,
         }))
     }
 
@@ -333,7 +393,14 @@ impl OabMcp {
             .get("namespace")
             .and_then(Value::as_str)
             .unwrap_or("default");
-        scp::delete_deployment(&self.aws, resource, name, &cluster, namespace).await?;
+        scp::delete_deployment(
+            &self.aws_for(&cluster).await,
+            resource,
+            name,
+            &cluster,
+            namespace,
+        )
+        .await?;
         Ok(json!({ "ok": true, "resource": resource, "name": name }))
     }
 }
@@ -398,9 +465,23 @@ impl ServerHandler for OabMcp {
 async fn main() -> anyhow::Result<()> {
     let aws = aws_config::load_defaults(aws_config::BehaviorVersion::latest()).await;
     let default_cluster = std::env::var("OAB_CLUSTER").unwrap_or_else(|_| "oab".to_string());
+    // Fleet → managing-credential bindings are strictly opt-in: a missing file
+    // yields an empty set. Warn on stderr only (stdout is the MCP JSON-RPC wire).
+    let bindings = match scp::default_bindings_path() {
+        Some(path) => scp::load_bindings(&path).unwrap_or_else(|e| {
+            eprintln!(
+                "warning: failed to load fleet bindings from {}: {e:#}",
+                path.display()
+            );
+            scp::FleetBindings::default()
+        }),
+        None => scp::FleetBindings::default(),
+    };
     let server = OabMcp {
         aws,
         default_cluster,
+        bindings: Arc::new(bindings),
+        resolved: Arc::new(Mutex::new(HashMap::new())),
     };
     let service = server.serve(rmcp::transport::stdio()).await?;
     service.waiting().await?;
