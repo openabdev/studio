@@ -33,3 +33,28 @@ export interface Deployment {
   ready: number;
   instances: InstancePhase[];
 }
+
+// The fleet binding in effect for a cluster (ADR #19). Mirrors oab-mcp's
+// `runtime_context.binding`.
+export interface FleetBinding {
+  name: string;
+  profile: string | null;
+  region: string | null;
+  expected_principal: string | null;
+}
+
+// The effective runtime identity/context the control plane resolved for a
+// cluster — mirrors oab-mcp's `runtime_context` tool (ADR #19). `identity_matches`
+// is `null` when the binding declares no `expected_principal`.
+export interface RuntimeContext {
+  cluster: string;
+  principal: string;
+  principal_kind: string; // "role" | "user" | "unknown"
+  scope: string; // AWS account id
+  location: string; // region
+  source: string;
+  caller_id: string;
+  binding: FleetBinding | null;
+  expected_principal: string | null;
+  identity_matches: boolean | null;
+}
