@@ -312,6 +312,48 @@ pub async fn resolve_binding_config(binding: &FleetBinding) -> aws_config::SdkCo
     loader.load().await
 }
 
+/// Does the resolved caller `actual` principal satisfy the `expected` principal
+/// a binding declares? The read-only **reconcile** check (IdentityMismatch) —
+/// a warning signal, never an authz gate (ADR-2 authz stays deferred).
+///
+/// Handles the STS assumed-role vs IAM role shape and a trailing `*` wildcard:
+/// an expected `arn:aws:iam::A:role/R` (or `…:assumed-role/R/*`) matches an
+/// actual `arn:aws:sts::A:assumed-role/R/SESSION`.
+pub fn principal_matches(expected: &str, actual: &str) -> bool {
+    if expected == actual {
+        return true;
+    }
+    if let Some(prefix) = expected.strip_suffix('*') {
+        if actual.starts_with(prefix) {
+            return true;
+        }
+    }
+    match (role_identity(expected), role_identity(actual)) {
+        (Some(e), Some(a)) => e == a,
+        _ => false,
+    }
+}
+
+/// Extract `(account, role_name)` from an IAM role or STS assumed-role ARN;
+/// `None` for anything else (e.g. a static `user/…` ARN — which therefore never
+/// matches a role expectation, exactly the fallback we want flagged).
+fn role_identity(arn: &str) -> Option<(String, String)> {
+    let parts: Vec<&str> = arn.split(':').collect();
+    if parts.len() < 6 {
+        return None;
+    }
+    let account = parts[4].to_string();
+    let resource = parts[5..].join(":");
+    let name = if let Some(r) = resource.strip_prefix("assumed-role/") {
+        r.split('/').next()?.to_string()
+    } else if let Some(r) = resource.strip_prefix("role/") {
+        r.to_string()
+    } else {
+        return None;
+    };
+    Some((account, name))
+}
+
 // ---- Write side (ADR-2 write model) ------------------------------------
 //
 // The read side above observes; these mutate. Each is a thin passthrough to
@@ -471,5 +513,25 @@ profile = "appier-sg"
         assert_eq!(prod.profile.as_deref(), Some("orca-prod"));
         assert_eq!(prod.region.as_deref(), Some("ap-east-2"));
         assert!(b.for_cluster("nope").is_none());
+    }
+
+    #[test]
+    fn identity_mismatch_flags_static_user_and_wrong_account() {
+        let expected_role = "arn:aws:iam::504190915686:role/openab-orca-task-role";
+        let actual_assumed =
+            "arn:aws:sts::504190915686:assumed-role/openab-orca-task-role/sess-abc";
+        // role ARN expected, assumed-role ARN actual, same account+role → match
+        assert!(principal_matches(expected_role, actual_assumed));
+        // trailing-wildcard expectation
+        let expected_wild = "arn:aws:sts::504190915686:assumed-role/openab-orca-task-role/*";
+        assert!(principal_matches(expected_wild, actual_assumed));
+        // the incident: expected a role, got a static IAM user → mismatch
+        let brett = "arn:aws:iam::916371022086:user/brett.chien";
+        assert!(!principal_matches(expected_role, brett));
+        // right role name, wrong account → mismatch
+        let other_acct = "arn:aws:sts::916371022086:assumed-role/openab-orca-task-role/x";
+        assert!(!principal_matches(expected_role, other_acct));
+        // exact match
+        assert!(principal_matches(brett, brett));
     }
 }
