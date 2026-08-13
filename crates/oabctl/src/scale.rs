@@ -617,7 +617,7 @@ mod tests {
     #[test]
     fn test_schedule_name_sanitization_unicode() {
         // Unicode chars are NOT valid in AWS schedule names — replaced with '-'
-        let alias = "bot名前";
+        let alias = "botéé";
         let safe_alias = alias.replace(
             |c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '_' && c != '.',
             "-",

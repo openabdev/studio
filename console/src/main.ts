@@ -239,7 +239,7 @@ async function startCore(): Promise<void> {
   }
 }
 
-// Remote upgrade: the topbar "檢查更新" button. First click checks the nightly
+// Remote upgrade: the topbar "Check for updates" button. First click checks the nightly
 // release; if a newer signed build exists, the button turns into an install
 // action that downloads, verifies, and restarts into it. Desktop-only — hidden
 // in the browser build (no command bridge).
@@ -257,28 +257,28 @@ function setupUpdater(): void {
 
   const reset = (): void => {
     pending = null;
-    el.textContent = "檢查更新";
+    el.textContent = "Check for updates";
     el.classList.remove("has-update");
   };
 
   async function check(btn: HTMLButtonElement, inv: Invoke): Promise<void> {
     btn.disabled = true;
-    btn.textContent = "檢查中…";
+    btn.textContent = "Checking…";
     try {
       const info = await inv<UpdateInfo | null>("check_update");
       if (info) {
         pending = info;
-        btn.textContent = `更新到 v${info.version} ↻`;
+        btn.textContent = `Update to v${info.version} ↻`;
         btn.classList.add("has-update");
-        note("info", `發現新版 v${info.version}（目前 v${info.current}）— 按按鈕安裝並重啟`);
+        note("info", `New version v${info.version} available (current v${info.current}) — click to install and restart`);
       } else {
-        note("info", "已是最新版");
-        btn.textContent = "已是最新版";
+        note("info", "Already up to date");
+        btn.textContent = "Up to date";
         window.setTimeout(reset, 4000);
       }
     } catch (e) {
       reset();
-      note("error", `檢查更新失敗：${errText(e)}`);
+      note("error", `Update check failed: ${errText(e)}`);
     } finally {
       btn.disabled = false;
     }
@@ -286,14 +286,14 @@ function setupUpdater(): void {
 
   async function install(btn: HTMLButtonElement, inv: Invoke): Promise<void> {
     btn.disabled = true;
-    btn.textContent = "安裝中…";
+    btn.textContent = "Installing…";
     try {
       // On success the backend restarts the app, so this may never resolve.
       await inv("install_update");
     } catch (e) {
       btn.disabled = false;
-      btn.textContent = pending ? `更新到 v${pending.version} ↻` : "檢查更新";
-      note("error", `安裝更新失敗：${errText(e)}`);
+      btn.textContent = pending ? `Update to v${pending.version} ↻` : "Check for updates";
+      note("error", `Update install failed: ${errText(e)}`);
     }
   }
 

@@ -179,7 +179,7 @@ struct UpdateInfo {
 }
 
 /// Ask the release endpoint whether a newer signed build exists. Returns `None`
-/// when we're already current. Drives the topbar "檢查更新" button.
+/// when we're already current. Drives the topbar "Check for updates" button.
 #[tauri::command]
 async fn check_update(app: tauri::AppHandle) -> Result<Option<UpdateInfo>, String> {
     let updater = app.updater().map_err(|e| e.to_string())?;
