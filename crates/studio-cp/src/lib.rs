@@ -235,6 +235,83 @@ pub async fn observe_identity(
     })
 }
 
+// ---- Fleet → managing-credential binding (ADR: Per-Fleet managing identity) --
+//
+// The *declarative* side of the loop: which credential should manage which
+// fleet/cluster. Operator config, deliberately separate from the Fleet Store
+// (observed membership/lease state); the two may fold together later. Selecting
+// a binding is credential *selection*, not per-caller authz.
+
+/// A declarative binding of a managed fleet/cluster to the credential that
+/// should manage it. Profile-first (assume-role is later work).
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct FleetBinding {
+    /// Fleet label (display / selection).
+    #[serde(default)]
+    pub name: String,
+    /// ECS cluster this binding governs — the match key against a call's target.
+    pub cluster: String,
+    /// Region to pin for this fleet.
+    #[serde(default)]
+    pub region: Option<String>,
+    /// Named AWS profile that supplies the managing credential (profile-first).
+    #[serde(default)]
+    pub profile: Option<String>,
+    /// Expected effective principal ARN — reconciled against the resolved
+    /// identity later (IdentityMismatch). Optional.
+    #[serde(default)]
+    pub expected_principal: Option<String>,
+}
+
+/// Parsed fleet-binding file: a list of `[[fleet]]` tables.
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+pub struct FleetBindings {
+    #[serde(default, rename = "fleet")]
+    pub fleets: Vec<FleetBinding>,
+}
+
+impl FleetBindings {
+    /// The binding governing `cluster`, if any (first match wins).
+    pub fn for_cluster(&self, cluster: &str) -> Option<&FleetBinding> {
+        self.fleets.iter().find(|b| b.cluster == cluster)
+    }
+}
+
+/// Default fleet-binding config path: `$OAB_FLEETS_CONFIG`, else
+/// `<config-dir>/oab-studio/fleets.toml` (`~/.config/oab-studio/fleets.toml`).
+pub fn default_bindings_path() -> Option<std::path::PathBuf> {
+    if let Ok(p) = std::env::var("OAB_FLEETS_CONFIG") {
+        return Some(std::path::PathBuf::from(p));
+    }
+    dirs::config_dir().map(|d| d.join("oab-studio").join("fleets.toml"))
+}
+
+/// Load fleet bindings from `path`. A missing file is **not** an error — it
+/// yields an empty set (every target falls back to the default credential
+/// chain), so bindings are strictly opt-in.
+pub fn load_bindings(path: &std::path::Path) -> anyhow::Result<FleetBindings> {
+    match std::fs::read_to_string(path) {
+        Ok(content) => Ok(toml::from_str(&content)?),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(FleetBindings::default()),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Resolve the AWS config a binding selects — its named profile (profile-first)
+/// and/or pinned region, layered on the standard chain. This is the **switch**:
+/// calls for this fleet act as the bound credential instead of whatever the
+/// ambient `[default]` resolves first.
+pub async fn resolve_binding_config(binding: &FleetBinding) -> aws_config::SdkConfig {
+    let mut loader = aws_config::defaults(aws_config::BehaviorVersion::latest());
+    if let Some(profile) = &binding.profile {
+        loader = loader.profile_name(profile.as_str());
+    }
+    if let Some(region) = &binding.region {
+        loader = loader.region(aws_config::Region::new(region.clone()));
+    }
+    loader.load().await
+}
+
 // ---- Write side (ADR-2 write model) ------------------------------------
 //
 // The read side above observes; these mutate. Each is a thin passthrough to
@@ -372,5 +449,27 @@ mod tests {
             "user"
         );
         assert_eq!(principal_kind("arn:aws:iam::1:root"), "unknown");
+    }
+
+    #[test]
+    fn bindings_parse_and_match_by_cluster() {
+        let doc = r#"
+[[fleet]]
+name = "prod"
+cluster = "oab"
+region = "ap-east-2"
+profile = "orca-prod"
+
+[[fleet]]
+name = "sg"
+cluster = "oab-sg"
+profile = "appier-sg"
+"#;
+        let b: FleetBindings = toml::from_str(doc).expect("parse");
+        assert_eq!(b.fleets.len(), 2);
+        let prod = b.for_cluster("oab").expect("prod binding");
+        assert_eq!(prod.profile.as_deref(), Some("orca-prod"));
+        assert_eq!(prod.region.as_deref(), Some("ap-east-2"));
+        assert!(b.for_cluster("nope").is_none());
     }
 }
