@@ -122,6 +122,25 @@ ready-to-paste stdio MCP server spec:
 This is an **independent** instance (own creds, own process), deliberately not a
 fallback for (i) — it serves the no-Studio case.
 
+### Current usage — how Orca connects *today*
+
+The always-on ECS agent (Orca) is the concrete first consumer, and the two paths
+land at different times, so this is explicit:
+
+- **Now (raw AWS):** Orca already drives cluster `oab` under its task role
+  (`openab-orca-task-role` @ `504190915686` / `ap-east-2`) — no Studio, no
+  `oab-mcp`. This is how the fleet was operated before Studio.
+- **Near-term (headless `oab-mcp`, path (ii)):** provision the `oab-mcp` binary
+  into Orca's runtime and register it as an MCP server with `OAB_CLUSTER=oab`
+  (task role is the ambient credential — no profile needed). Orca then has the
+  full fleet tool surface. **This is available with only that setup — no new
+  Studio code.**
+- **Target (reverse MCP, path (i)):** Orca attaches to a *running* Studio through
+  OpenAB core, using Studio's identity, with ops visible in Studio's UI — once
+  the serve mode is built.
+
+Step-by-step for each is in the **[agent connection guide](../connecting-an-agent.md)**.
+
 ## 4. Consequences
 
 - `fleets.toml` schema change (`[[fleet]]` → `[fleet.<name>]` + `members`); a
