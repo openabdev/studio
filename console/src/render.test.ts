@@ -6,6 +6,7 @@ import {
   remoteHtml,
   filterByMembers,
   serviceName,
+  deploymentKey,
 } from "./render";
 import {
   FIXTURE_DEPLOYMENTS,
@@ -100,6 +101,38 @@ describe("rosterHtml", () => {
     const html = rosterHtml([dep({ name: '"x', namespace: "n" })]);
     expect(html).toContain("&quot;x");
     expect(html).not.toContain('data-name=""x"');
+  });
+
+  it("renders a disabled placeholder for a deployment with a scale in flight", () => {
+    const d = dep({ name: "orca", namespace: "prod" });
+    const html = rosterHtml([d], new Set([deploymentKey(d)]));
+    expect(html).toContain("act-pending");
+    expect(html).toContain("disabled");
+    // no live action attributes on a pending button
+    expect(html).not.toContain('data-action="stop"');
+    expect(html).not.toContain('data-action="start"');
+  });
+
+  it("leaves non-pending deployments interactive when another is in flight", () => {
+    const busy = dep({ name: "orca", namespace: "prod" });
+    const free = dep({ name: "mira", namespace: "prod", desired: 0 });
+    const html = rosterHtml([busy, free], new Set([deploymentKey(busy)]));
+    // orca is pending → placeholder; mira is free → a live Start button
+    expect(html).toContain("act-pending");
+    expect(html).toContain('data-action="start"');
+    expect(html).toContain('data-name="mira"');
+  });
+
+  it("defaults to no pending set (all buttons live)", () => {
+    const html = rosterHtml([dep({ name: "orca", namespace: "prod" })]);
+    expect(html).not.toContain("act-pending");
+    expect(html).toContain('data-action="stop"');
+  });
+});
+
+describe("deploymentKey", () => {
+  it("is the namespace/name pair (not the ECS service name)", () => {
+    expect(deploymentKey({ ...FIXTURE_DEPLOYMENTS[0] })).toBe("prod/orca");
   });
 });
 

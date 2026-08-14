@@ -5,8 +5,9 @@ import {
   renderFleetConfig,
   renderRemote,
   filterByMembers,
+  deploymentKey,
 } from "./render";
-import type { FleetConfig, RemoteConfig } from "./types";
+import type { Deployment, FleetConfig, RemoteConfig } from "./types";
 import { createPane, bindBackend, type Level } from "./log";
 import { EditorView, basicSetup } from "codemirror";
 import { EditorState } from "@codemirror/state";
@@ -96,13 +97,54 @@ function errText(e: unknown): string {
 
 let lastError = "";
 
+// ---- in-flight scale guard --------------------------------------------------
+// Deployments with a scale in flight (or awaiting the observed desiredCount
+// flip), keyed by `deploymentKey` → the count we're driving toward. Held in
+// module state (not on the button DOM) so the 5s poll's re-render can't wash out
+// the disabled guard. Pruned when the roster observes the target count, or by a
+// safety timeout so a never-observed flip can't wedge a button forever.
+const scaling = new Map<string, number>();
+const scaleTimers = new Map<string, number>();
+let lastDeployments: Deployment[] = [];
+const SCALE_MAX_HOLD_MS = 15000;
+
+function pendingKeys(): ReadonlySet<string> {
+  return new Set(scaling.keys());
+}
+
+function clearPending(key: string): void {
+  scaling.delete(key);
+  const timer = scaleTimers.get(key);
+  if (timer !== undefined) {
+    window.clearTimeout(timer);
+    scaleTimers.delete(key);
+  }
+}
+
+// Drop the guard for any deployment whose observed desiredCount has reached the
+// target we drove toward — the action landed, so its button re-enables.
+function prunePending(deployments: Deployment[]): void {
+  for (const d of deployments) {
+    const key = deploymentKey(d);
+    if (scaling.get(key) === d.desired) clearPending(key);
+  }
+}
+
+// Re-render the roster from the last poll's data with the current pending
+// overlay — instant feedback on click, no fetch needed.
+function repaintRoster(): void {
+  if (roster) renderRoster(roster, lastDeployments, pendingKeys());
+}
+
 async function tick(): Promise<void> {
   if (!roster) return;
   try {
     const all = await source.listDeployments(activeCluster);
     // Filter to the active fleet's members (empty ⇒ whole cluster).
     const deployments = filterByMembers(all, activeMembers);
-    renderRoster(roster, deployments);
+    lastDeployments = deployments;
+    prunePending(deployments);
+    renderRoster(roster, deployments, pendingKeys());
     if (lastError) {
       note("info", `roster recovered — ${deployments.length} deployment(s)`);
       lastError = "";
@@ -305,23 +347,35 @@ if (remoteEl) {
 
 // ---- start / stop (ADR-2 write model: stop = scale→0, start = scale→1) -------
 // Scale a deployment off (0) or on (1). Reversible — ECS keeps the Spec at
-// desiredCount 0 — so this needs no state store. On success `tick()` re-renders
-// the roster (which recycles the button DOM), so we only re-enable on error.
+// desiredCount 0 — so this needs no state store. The in-flight guard lives in
+// `scaling` (module state), so the button stays disabled across poll re-renders
+// until the observed desiredCount flips (or the safety timeout fires).
 async function scale(
   action: "start" | "stop",
   name: string,
   namespace: string,
-  btn: HTMLButtonElement,
 ): Promise<void> {
+  const key = `${namespace}/${name}`;
+  if (scaling.has(key)) return; // already in flight — poll-immune re-entry guard
   const size = action === "start" ? 1 : 0;
-  btn.disabled = true;
+  scaling.set(key, size);
+  scaleTimers.set(
+    key,
+    window.setTimeout(() => {
+      clearPending(key);
+      repaintRoster();
+    }, SCALE_MAX_HOLD_MS),
+  );
+  repaintRoster(); // disable the button immediately
   try {
     await source.scaleDeployment(name, size, namespace, activeCluster);
     note("info", `${action === "start" ? "started" : "stopped"} ${namespace}/${name}`);
+    // tick() observes the new desiredCount and prunes the guard when it flips.
     await tick();
   } catch (e) {
     note("error", `${action} ${namespace}/${name}: ${errText(e)}`);
-    btn.disabled = false;
+    clearPending(key);
+    repaintRoster();
   }
 }
 
@@ -350,7 +404,7 @@ if (roster) {
       }, 3000);
       return;
     }
-    void scale(action, name, namespace, btn);
+    void scale(action, name, namespace);
   });
 }
 
