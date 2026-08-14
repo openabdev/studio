@@ -14,6 +14,16 @@ export interface Source {
   // Persist the raw TOML `text` of the config file, returning the reloaded
   // config. Rejects (without writing) when the text doesn't parse.
   writeFleetConfig(text: string): Promise<FleetConfig>;
+  // Scale a deployment on (size 1) or off (size 0) — the start/stop action.
+  // Reversible: ECS keeps the Spec at desiredCount 0, so no state store is
+  // needed. `namespace` is required (the service is `oab-{namespace}-{name}`);
+  // the managing credential is resolved per-cluster from `cluster`.
+  scaleDeployment(
+    name: string,
+    size: 0 | 1,
+    namespace: string,
+    cluster?: string,
+  ): Promise<void>;
 }
 
 // Fixture-backed source for the standalone / browser build — no core required.
@@ -32,6 +42,9 @@ export class MockSource implements Source {
   async writeFleetConfig(text: string): Promise<FleetConfig> {
     return { ...structuredClone(FIXTURE_FLEET_CONFIG), text };
   }
+  // Browser preview: no core, so scaling is a no-op — the fixture roster is
+  // re-cloned each poll, so nothing would persist anyway.
+  async scaleDeployment(): Promise<void> {}
 }
 
 // Minimal shape of the Tauri global bridge (v2, `withGlobalTauri`). Accessed via
@@ -64,6 +77,19 @@ export class TauriSource implements Source {
   }
   async writeFleetConfig(text: string): Promise<FleetConfig> {
     return this.invoke()<FleetConfig>("fleet_config_write", { text });
+  }
+  async scaleDeployment(
+    name: string,
+    size: 0 | 1,
+    namespace: string,
+    cluster?: string,
+  ): Promise<void> {
+    await this.invoke()<unknown>("deploy_scale", {
+      name,
+      size,
+      namespace,
+      cluster,
+    });
   }
 }
 
