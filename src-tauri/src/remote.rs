@@ -239,6 +239,15 @@ async fn run_once<R: Runtime>(
     // single writer stays in the loop, so frames are still serialized on the wire.
     let (reply_tx, mut reply_rx) = mpsc::unbounded_channel::<Value>();
 
+    // Keepalive: Cloudflare's tunnel idle-closes a WS with no traffic (~100s) and
+    // tokio-tungstenite never pings on its own, so an idle `/acp` connection flaps
+    // roughly every 2 min — and until `session/resume` lands, each reconnect opens
+    // a fresh channel (lost agent context). A periodic WS Ping well inside that
+    // window counts as traffic and keeps the tunnel open between prompts. `Skip`
+    // missed-tick behaviour avoids a burst of pings if the loop was ever busy.
+    let mut keepalive = tokio::time::interval(std::time::Duration::from_secs(45));
+    keepalive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
     // Loop over BOTH inbound frames and outbound chat actions. `write` never leaves
     // the task; commands reach it only through `out_rx`.
     loop {
@@ -278,6 +287,17 @@ async fn run_once<R: Runtime>(
             // (review #2). Same `Some`-pattern guard against a closed channel.
             Some(reply) = reply_rx.recv() => {
                 send(&mut write, &reply).await?;
+            }
+
+            // Keepalive tick: send a WS Ping directly on `write` (the `send` helper
+            // only frames JSON Text). The read arm ignores the returning Pong
+            // (`Ping | Pong | Frame => continue`), so this composes with the rest of
+            // the loop without touching the inbound path.
+            _ = keepalive.tick() => {
+                write
+                    .send(WsMessage::Ping(Vec::new()))
+                    .await
+                    .map_err(|e| format!("ws keepalive ping: {e}"))?;
             }
 
             // Inbound: a frame from the gateway.
