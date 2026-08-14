@@ -236,6 +236,37 @@ impl Session {
         Some((id, frame))
     }
 
+    /// Build a `session/prompt` request carrying one text block — the operator's
+    /// chat turn (ADR *agent-chat-panel*, Part A). `None` until a session is
+    /// active. Returns `(id, frame)`; the transport correlates the eventual
+    /// `{ stopReason }` result by this `id` (prompt results are method-less, the
+    /// same shape as handshake acks, so id-correlation is mandatory).
+    pub fn prompt(&mut self, text: &str) -> Option<(u64, Value)> {
+        let session_id = self.session_id.clone()?;
+        let id = self.alloc_id();
+        let frame = request(
+            id,
+            "session/prompt",
+            json!({
+                "sessionId": session_id,
+                "prompt": [{ "type": "text", "text": text }],
+            }),
+        );
+        Some((id, frame))
+    }
+
+    /// Build the one-way `session/cancel` **notification** for the active session
+    /// (abandons the in-flight turn; the gateway resolves the pending
+    /// `session/prompt` with `stopReason:"cancelled"`). `None` if no session is
+    /// active.
+    pub fn cancel(&self) -> Option<Value> {
+        let session_id = self.session_id.as_ref()?;
+        Some(notification(
+            "session/cancel",
+            json!({ "sessionId": session_id }),
+        ))
+    }
+
     /// Replace the declaration set — used on reconnect to swap in fresh per-
     /// connection server ids before a [`Session::resume`], and to reset the phase
     /// to [`Phase::New`] so a full `initialize` runs on the new socket.
@@ -276,7 +307,14 @@ pub enum Inbound {
     /// `mcp/cancel` (notification) — abandon the in-flight request whose **outer**
     /// frame id is `request_id`. No reply is owed.
     Cancel { request_id: Value },
-    /// Not a tunnel frame (ACP chat, unknown method) — the tunnel ignores it.
+    /// `session/update` with `sessionUpdate == "agent_message_chunk"` — a piece of
+    /// the agent's chat reply (ADR *agent-chat-panel*). openab emits a single
+    /// terminal chunk today, but the transport accumulates so incremental chunks
+    /// need no rework. Other `session/update` kinds (thoughts, tool calls) are not
+    /// emitted by openab yet and stay [`Inbound::Other`].
+    AgentChunk { text: String },
+    /// Not a tunnel frame (unknown method, or a `session/update` kind we don't
+    /// surface) — ignored.
     Other,
 }
 
@@ -322,6 +360,21 @@ pub fn parse_inbound(frame: &Value) -> Inbound {
         "mcp/cancel" => Inbound::Cancel {
             request_id: params.get("requestId").cloned().unwrap_or(Value::Null),
         },
+        "session/update" => {
+            let update = params.get("update").cloned().unwrap_or(Value::Null);
+            match update.get("sessionUpdate").and_then(Value::as_str) {
+                Some("agent_message_chunk") => Inbound::AgentChunk {
+                    text: update
+                        .get("content")
+                        .and_then(|c| c.get("text"))
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string(),
+                },
+                // thoughts / tool_call etc. — openab does not emit these yet.
+                _ => Inbound::Other,
+            }
+        }
         _ => Inbound::Other,
     }
 }
@@ -571,5 +624,58 @@ mod tests {
         assert_eq!(parse_inbound(&chat), Inbound::Other);
         let unknown = json!({ "jsonrpc": "2.0", "id": 1, "result": {} });
         assert_eq!(parse_inbound(&unknown), Inbound::Other);
+    }
+
+    // Bring a session to SessionActive so the chat builders have a session id.
+    fn active_session() -> Session {
+        let mut s = Session::new(vec![oab_server("conn-uuid")]);
+        s.initialize(json!({}));
+        s.on_initialized();
+        s.open_session("/work");
+        s.on_session_created("sess-1");
+        s
+    }
+
+    #[test]
+    fn prompt_needs_a_session_then_builds_a_text_turn() {
+        let mut fresh = Session::new(vec![oab_server("c")]);
+        assert!(fresh.prompt("hi").is_none(), "no prompt before a session exists");
+
+        let mut s = active_session();
+        let (id, frame) = s.prompt("hello there").expect("session active");
+        assert_eq!(frame["jsonrpc"], "2.0");
+        assert_eq!(frame["id"], id);
+        assert_eq!(frame["method"], "session/prompt");
+        assert_eq!(frame["params"]["sessionId"], "sess-1");
+        assert_eq!(frame["params"]["prompt"][0], json!({ "type": "text", "text": "hello there" }));
+    }
+
+    #[test]
+    fn cancel_is_an_idless_notification_for_the_active_session() {
+        assert!(Session::new(vec![oab_server("c")]).cancel().is_none());
+        let s = active_session();
+        let f = s.cancel().unwrap();
+        assert_eq!(f["method"], "session/cancel");
+        assert!(f.get("id").is_none(), "session/cancel is a notification");
+        assert_eq!(f["params"]["sessionId"], "sess-1");
+    }
+
+    #[test]
+    fn agent_message_chunk_is_classified_others_stay_other() {
+        let chunk = json!({
+            "jsonrpc": "2.0", "method": "session/update",
+            "params": { "sessionId": "s", "update": {
+                "sessionUpdate": "agent_message_chunk",
+                "content": { "type": "text", "text": "the ocean is vast" }
+            }}
+        });
+        assert_eq!(
+            parse_inbound(&chunk),
+            Inbound::AgentChunk { text: "the ocean is vast".into() }
+        );
+        // thought / tool_call kinds openab does not emit yet → Other
+        let thought = json!({ "method": "session/update", "params": { "update": {
+            "sessionUpdate": "agent_thought_chunk", "content": { "text": "hmm" } } } });
+        assert_eq!(parse_inbound(&thought), Inbound::Other);
     }
 }
