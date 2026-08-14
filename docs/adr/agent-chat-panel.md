@@ -35,6 +35,7 @@ Chat is **additive on the one live `/acp` session**, not a second connection. `s
 - `run_once` `tokio::select!`s between `read.next()` and `prompt_rx.recv()`; a received frame goes out through the existing private `send()` helper, so the WS `write` sink never leaves the task.
 - **The drop site becomes the chat hook** — the new `Inbound::AgentChunk` arm `app.emit("agent-update", …)`, the same emit/listen model as `remote-status`.
 - **Correctness — id correlation:** the read loop today treats *any* method-less frame as a handshake ack that advances the session phase. `session/prompt` responses are **also** method-less; they must be **correlated by request id** (a `pendingReqs` map, as katashiro does) so a prompt result never mis-drives the phase state machine.
+- **Resume, not new:** persist the `sessionId`; on connect, drive `Session::resume()` (already in `acp-tunnel`) when we have one and fall back to `session/new` if the gateway rejects it (katashiro's pattern). This is what keeps the **agent's own** memory of the conversation continuous across reconnect/restart — not just the local scrollback. The `sessionId` lives in the Rust core (`RemoteState`/on disk), out of the webview's reach.
 
 **`src-tauri/src/lib.rs`:** two `#[tauri::command]`s next to `remote_connect` — `agent_prompt` (push a `session/prompt` `Value` into the sender) and `agent_cancel` (push `session/cancel`) — taking `tauri::State<'_, remote::Remote>` (+ `AppHandle`), registered in the `invoke_handler!` list.
 
@@ -47,14 +48,15 @@ A new panel/tab in the vanilla-TS `console` (add `<section id="chat">` + a `#tab
 - **Turn controls** — Enter sends / Shift+Enter newline; a **stop** button (→ `agent_cancel`; the partial reply is kept and annotated `⏹ 已停止`); a **retry** on failed turns; a **batched** prompt queue (messages typed while the agent is busy coalesce into one next turn, blank-line joined, order preserved).
 - **Scroll** — stick-to-bottom with an 80px threshold and a **jump-to-latest** pill when scrolled up; sending always pulls to the bottom, receiving only follows if already there.
 - **System/error rows**, single-letter avatars, `HH:MM (TPE)` timestamps — all `textContent`, never markdown.
+- **History + resume** — the transcript **persists and is restored before connect**, and the stored `sessionId` drives `session/resume` so the agent's side continues too (§3). Single-window desktop, so none of katashiro's per-window `chrome.storage` isolation is needed; `clear` wipes the local transcript but keeps the session (the agent doesn't forget).
 
 **Single-agent, by design.** Studio has one remote endpoint (`remote.toml`) and chat targets exactly that bound agent — today Orca. **No multi-agent room** (Brett, 2026-08-14): katashiro's room / @mention / relay / loop-guard is explicitly **not a goal**. We take its chat primitives — streaming, markdown, turn controls — and leave the room machinery behind, so `remote.rs` and the panel stay one session with no routing layer (`resolveTargets`, `relayAgentReply`, the loop guard, batching-for-relays are all dropped).
 
 ## 5. Scope (now)
 
-- ✅ **In (MVP):** the single bound agent; text single-turn streaming (`agent_message_chunk`); markdown render at finalize; stop / retry; batched prompt queue; autoscroll + jump pill; system/error rows.
-- ⚠️ **Out (later slices):** the `tool_call` / thought `session/update` kinds (rendered as cards); chat history persistence + `session/resume` on reconnect; a browser-tunnel status strip; accessibility polish (`aria-live` / `role="log"` — katashiro itself lacks these, Studio should do better).
-- 🚫 **Not a goal:** the multi-agent room — @mention routing, agent→agent relay, loop guard (Brett, 2026-08-14). Studio chats one bound agent; there is no room to light up later.
+- ✅ **In (MVP):** the single bound agent; text single-turn streaming (`agent_message_chunk`); markdown render at finalize; stop / retry; batched prompt queue; autoscroll + jump pill; system/error rows; **persistent chat history + `session/resume`** on reconnect/restart.
+- ⚠️ **Out (later slices):** the `tool_call` / thought `session/update` kinds (rendered as cards); a browser-tunnel status strip.
+- 🚫 **Not a goal:** (a) the multi-agent room — @mention routing, agent→agent relay, loop guard (Brett, 2026-08-14); Studio chats one bound agent, there is no room to light up later. (b) **Accessibility** (screen-reader / `aria-live` / `role="log"`) — this is a single-operator internal console, so a11y is YAGNI. (Rationale is the single user, *not* "it's native": a11y is a webview-UI concern that would otherwise apply to a Tauri app just as it does to an extension.)
 
 ## 6. Consequences
 
@@ -68,7 +70,7 @@ A new panel/tab in the vanilla-TS `console` (add `<section id="chat">` + a `#tab
 
 1. **Facade routing** — does the gateway/facade route `session/prompt` to the bound agent (Orca) and stream `session/update` back, or is prompting gated behind a specific ACP capability? Confirm server-side (Jellyfish) before Part B lands.
 2. **`session/update` taxonomy** — beyond `agent_message_chunk`, what kinds does the openab agent emit (thoughts, `tool_call` / `tool_call_update`)? Defines the phase-2 card model.
-3. **History & resume** — persist transcript + `sessionId` for continuity across reconnect/restart? Desktop has no per-window `chrome.storage` collision, so this is simpler than katashiro — is it wanted in MVP?
+3. **Persistence store** — history + resume are **in MVP** (Brett); the open detail is *where* state lives. Leaning: the `sessionId` in the Rust core (`RemoteState` + a small on-disk file, out of the webview), and the transcript in a Tauri app-data store keyed by agent. Confirm the store choice when Part C lands.
 4. **Threat model under Tauri** — where the `/acp` bearer lives relative to the webview, and what Studio CSP replaces katashiro's MV3 egress lock.
 
 This is a direction-alignment ADR; implementation lands in slices (Part B backend, then Part C MVP panel), each verified against katashiro parity and the live gateway.
