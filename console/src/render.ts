@@ -27,12 +27,27 @@ function badge(state: AgentState): string {
   return `<span class="badge ${STATE_CLASS[state]}">${state}</span>`;
 }
 
+// A deployment's identity within the roster — the key the in-flight scale guard
+// (`main.ts`) and the render agree on. Not the ECS service name; just the
+// namespace/name pair a scale action targets.
+export function deploymentKey(d: Deployment): string {
+  return `${d.namespace}/${d.name}`;
+}
+
 // Start (scale→1) when the deployment is off, Stop (scale→0) when it's on.
 // Stop keeps the Spec — ECS retains the service at desiredCount 0 — so it's
 // reversible, no state store needed. The `data-*` carry the identity the
 // delegated handler needs; the managing credential is resolved per-cluster, so
 // the row only needs name + namespace (service = `oab-{namespace}-{name}`).
-function actionButton(d: Deployment): string {
+//
+// `pending` ⇒ a scale is in flight (or the observed count hasn't flipped yet):
+// render a disabled placeholder so the 5s poll re-render can't hand back a fresh
+// enabled button mid-action. The guard lives in module state, not on the DOM
+// node, so it survives the re-render.
+function actionButton(d: Deployment, pending: boolean): string {
+  if (pending) {
+    return `<button class="act act-pending" type="button" disabled>…</button>`;
+  }
   const off = d.desired === 0;
   const action = off ? "start" : "stop";
   const label = off ? "Start" : "Stop";
@@ -40,7 +55,7 @@ function actionButton(d: Deployment): string {
   return `<button class="${cls}" type="button" data-action="${action}" data-name="${escapeHtml(d.name)}" data-namespace="${escapeHtml(d.namespace)}">${label}</button>`;
 }
 
-function rowHtml(d: Deployment): string {
+function rowHtml(d: Deployment, pending: ReadonlySet<string>): string {
   const phases = d.instances.length
     ? d.instances.map((i) => badge(i.state)).join(" ")
     : `<span class="muted">—</span>`;
@@ -50,7 +65,7 @@ function rowHtml(d: Deployment): string {
       <td class="name">${name}</td>
       <td class="counts ${health}">${d.ready}/${d.desired}<span class="muted"> · cur ${d.current}</span></td>
       <td class="phases">${phases}</td>
-      <td class="actions">${actionButton(d)}</td>
+      <td class="actions">${actionButton(d, pending.has(deploymentKey(d)))}</td>
     </tr>`;
 }
 
@@ -78,8 +93,12 @@ export function filterByMembers(
 }
 
 // Pure: deployments -> roster table HTML. Kept side-effect-free so it is unit
-// testable without a DOM.
-export function rosterHtml(deployments: Deployment[]): string {
+// testable without a DOM. `pending` is the set of `deploymentKey`s with a scale
+// in flight — their action buttons render disabled.
+export function rosterHtml(
+  deployments: Deployment[],
+  pending: ReadonlySet<string> = new Set(),
+): string {
   if (deployments.length === 0) {
     return `<p class="empty">No deployments in this cluster.</p>`;
   }
@@ -87,7 +106,7 @@ export function rosterHtml(deployments: Deployment[]): string {
     .sort((a, b) =>
       `${a.namespace}/${a.name}`.localeCompare(`${b.namespace}/${b.name}`),
     )
-    .map(rowHtml)
+    .map((d) => rowHtml(d, pending))
     .join("");
   return `<table class="roster">
       <thead>
@@ -97,8 +116,12 @@ export function rosterHtml(deployments: Deployment[]): string {
     </table>`;
 }
 
-export function renderRoster(el: HTMLElement, deployments: Deployment[]): void {
-  el.innerHTML = rosterHtml(deployments);
+export function renderRoster(
+  el: HTMLElement,
+  deployments: Deployment[],
+  pending: ReadonlySet<string> = new Set(),
+): void {
+  el.innerHTML = rosterHtml(deployments, pending);
 }
 
 // ---- Runtime identity / context panel (ADR #19) ------------------------------
