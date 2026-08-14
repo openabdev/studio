@@ -1,3 +1,16 @@
 [workspace]
 members = ["crates/agent-lifecycle", "crates/oabctl", "crates/studio-cp", "crates/oab-mcp", "crates/acp-tunnel"]
 resolver = "2"
+
+# Fast profile for the CI-built `oab-mcp` sidecar (desktop.yml). The sidecar is an
+# MCP server that shells out to AWS — it is I/O-bound with no hot loops, so it does
+# not need full `release` optimization. Dropping to opt-level 1 + max codegen-units
+# turns a ~23-min release compile of the aws-sdk/aws-lc-sys tree into a few minutes;
+# the shipped binary is a touch larger/slower but functionally identical.
+[profile.release-ci]
+inherits = "release"
+opt-level = 1
+codegen-units = 256
+lto = false
+debug = false
+strip = true

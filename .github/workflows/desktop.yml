@@ -52,10 +52,13 @@ jobs:
             . -> target
             src-tauri -> target
       - name: Build oab-mcp sidecar (arm64)
+        # release-ci profile (root Cargo.toml): opt-level 1 + codegen-units 256,
+        # so the aws-sdk/aws-lc-sys tree compiles in minutes, not ~23. The sidecar
+        # is I/O-bound (AWS API calls), so it doesn't need full release opt.
         run: |
-          cargo build --release -p oab-mcp --target aarch64-apple-darwin
+          cargo build --profile release-ci -p oab-mcp --target aarch64-apple-darwin
           mkdir -p src-tauri/binaries
-          cp target/aarch64-apple-darwin/release/oab-mcp \
+          cp target/aarch64-apple-darwin/release-ci/oab-mcp \
             src-tauri/binaries/oab-mcp-aarch64-apple-darwin
       - name: Install Tauri CLI
         run: npm install -g @tauri-apps/cli@^2
