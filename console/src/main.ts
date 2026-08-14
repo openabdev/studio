@@ -3,9 +3,10 @@ import {
   renderRoster,
   renderIdentity,
   renderFleetConfig,
+  renderRemote,
   filterByMembers,
 } from "./render";
-import type { FleetConfig } from "./types";
+import type { FleetConfig, RemoteConfig } from "./types";
 import { createPane, bindBackend, type Level } from "./log";
 import { EditorView, basicSetup } from "codemirror";
 import { EditorState } from "@codemirror/state";
@@ -25,14 +26,17 @@ let activeFleet: string | null = null;
 let activeCluster = DEFAULT_CLUSTER;
 let activeMembers: string[] = [];
 let fleetConfig: FleetConfig | null = null;
+let remoteConfig: RemoteConfig | null = null;
 
 const roster = document.getElementById("roster");
 const identityEl = document.getElementById("identity");
 const configEl = document.getElementById("config");
+const remoteEl = document.getElementById("remote");
 const editorSection = document.getElementById("config-editor");
 const editorMount = document.getElementById("cfg-editor-mount");
 const editorError = document.getElementById("cfg-editor-error");
 const editorPathEl = document.getElementById("cfg-editor-path");
+const editorTitleEl = document.getElementById("cfg-editor-title");
 const saveBtn = document.getElementById("cfg-save") as HTMLButtonElement | null;
 const cancelBtn = document.getElementById("cfg-cancel") as HTMLButtonElement | null;
 const clusterLabel = document.getElementById("cluster-label");
@@ -147,6 +151,21 @@ async function refreshConfig(): Promise<void> {
   }
 }
 
+// The remote reverse-MCP connection panel (Part B). Fetched on boot; the live
+// status is also pushed via the `remote-status` event (see boot), so this is the
+// initial render + a refresh after an activate/deactivate/save action.
+async function refreshRemote(): Promise<void> {
+  if (!remoteEl) return;
+  try {
+    remoteConfig = await source.remoteConfig();
+    renderRemote(remoteEl, remoteConfig);
+  } catch (e) {
+    note("error", `remote config: ${errText(e)}`);
+    remoteConfig = null;
+    renderRemote(remoteEl, null);
+  }
+}
+
 // Switch the active fleet by identity (name): re-point every read at its cluster
 // (and thus its bound credential), filter the roster to its members, and refresh
 // immediately — so "switch fleet" == "switch managing account + roster" the ADR
@@ -166,11 +185,13 @@ function selectFleet(name: string): void {
   void tick();
 }
 
-// ---- fleets.toml editor (ADR #19 slice C: the "edit" side) -------------------
-// A CodeMirror TOML editor over the raw config file. Kept imperative (CM owns
-// real DOM) and separate from the re-rendered config panel, so switching fleets
-// never wipes an open editor.
+// ---- TOML editor (fleets.toml + remote.toml) ---------------------------------
+// One CodeMirror TOML editor, shared by both config files (which one is set by
+// `editorTarget`). Kept imperative (CM owns real DOM) and separate from the
+// re-rendered panels, so a background refresh never wipes an open editor.
+type EditorTarget = "fleet" | "remote";
 let editorView: EditorView | null = null;
+let editorTarget: EditorTarget = "fleet";
 
 function showEditorError(msg: string | null): void {
   if (!editorError) return;
@@ -178,15 +199,21 @@ function showEditorError(msg: string | null): void {
   editorError.hidden = !msg;
 }
 
-function openEditor(): void {
+function openEditor(target: EditorTarget): void {
   if (!editorSection || !editorMount) return;
+  editorTarget = target;
+  const isRemote = target === "remote";
+  const doc = (isRemote ? remoteConfig?.text : fleetConfig?.text) ?? "";
+  const path = (isRemote ? remoteConfig?.path : fleetConfig?.path) ?? "";
   showEditorError(null);
-  if (editorPathEl) editorPathEl.textContent = fleetConfig?.path ?? "";
+  if (editorTitleEl)
+    editorTitleEl.textContent = isRemote ? "edit remote.toml" : "edit fleets.toml";
+  if (editorPathEl) editorPathEl.textContent = path;
   editorView?.destroy();
   editorView = new EditorView({
     parent: editorMount,
     state: EditorState.create({
-      doc: fleetConfig?.text ?? "",
+      doc,
       extensions: [basicSetup, StreamLanguage.define(toml)],
     }),
   });
@@ -208,12 +235,19 @@ async function saveEditor(): Promise<void> {
   showEditorError(null);
   try {
     // The backend validates the TOML and rejects (without writing) on error.
-    fleetConfig = await source.writeFleetConfig(text);
-    if (configEl) renderFleetConfig(configEl, fleetConfig, activeFleet);
-    note("info", "fleet config saved");
-    closeEditor();
-    // A binding change may alter the active fleet's credential — re-observe.
-    void refreshIdentity();
+    if (editorTarget === "remote") {
+      remoteConfig = await source.writeRemoteConfig(text);
+      if (remoteEl) renderRemote(remoteEl, remoteConfig);
+      note("info", "remote config saved");
+      closeEditor();
+    } else {
+      fleetConfig = await source.writeFleetConfig(text);
+      if (configEl) renderFleetConfig(configEl, fleetConfig, activeFleet);
+      note("info", "fleet config saved");
+      closeEditor();
+      // A binding change may alter the active fleet's credential — re-observe.
+      void refreshIdentity();
+    }
   } catch (e) {
     showEditorError(`save failed — ${errText(e)}`);
   } finally {
@@ -230,11 +264,42 @@ if (configEl) {
   configEl.addEventListener("click", (ev) => {
     const target = ev.target as HTMLElement;
     if (target.closest('[data-action="edit-config"]')) {
-      openEditor();
+      openEditor("fleet");
       return;
     }
     const btn = target.closest<HTMLElement>("[data-fleet]");
     if (btn?.dataset.fleet) selectFleet(btn.dataset.fleet);
+  });
+}
+
+// The remote panel: "Edit config" opens remote.toml in the editor; "Activate"
+// dials the /acp endpoint; "Disconnect" tears it down. Status then updates via
+// the `remote-status` event, with a refresh as a fallback.
+async function remoteAction(kind: "connect" | "disconnect"): Promise<void> {
+  try {
+    if (kind === "connect") {
+      await source.remoteConnect();
+      note("info", "activating remote connection…");
+    } else {
+      await source.remoteDisconnect();
+      note("info", "remote connection deactivated");
+    }
+  } catch (e) {
+    note("error", `remote ${kind}: ${errText(e)}`);
+  }
+  void refreshRemote();
+}
+
+if (remoteEl) {
+  remoteEl.addEventListener("click", (ev) => {
+    const target = ev.target as HTMLElement;
+    if (target.closest('[data-action="edit-remote-config"]')) {
+      openEditor("remote");
+    } else if (target.closest('[data-action="remote-connect"]')) {
+      void remoteAction("connect");
+    } else if (target.closest('[data-action="remote-disconnect"]')) {
+      void remoteAction("disconnect");
+    }
   });
 }
 
@@ -369,17 +434,43 @@ function setupUpdater(): void {
   el.addEventListener("click", () => void (pending ? install(el, invoke) : check(el, invoke)));
 }
 
+// Live remote-connection status: the backend pushes `remote-status` events as the
+// transport connects / drops / errors, so the panel reflects the real state
+// without polling. Browser build (no `__TAURI__`) simply skips it.
+async function bindRemoteStatus(): Promise<void> {
+  interface EventGlobal {
+    event?: {
+      listen?: <T>(
+        e: string,
+        h: (e: { payload: T }) => void,
+      ) => Promise<unknown>;
+    };
+  }
+  const listen = (globalThis as { __TAURI__?: EventGlobal }).__TAURI__?.event
+    ?.listen;
+  if (!listen) return;
+  await listen<{ status: string }>("remote-status", (e) => {
+    const status = e.payload?.status ?? "disconnected";
+    if (remoteConfig) {
+      remoteConfig = { ...remoteConfig, status };
+      if (remoteEl) renderRemote(remoteEl, remoteConfig);
+    }
+  });
+}
+
 // Boot order matters: subscribe to the log streams FIRST, then start the core,
 // so the spawn → handshake → ready lifecycle lines are captured, not lost.
 async function boot(): Promise<void> {
   note("info", `OAB Studio ${BUILD} (built ${__BUILD_TIME__})`);
   if (activity && mcp) await bindBackend(activity, mcp);
+  await bindRemoteStatus();
   if (clusterLabel) clusterLabel.textContent = activeCluster;
   note("info", `polling cluster "${activeCluster}" every ${POLL_MS / 1000}s`);
   setupUpdater();
   await startCore();
   void refreshConfig();
   void refreshIdentity();
+  void refreshRemote();
   void tick();
   window.setInterval(() => void tick(), POLL_MS);
 }
