@@ -36,6 +36,11 @@ export interface Source {
   writeRemoteConfig(text: string): Promise<RemoteConfig>;
   remoteConnect(): Promise<void>;
   remoteDisconnect(): Promise<void>;
+  // Chat over the live connection (Part C): send one turn (`session/prompt`) or
+  // cancel the in-flight turn (`session/cancel`). The reply streams back as
+  // `agent-update` events, not through this call, so both resolve immediately.
+  agentPrompt(text: string): Promise<void>;
+  agentCancel(): Promise<void>;
 }
 
 // Fixture-backed source for the standalone / browser build — no core required.
@@ -66,6 +71,10 @@ export class MockSource implements Source {
   // Browser preview: no core to dial, so activate/deactivate are no-ops.
   async remoteConnect(): Promise<void> {}
   async remoteDisconnect(): Promise<void> {}
+  // Browser preview: no live agent. `main.ts` detects the mock (no Tauri shell)
+  // and drives a canned reply locally so the panel is still demonstrable.
+  async agentPrompt(): Promise<void> {}
+  async agentCancel(): Promise<void> {}
 }
 
 // Minimal shape of the Tauri global bridge (v2, `withGlobalTauri`). Accessed via
@@ -123,6 +132,12 @@ export class TauriSource implements Source {
   }
   async remoteDisconnect(): Promise<void> {
     await this.invoke()<unknown>("remote_disconnect");
+  }
+  async agentPrompt(text: string): Promise<void> {
+    await this.invoke()<unknown>("agent_prompt", { text });
+  }
+  async agentCancel(): Promise<void> {
+    await this.invoke()<unknown>("agent_cancel");
   }
 }
 
