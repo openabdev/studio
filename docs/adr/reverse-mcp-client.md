@@ -146,18 +146,32 @@ contract) Studio must respect:
 | Any inbound frame | `8 MiB` (exceed → connection closed) |
 | A method-bearing frame (request/notification) | `1 MiB` |
 
-### 4.3 `oab-mcp` becomes in-process callable
+### 4.3 The tunnel relays to the sidecar `oab-mcp` (not an in-process link)
 
-Today `oab-mcp` is only reachable over stdio (`rmcp` `transport-io`). The tunnel
-dispatch needs to invoke the **same** tool logic in-process. Refactor `oab-mcp` so
-its `ServerHandler` (the `initialize` / `tools/list` / `tools/call` surface) is
-callable directly, and let **both** transports sit on top of it:
+**Revised 2026-08-14, after reading `src-tauri`.** The desktop already reaches
+`oab-mcp` **only over stdio**: it spawns the bundled `oab-mcp` sidecar and
+multiplexes JSON-RPC over its stdio (`McpClient`, per the *desktop-core-sidecar*
+ADR), which deliberately keeps `studio-cp` / `aws-config` **out of the Tauri
+build** — `src-tauri` is even its own workspace to stay off `cargo build
+--workspace`. So the tunnel dispatch **must not** link `oab-mcp` in-process; it
+would drag the whole `aws-sdk` into the desktop binary and reverse that ADR.
 
-- **path (i)** — the reverse-MCP tunnel dispatch (this ADR);
-- **path (ii)** — the standalone stdio binary (`transport-io`), unchanged for the
-  headless case.
+**Decision: the tunnel is a WS ↔ sidecar relay.** An inbound tunnel
+`initialize` / `tools/list` / `tools/call` is forwarded to the **already-running**
+sidecar via `McpClient` (which is already a JSON-RPC multiplexer) and its result
+relayed back. Both sides speak MCP JSON-RPC, so this is a thin relay, and the
+sidecar is the single instance already holding Studio's identity / `fleets.toml`
+bindings — so tunnelled tools behave identically to the ones the UI panels call.
 
-One tool implementation, two front doors. No tool logic is duplicated or forked.
+- **path (i)** — the reverse-MCP tunnel (this ADR): WS → `McpClient` → sidecar.
+- **path (ii)** — the standalone stdio binary, unchanged for the headless case.
+
+**Slice 2 (the `oab-mcp` lib/bin split with a transport-agnostic `dispatch`) is
+still merged and useful** — it cleanly separates the handler and would let a
+*future headless* reverse-MCP client drive `oab-mcp` in-process — but the
+**desktop** path does not use that in-process API; it relays to the sidecar. The
+one-implementation-two-front-doors property holds at the sidecar (`oab-mcp`
+itself), not at an in-process link inside `src-tauri`.
 
 ### 4.4 D1 — one `oab` server, fleet-parameterized tools (resolves fleet ADR §5 Q2)
 
@@ -257,14 +271,18 @@ depends on none of this.
 1. **`oab-mcp` tools become `fleet`-aware** — accept `fleet` (name), resolve via
    `FleetBindings::get`/`members`; keep `cluster` as a compatible fallback. Backend
    + tests; no network. *(Also completes Part A on the MCP side.)*
-2. **Extract the in-process `oab-mcp` handler** — one `ServerHandler`, the stdio
-   binary re-expressed on top of it. Pure refactor, behaviour-preserving.
-3. **ACP-WS client + session lifecycle** — dial, bearer sub-protocol,
-   `initialize`/`session/new`/`resume`, reconnect. Gated behind config; no tunnel
-   dispatch yet.
-4. **Tunnel dispatch** — `mcp/connect` / `mcp/message` / `mcp/disconnect` /
-   `mcp/cancel` wired to the in-process handler; limits + id correlation. End-to-end
-   against a real agent-runtime gateway (§5, Model A).
+2. **Split `oab-mcp` into a lib + thin stdio bin** with a transport-agnostic
+   `dispatch`. Pure refactor, behaviour-preserving. (Enables a future headless
+   in-process client; the desktop path relays to the sidecar — §4.3.)
+3. **Session lifecycle** — a new aws-free `acp-tunnel` crate: the bearer
+   sub-protocol, JSON-RPC envelopes, and the `initialize`/`session/new`/`resume`
+   state machine declaring the `oab` server. Pure + unit-tested. (The src-tauri WS
+   transport that drives it lands with slice 4.)
+4. **Tunnel dispatch** — inbound `mcp/connect` / `mcp/message` / `mcp/disconnect` /
+   `mcp/cancel` (in `acp-tunnel`, over a `ToolBackend` trait; unit-tested with a
+   mock), plus the **src-tauri WS transport**: dial `/acp` (`tokio-tungstenite`),
+   drive the session, and implement `ToolBackend` by **relaying to the sidecar
+   `McpClient`** (§4.3). End-to-end against a real agent-runtime gateway (§5).
 
 Slices 1–2 need **no** OpenAB dependency and can land immediately. Slices 3–4 need
 only a reachable agent-runtime endpoint + bearer (§5) — ordinary ACP-client
