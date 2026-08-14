@@ -62,6 +62,7 @@ fn tools() -> Vec<Tool> {
             as_map(json!({
                 "type": "object",
                 "properties": {
+                    "fleet": { "type": "string", "description": "Fleet name (see fleet_config): targets the fleet's cluster and managing credential and, for listing tools, restricts results to its members. Overrides the cluster arg." },
                     "cluster": { "type": "string", "description": "ECS cluster (defaults to the server's configured cluster)." }
                 }
             })),
@@ -73,6 +74,7 @@ fn tools() -> Vec<Tool> {
                 "type": "object",
                 "properties": {
                     "service": { "type": "string", "description": "ECS service name (or bare agent name)." },
+                    "fleet": { "type": "string", "description": "Fleet name (see fleet_config): targets the fleet's cluster and managing credential and, for listing tools, restricts results to its members. Overrides the cluster arg." },
                     "cluster": { "type": "string", "description": "ECS cluster (defaults to the server's configured cluster)." }
                 },
                 "required": ["service"]
@@ -85,6 +87,7 @@ fn tools() -> Vec<Tool> {
                 "type": "object",
                 "properties": {
                     "service": { "type": "string", "description": "Optional: limit to one service." },
+                    "fleet": { "type": "string", "description": "Fleet name (see fleet_config): targets the fleet's cluster and managing credential and, for listing tools, restricts results to its members. Overrides the cluster arg." },
                     "cluster": { "type": "string", "description": "ECS cluster (defaults to the server's configured cluster)." }
                 }
             })),
@@ -99,6 +102,7 @@ fn tools() -> Vec<Tool> {
                     "since_minutes": { "type": "integer", "description": "Look-back window in minutes (default 1440 = 24h)." },
                     "limit": { "type": "integer", "description": "Max events, newest first (default 50, max 1000)." },
                     "log_group": { "type": "string", "description": "CloudWatch Logs group the events are archived to (default $OAB_EVENTS_LOG_GROUP, else /oab/ecs-events)." },
+                    "fleet": { "type": "string", "description": "Fleet name (see fleet_config): targets the fleet's cluster and managing credential and, for listing tools, restricts results to its members. Overrides the cluster arg." },
                     "cluster": { "type": "string", "description": "ECS cluster (defaults to the server's configured cluster)." }
                 }
             })),
@@ -110,6 +114,7 @@ fn tools() -> Vec<Tool> {
                 "type": "object",
                 "properties": {
                     "manifest_yaml": { "type": "string", "description": "Full manifest YAML document." },
+                    "fleet": { "type": "string", "description": "Fleet name (see fleet_config): targets the fleet's cluster and managing credential; a write to a service outside the fleet's members is refused. Overrides the cluster arg." },
                     "cluster": { "type": "string", "description": "ECS cluster (defaults to the server's configured cluster)." },
                     "wait": { "type": "boolean", "description": "Wait for services to stabilize (default false)." }
                 },
@@ -124,6 +129,7 @@ fn tools() -> Vec<Tool> {
                 "properties": {
                     "name": { "type": "string", "description": "Agent / service name (service = oab-{namespace}-{name})." },
                     "size": { "type": "integer", "enum": [0, 1], "description": "0 = off, 1 = on." },
+                    "fleet": { "type": "string", "description": "Fleet name (see fleet_config): targets the fleet's cluster and managing credential; a write to a service outside the fleet's members is refused. Overrides the cluster arg." },
                     "cluster": { "type": "string", "description": "ECS cluster (defaults to the server's configured cluster)." },
                     "namespace": { "type": "string", "description": "Namespace (default \"default\")." }
                 },
@@ -138,6 +144,7 @@ fn tools() -> Vec<Tool> {
                 "properties": {
                     "resource": { "type": "string", "description": "Resource kind, e.g. \"service\"." },
                     "name": { "type": "string" },
+                    "fleet": { "type": "string", "description": "Fleet name (see fleet_config): targets the fleet's cluster and managing credential; a write to a service outside the fleet's members is refused. Overrides the cluster arg." },
                     "cluster": { "type": "string", "description": "ECS cluster (defaults to the server's configured cluster)." },
                     "namespace": { "type": "string", "description": "Namespace (default \"default\")." }
                 },
@@ -150,6 +157,7 @@ fn tools() -> Vec<Tool> {
             as_map(json!({
                 "type": "object",
                 "properties": {
+                    "fleet": { "type": "string", "description": "Resolve the identity the named fleet's binding selects (distinguishes two fleets that share a cluster). Overrides the cluster arg." },
                     "cluster": { "type": "string", "description": "Resolve the identity the fleet binding for this cluster selects (defaults to the server's configured cluster)." }
                 }
             })),
@@ -203,12 +211,58 @@ fn event_json(e: &scp::EcsEvent) -> Value {
     })
 }
 
+/// The resolved target of a tool call: which cluster to act against (→ which
+/// credential) and, when a fleet was named, which fleet governs the call (its
+/// members scope listing tools; its binding drives `runtime_context`).
+struct Target {
+    cluster: String,
+    /// The governing fleet when the call named one, else `None` (a bare
+    /// `cluster`/default call, unscoped).
+    binding: Option<scp::FleetBinding>,
+}
+
+impl Target {
+    /// Whether a service is in scope for this target — always true for an
+    /// unscoped call; else the fleet's membership test (empty members ⇒ whole
+    /// cluster).
+    fn includes(&self, service_name: &str, short_name: &str) -> bool {
+        match &self.binding {
+            None => true,
+            Some(b) => b.includes(service_name, short_name),
+        }
+    }
+}
+
 impl OabMcp {
     fn cluster(&self, args: &Map<String, Value>) -> String {
         args.get("cluster")
             .and_then(Value::as_str)
             .map(str::to_string)
             .unwrap_or_else(|| self.default_cluster.clone())
+    }
+
+    /// Resolve a call's target from its args. A **`fleet`** (name) selects the
+    /// fleet's cluster (and thus its managing credential) and its member scope;
+    /// an unknown name is an **error**, never a silent fall-through to the
+    /// default cluster (that silent fallback is the AccessDenied class of bug the
+    /// fleet work exists to kill). Absent a `fleet`, the target is the `cluster`
+    /// arg (or the server default) with no member scope — back-compat.
+    fn target(&self, args: &Map<String, Value>) -> Result<Target> {
+        if let Some(name) = args.get("fleet").and_then(Value::as_str) {
+            let guard = self.bindings.read().unwrap();
+            let binding = guard.get(name).cloned().ok_or_else(|| {
+                let known: Vec<&str> = guard.fleets.iter().map(|f| f.name.as_str()).collect();
+                anyhow::anyhow!("unknown fleet {name:?}; configured fleets: [{}]", known.join(", "))
+            })?;
+            return Ok(Target {
+                cluster: binding.cluster.clone(),
+                binding: Some(binding),
+            });
+        }
+        Ok(Target {
+            cluster: self.cluster(args),
+            binding: None,
+        })
     }
 
     /// The AWS config to act as for `cluster`: the fleet binding's credential
@@ -238,10 +292,12 @@ impl OabMcp {
     }
 
     async fn t_list(&self, args: &Map<String, Value>) -> Result<Value> {
-        let cluster = self.cluster(args);
+        let t = self.target(args)?;
+        let cluster = t.cluster.clone();
         let svcs = scp::observe_services(&self.aws_for(&cluster).await, &cluster).await?;
         let deployments: Vec<Value> = svcs
             .iter()
+            .filter(|s| t.includes(&s.service_name, &s.name))
             .map(|s| {
                 json!({
                     "name": s.name,
@@ -259,7 +315,7 @@ impl OabMcp {
     }
 
     async fn t_get(&self, args: &Map<String, Value>) -> Result<Value> {
-        let cluster = self.cluster(args);
+        let cluster = self.target(args)?.cluster;
         let service = args
             .get("service")
             .and_then(Value::as_str)
@@ -271,12 +327,14 @@ impl OabMcp {
     }
 
     async fn t_states(&self, args: &Map<String, Value>) -> Result<Value> {
-        let cluster = self.cluster(args);
+        let t = self.target(args)?;
+        let cluster = t.cluster.clone();
         let services: Vec<String> = match args.get("service").and_then(Value::as_str) {
             Some(s) => vec![s.to_string()],
             None => scp::observe_services(&self.aws_for(&cluster).await, &cluster)
                 .await?
                 .into_iter()
+                .filter(|s| t.includes(&s.service_name, &s.name))
                 .map(|s| s.name)
                 .collect(),
         };
@@ -299,7 +357,7 @@ impl OabMcp {
     }
 
     async fn t_events(&self, args: &Map<String, Value>) -> Result<Value> {
-        let cluster = self.cluster(args);
+        let cluster = self.target(args)?.cluster;
         let service = args.get("service").and_then(Value::as_str);
         let since_minutes = args
             .get("since_minutes")
@@ -345,7 +403,7 @@ impl OabMcp {
     }
 
     async fn t_apply(&self, args: &Map<String, Value>) -> Result<Value> {
-        let cluster = self.cluster(args);
+        let cluster = self.target(args)?.cluster;
         let manifest = args
             .get("manifest_yaml")
             .and_then(Value::as_str)
@@ -357,7 +415,8 @@ impl OabMcp {
     }
 
     async fn t_scale(&self, args: &Map<String, Value>) -> Result<Value> {
-        let cluster = self.cluster(args);
+        let t = self.target(args)?;
+        let cluster = t.cluster.clone();
         let namespace = args
             .get("namespace")
             .and_then(Value::as_str)
@@ -370,6 +429,13 @@ impl OabMcp {
             args.get("size")
                 .and_then(Value::as_i64)
                 .ok_or_else(|| anyhow::anyhow!("missing or invalid arg: size"))? as i32;
+        // Guard: a fleet handle only operates its own members — refuse to scale a
+        // service outside the named fleet (a no-op for unscoped or whole-cluster
+        // calls). Stops a fleet-scoped call from reaching a co-located non-member.
+        let service_name = format!("oab-{namespace}-{name}");
+        if !t.includes(&service_name, name) {
+            anyhow::bail!("service {service_name:?} is not a member of the named fleet");
+        }
         scp::scale_deployment(
             &self.aws_for(&cluster).await,
             &cluster,
@@ -384,24 +450,28 @@ impl OabMcp {
     }
 
     async fn t_runtime_context(&self, args: &Map<String, Value>) -> Result<Value> {
-        let cluster = self.cluster(args);
+        let t = self.target(args)?;
+        let cluster = t.cluster.clone();
         let aws = self.aws_for(&cluster).await;
         let ctx = scp::observe_identity(&aws).await?;
-        // Snapshot the governing binding under a short read-lock (no await held).
-        let (binding, expected) = {
-            let guard = self.bindings.read().unwrap();
-            match guard.for_cluster(&cluster) {
-                Some(b) => (
-                    Some(json!({
-                        "name": b.name,
-                        "profile": b.profile,
-                        "region": b.region,
-                        "expected_principal": b.expected_principal,
-                    })),
-                    b.expected_principal.clone(),
-                ),
-                None => (None, None),
-            }
+        // The governing binding: the **named fleet** when the call named one (so
+        // two fleets sharing a cluster resolve distinctly), else the first fleet
+        // bound to the cluster. Cloned so no lock is held across the await above.
+        let governing = match t.binding {
+            Some(b) => Some(b),
+            None => self.bindings.read().unwrap().for_cluster(&cluster).cloned(),
+        };
+        let (binding, expected) = match governing {
+            Some(b) => (
+                Some(json!({
+                    "name": b.name,
+                    "profile": b.profile,
+                    "region": b.region,
+                    "expected_principal": b.expected_principal,
+                })),
+                b.expected_principal.clone(),
+            ),
+            None => (None, None),
         };
         // Reconcile: expected (declared) vs actual (resolved). null when no
         // expectation is declared. Non-blocking — a warning signal, not a gate.
@@ -485,7 +555,8 @@ impl OabMcp {
     }
 
     async fn t_delete(&self, args: &Map<String, Value>) -> Result<Value> {
-        let cluster = self.cluster(args);
+        let t = self.target(args)?;
+        let cluster = t.cluster.clone();
         let resource = args
             .get("resource")
             .and_then(Value::as_str)
@@ -498,6 +569,12 @@ impl OabMcp {
             .get("namespace")
             .and_then(Value::as_str)
             .unwrap_or("default");
+        // Guard: a fleet handle only operates its own members (no-op unscoped /
+        // whole-cluster).
+        let service_name = format!("oab-{namespace}-{name}");
+        if !t.includes(&service_name, name) {
+            anyhow::bail!("service {service_name:?} is not a member of the named fleet");
+        }
         scp::delete_deployment(
             &self.aws_for(&cluster).await,
             resource,
