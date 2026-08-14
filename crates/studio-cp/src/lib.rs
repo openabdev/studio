@@ -292,6 +292,21 @@ pub struct FleetBinding {
     pub expected_principal: Option<String>,
 }
 
+impl FleetBinding {
+    /// Whether a service belongs to this fleet, matched by **either** its full
+    /// ECS name (`oab-{ns}-{name}`) or its short agent name — mirroring
+    /// [`resolve_service`], which accepts both forms. An **empty** member list ⇒
+    /// the fleet covers the whole cluster (legacy semantics), so everything
+    /// matches.
+    pub fn includes(&self, service_name: &str, short_name: &str) -> bool {
+        self.members.is_empty()
+            || self
+                .members
+                .iter()
+                .any(|m| m == service_name || m == short_name)
+    }
+}
+
 /// The body of a `[fleet.<name>]` table — the fields of a [`FleetBinding`] minus
 /// `name`, which is the table key.
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -751,6 +766,35 @@ members = ["oab-prod-mira"]
         assert!(b.fleet_for_service("oab-prod-nope").is_none());
         // credential resolution still finds a governing fleet by cluster
         assert!(b.for_cluster("oab").is_some());
+    }
+
+    #[test]
+    fn binding_includes_matches_full_or_short_name_and_whole_cluster() {
+        let orca = FleetBinding {
+            name: "orca".into(),
+            cluster: "oab".into(),
+            members: vec!["oab-prod-orca".into()],
+            region: None,
+            profile: None,
+            expected_principal: None,
+        };
+        // full ECS name and short agent name both match (mirrors resolve_service)
+        assert!(orca.includes("oab-prod-orca", "orca"));
+        // a co-located non-member is excluded — this is what keeps two fleets on
+        // one cluster distinct
+        assert!(!orca.includes("oab-prod-mira", "mira"));
+
+        // empty members ⇒ whole cluster: everything matches (legacy semantics)
+        let whole = FleetBinding {
+            name: "prod".into(),
+            cluster: "oab".into(),
+            members: vec![],
+            region: None,
+            profile: None,
+            expected_principal: None,
+        };
+        assert!(whole.includes("oab-prod-orca", "orca"));
+        assert!(whole.includes("anything", "at-all"));
     }
 
     #[test]
