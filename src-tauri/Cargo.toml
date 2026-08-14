@@ -26,7 +26,16 @@ tauri-plugin-log = "2"
 # studio-cp / aws-config. Shell plugin bundles + spawns the sidecar; tokio sync
 # primitives multiplex JSON-RPC requests over its stdio.
 tauri-plugin-shell = "2"
-tokio = { version = "1", features = ["sync", "rt", "macros"] }
+tokio = { version = "1", features = ["sync", "rt", "macros", "net", "time"] }
+
+# Reverse-MCP-over-ACP (reverse-MCP client ADR, Part B): the pure protocol +
+# session state machine + remote-connection config live in `acp-tunnel`; the WS
+# transport here dials `/acp` and relays tunnelled MCP to the sidecar `McpClient`.
+acp-tunnel = { path = "../crates/acp-tunnel" }
+tokio-tungstenite = { version = "0.23", features = ["rustls-tls-webpki-roots"] }
+futures-util = "0.3"
+uuid = { version = "1", features = ["v4"] }
+dirs = "5"
 
 # Remote upgrade (ADR: remote-upgrade): the installed app pulls a signed nightly
 # bundle from the GitHub release and replaces itself in place. Driven from Rust

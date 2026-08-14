@@ -1,4 +1,5 @@
 mod mcp;
+mod remote;
 
 use mcp::McpClient;
 use serde_json::{json, Value};
@@ -203,6 +204,74 @@ async fn deploy_scale(
     }
 }
 
+// ---- Remote reverse-MCP connection (reverse-MCP client ADR, Part B) ---------
+
+/// The remote-connection view the panel renders: the config file path + raw text
+/// (for the editor), the parsed URL, whether it is configured, and the live
+/// connection status. Parse is best-effort so a malformed file still opens in the
+/// editor (shown as not-configured) rather than blanking the panel.
+async fn remote_view(remote: &remote::Remote) -> Result<Value, String> {
+    let text = remote::read_config_text()?;
+    let cfg = acp_tunnel::config::RemoteConfig::parse(&text).unwrap_or_default();
+    let path = remote::config_path()
+        .map(|p| p.display().to_string())
+        .unwrap_or_default();
+    let status = remote.0.lock().await.status.clone();
+    Ok(json!({
+        "path": path,
+        "text": text,
+        "url": cfg.url,
+        "configured": cfg.is_configured(),
+        "status": if status.is_empty() { "disconnected".to_string() } else { status },
+    }))
+}
+
+/// The remote-connection config + status (the "declare" side of the remote panel).
+#[tauri::command]
+async fn remote_config(remote: tauri::State<'_, remote::Remote>) -> Result<Value, String> {
+    remote_view(&remote).await
+}
+
+/// Persist the edited `remote.toml` (validates it parses before writing) and
+/// return the refreshed view.
+#[tauri::command]
+async fn remote_config_write(
+    remote: tauri::State<'_, remote::Remote>,
+    text: String,
+) -> Result<Value, String> {
+    remote::write_config_text(&text)?;
+    remote_view(&remote).await
+}
+
+/// Activate the remote connection (the explicit "Activate" button): dial `/acp`
+/// using the saved config and publish the `oab` tools to the attached agent. The
+/// core sidecar must be started first (it is what the tunnel relays to).
+#[tauri::command]
+async fn remote_connect(
+    app: tauri::AppHandle,
+    core: tauri::State<'_, Core>,
+    remote: tauri::State<'_, remote::Remote>,
+) -> Result<(), String> {
+    let client = {
+        let guard = core.0.lock().await;
+        guard
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| "core not started yet — start the core before connecting".to_string())?
+    };
+    remote::connect(app, &remote, client).await
+}
+
+/// Deactivate the remote connection.
+#[tauri::command]
+async fn remote_disconnect(
+    app: tauri::AppHandle,
+    remote: tauri::State<'_, remote::Remote>,
+) -> Result<(), String> {
+    remote::disconnect(&app, &remote).await;
+    Ok(())
+}
+
 /// What the frontend needs to render the "update available" state: the version
 /// on the release vs. what's running, plus the release notes.
 #[derive(serde::Serialize)]
@@ -265,6 +334,7 @@ pub fn run() {
                 )?;
             }
             app.manage(Core::default());
+            app.manage(remote::Remote::default());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -274,6 +344,10 @@ pub fn run() {
             fleet_config,
             fleet_config_write,
             deploy_scale,
+            remote_config,
+            remote_config_write,
+            remote_connect,
+            remote_disconnect,
             check_update,
             install_update
         ])

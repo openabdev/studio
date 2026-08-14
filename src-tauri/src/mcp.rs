@@ -157,7 +157,10 @@ impl McpClient {
     }
 
     /// Send a request and await the correlated `result` (or a formatted error).
-    async fn request(&self, method: &str, params: Value) -> Result<Value, String> {
+    /// Public so the reverse-MCP tunnel can relay an inner `tools/list` /
+    /// `tools/call` to the sidecar and return its **raw** MCP result verbatim
+    /// (unlike `call_tool`, which decodes the payload for the desktop UI).
+    pub async fn request(&self, method: &str, params: Value) -> Result<Value, String> {
         let id = self.inner.next_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = oneshot::channel();
         self.inner.pending.lock().await.insert(id, tx);
