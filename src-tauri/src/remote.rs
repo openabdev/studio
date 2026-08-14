@@ -135,10 +135,24 @@ async fn run_once<R: Runtime>(
         .as_str()
         .into_client_request()
         .map_err(|e| format!("bad url: {e}"))?;
-    // Bearer rides the WS sub-protocol offer (contract §1). Never logged.
-    let proto = HeaderValue::from_str(&acp::bearer_subprotocol(&cfg.token))
-        .map_err(|_| "invalid token in sub-protocol header".to_string())?;
-    req.headers_mut().insert("Sec-WebSocket-Protocol", proto);
+    // Native (non-browser) client: the bearer rides the `Authorization` header
+    // (the gateway reads `ws_bearer_token` from it), and the WS sub-protocol
+    // offers only `acp.v1`. This split matters: tokio-tungstenite 0.23 parses the
+    // request's `Sec-WebSocket-Protocol` with `split(",")` and does *not* trim, so
+    // a combined `openab.bearer.<token>, acp.v1` offer is stored as
+    // [`openab.bearer.<token>`, ` acp.v1`] (note the leading space) and never
+    // matches the server's echoed `acp.v1` — `Server sent an invalid subprotocol`.
+    // `bearer_subprotocol()` remains the browser form (browsers can't set
+    // `Authorization` on a WS upgrade). Both values carry secrets — never logged.
+    req.headers_mut().insert(
+        "Authorization",
+        HeaderValue::from_str(&format!("Bearer {}", cfg.token))
+            .map_err(|_| "invalid token in Authorization header".to_string())?,
+    );
+    req.headers_mut().insert(
+        "Sec-WebSocket-Protocol",
+        HeaderValue::from_static(acp::ACP_SUBPROTOCOL),
+    );
 
     let (ws, _resp) = tokio_tungstenite::connect_async(req)
         .await
