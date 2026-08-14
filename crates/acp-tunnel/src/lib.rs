@@ -29,6 +29,16 @@ pub mod config;
 /// The ACP sub-protocol token the server echoes back on the `/acp` upgrade.
 pub const ACP_SUBPROTOCOL: &str = "acp.v1";
 
+/// The ACP protocol version Studio negotiates on the `/acp` `initialize`.
+///
+/// ACP versions the wire protocol with a **u16 integer** — unlike MCP, which
+/// uses a date string (e.g. `"2024-11-05"`). The gateway deserializes this
+/// field as `u16`, so sending the MCP string fails with
+/// `invalid type: string, expected u16`. The *tunnelled* MCP `initialize`
+/// (what Studio relays to the `oab-mcp` sidecar) still uses the MCP date string —
+/// only the outer `/acp` handshake uses this integer.
+pub const ACP_PROTOCOL_VERSION: u16 = 1;
+
 /// The WebSocket `Sec-WebSocket-Protocol` offer for a bearer-authed `/acp` dial:
 /// `openab.bearer.<token>, acp.v1` (tunnel contract §1). The server echoes only
 /// `acp.v1`. The token is a secret — this returns it for the transport to place
@@ -348,6 +358,17 @@ mod tests {
             bearer_subprotocol("tok123"),
             "openab.bearer.tok123, acp.v1"
         );
+    }
+
+    #[test]
+    fn acp_protocol_version_is_an_integer_not_an_mcp_date_string() {
+        // ACP versions the protocol with a u16; MCP uses a date string. The
+        // `/acp` gateway deserializes `protocolVersion` as u16, so it must
+        // serialize to a JSON number — a string regresses to
+        // `invalid type: string, expected u16`.
+        let v = json!({ "protocolVersion": ACP_PROTOCOL_VERSION });
+        assert!(v["protocolVersion"].is_number());
+        assert_eq!(v["protocolVersion"], json!(1));
     }
 
     #[test]

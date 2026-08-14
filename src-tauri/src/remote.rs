@@ -164,8 +164,12 @@ async fn run_once<R: Runtime>(
     let mut session = Session::new(vec![acp::oab_server(&conn_id)]);
 
     // Drive the client handshake: initialize, then session/new declaring "oab".
+    // This is the outer **ACP** handshake — `protocolVersion` is a u16 integer
+    // (the gateway deserializes it as `u16`). Do not copy MCP's date string here;
+    // the MCP date string is correct only for the *tunnelled* inner `initialize`
+    // in `handle_inner` below.
     let (_id, init) = session.initialize(json!({
-        "protocolVersion": "2024-11-05",
+        "protocolVersion": acp::ACP_PROTOCOL_VERSION,
         "clientCapabilities": {},
         "clientInfo": { "name": "oab-studio", "version": env!("CARGO_PKG_VERSION") }
     }));
