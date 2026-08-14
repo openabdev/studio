@@ -48,6 +48,21 @@ jobs:
           targets: aarch64-apple-darwin
       - uses: Swatinem/rust-cache@v2
         with:
+          # rust-cache's key hashes Cargo.lock (+ rustc + cargo config) but NOT
+          # the [profile.*] sections of Cargo.toml. So adding `release-ci` in #51
+          # did not change the key: every run got a "full match" against the old
+          # v0 cache — which only held deps built under `release/`, never
+          # `release-ci/`. `cargo build --profile release-ci` therefore recompiled
+          # the whole aws-sdk/aws-lc-sys tree cold (~20m) every run, and since the
+          # key matched, the post step said "Cache up-to-date" and saved nothing
+          # (GitHub keys are immutable) — so the release-ci deps never persisted.
+          #
+          # prefix-key bump = one-time reset off the poisoned v0 cache.
+          # key: hashFiles('Cargo.toml') folds the profile-defining manifest into
+          # the cache key, so any future profile edit auto-mints a fresh key and
+          # self-heals — no need to remember to bump prefix-key by hand again.
+          prefix-key: "v1-rust"
+          key: ${{ hashFiles('Cargo.toml') }}
           workspaces: |
             . -> target
             src-tauri -> target
