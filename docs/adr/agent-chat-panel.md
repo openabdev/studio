@@ -14,7 +14,7 @@
 
 - The remote `/acp` connection now succeeds end-to-end (#45 handshake, #46 `protocolVersion`), reaching `session active — oab tools published`. But that is **only the reverse-MCP direction**: the agent can call Studio's `oab` tools; the operator has **no way to talk to the agent** — "we can't work with the agent."
 - `remote.rs` opens exactly one ACP session (`initialize` → `session/new`, declaring `oab`) and then serves the gateway-initiated tunnel. Agent chat frames (`session/update`) already arrive on that socket and are **silently dropped** — `parse_inbound` → `Inbound::Other` → the empty match arm.
-- `katashiro` is a working ACP chat client on the **same** gateway. It proves the full contract (`session/prompt` / `session/update` / `session/cancel`) and a complete chat UX (streaming markdown, stop/retry, history, a multi-agent room). It is the parity target — we do not reverse-engineer the wire, we follow it.
+- `katashiro` is a working ACP chat client on the **same** gateway. It proves the full contract (`session/prompt` / `session/update` / `session/cancel`) and a complete chat UX (streaming markdown, stop/retry, history). It is the parity target for the **chat**, not the room — we follow its wire and its rendering, and deliberately leave its multi-agent surface behind (§4).
 
 ## 2. Decision — Part A: chat rides the existing session
 
@@ -48,12 +48,13 @@ A new panel/tab in the vanilla-TS `console` (add `<section id="chat">` + a `#tab
 - **Scroll** — stick-to-bottom with an 80px threshold and a **jump-to-latest** pill when scrolled up; sending always pulls to the bottom, receiving only follows if already there.
 - **System/error rows**, single-letter avatars, `HH:MM (TPE)` timestamps — all `textContent`, never markdown.
 
-**Single-active-agent (the model, not just an MVP shortcut).** Studio has one remote endpoint (`remote.toml`), so chat targets exactly the bound agent — today that is Orca. Katashiro's room / @mention / relay / loop-guard is a **design we keep but gate off** as a size-1 room; multi-agent lights up later, tied to the fleet model (fleet ADR), not this slice.
+**Single-agent, by design.** Studio has one remote endpoint (`remote.toml`) and chat targets exactly that bound agent — today Orca. **No multi-agent room** (Brett, 2026-08-14): katashiro's room / @mention / relay / loop-guard is explicitly **not a goal**. We take its chat primitives — streaming, markdown, turn controls — and leave the room machinery behind, so `remote.rs` and the panel stay one session with no routing layer (`resolveTargets`, `relayAgentReply`, the loop guard, batching-for-relays are all dropped).
 
 ## 5. Scope (now)
 
 - ✅ **In (MVP):** the single bound agent; text single-turn streaming (`agent_message_chunk`); markdown render at finalize; stop / retry; batched prompt queue; autoscroll + jump pill; system/error rows.
-- ⚠️ **Out (later slices):** multi-agent room / @mention / relay / loop-guard; the `tool_call` / thought `session/update` kinds (rendered as cards); chat history persistence + `session/resume` on reconnect; a browser-tunnel status strip; accessibility polish (`aria-live` / `role="log"` — katashiro itself lacks these, Studio should do better).
+- ⚠️ **Out (later slices):** the `tool_call` / thought `session/update` kinds (rendered as cards); chat history persistence + `session/resume` on reconnect; a browser-tunnel status strip; accessibility polish (`aria-live` / `role="log"` — katashiro itself lacks these, Studio should do better).
+- 🚫 **Not a goal:** the multi-agent room — @mention routing, agent→agent relay, loop guard (Brett, 2026-08-14). Studio chats one bound agent; there is no room to light up later.
 
 ## 6. Consequences
 
@@ -69,6 +70,5 @@ A new panel/tab in the vanilla-TS `console` (add `<section id="chat">` + a `#tab
 2. **`session/update` taxonomy** — beyond `agent_message_chunk`, what kinds does the openab agent emit (thoughts, `tool_call` / `tool_call_update`)? Defines the phase-2 card model.
 3. **History & resume** — persist transcript + `sessionId` for continuity across reconnect/restart? Desktop has no per-window `chrome.storage` collision, so this is simpler than katashiro — is it wanted in MVP?
 4. **Threat model under Tauri** — where the `/acp` bearer lives relative to the webview, and what Studio CSP replaces katashiro's MV3 egress lock.
-5. **Multi-agent trigger** — what lights up the room model: multiple `remote.toml` endpoints, or fleet binding? Ties to the fleet ADR.
 
 This is a direction-alignment ADR; implementation lands in slices (Part B backend, then Part C MVP panel), each verified against katashiro parity and the live gateway.
