@@ -32,6 +32,20 @@
       </section>
       <section id="identity" class="identity-wrap"></section>
       <section id="remote" class="remote-wrap"></section>
+      <section id="chat" class="chat-wrap">
+        <div class="chat-head">
+          <span class="chat-title">Agent chat</span>
+          <span class="chat-conn" id="chat-conn">disconnected</span>
+        </div>
+        <div id="chat-log" class="chat-log"></div>
+        <form id="chat-form" class="chat-input">
+          <textarea id="chat-text" class="chat-text" rows="2" placeholder="Message the agent…  (Enter to send · Shift+Enter for a newline)"></textarea>
+          <div class="chat-actions">
+            <button type="button" id="chat-stop" class="chat-btn chat-stop" hidden>Stop</button>
+            <button type="submit" id="chat-send" class="chat-btn chat-send">Send</button>
+          </div>
+        </form>
+      </section>
       <section class="logs">
         <nav class="tabs" id="tabs">
           <button class="tab is-active" data-target="log">Activity</button>
