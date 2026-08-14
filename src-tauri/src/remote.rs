@@ -308,12 +308,22 @@ async fn run_once<R: Runtime>(
     let mut heartbeat = tokio::time::interval(HEARTBEAT_INTERVAL);
     heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
+    // Keepalive (#54): the heartbeat probe above only runs once the session is
+    // active, but Cloudflare's tunnel idle-closes a WS with no traffic (~100s) and
+    // tokio-tungstenite never pings on its own — so an idle `/acp` connection flaps
+    // roughly every 2 min *during handshake*, before the heartbeat can cover it.
+    // A periodic low-level WS Ping counts as traffic and keeps the tunnel open in
+    // that window (and complements the JSON heartbeat once active). `Skip`
+    // missed-tick behaviour avoids a burst of pings if the loop was ever busy.
+    let mut keepalive = tokio::time::interval(std::time::Duration::from_secs(45));
+    keepalive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
     // The reason this connection ended. `break 'conn` sets it; a clean EOF / close
     // leaves it `Ok`. Threaded out so the post-loop cleanup (abandoned-turn notice)
     // runs on every exit path.
     let mut outcome: Result<(), String> = Ok(());
 
-    // Loop over inbound frames, outbound chat actions, and the liveness timer.
+    // Loop over inbound frames, outbound chat actions, and the liveness timers.
     // `write` never leaves the task; commands reach it only through `out_rx`.
     'conn: loop {
         tokio::select! {
@@ -409,6 +419,23 @@ async fn run_once<R: Runtime>(
                     outcome = Err(e);
                     break 'conn;
                 }
+            }
+
+            // Keepalive tick: send a WS Ping directly on `write` (the `send` helper
+            // only frames JSON Text). The read arm ignores the returning Pong
+            // (`Ping | Pong | Frame => continue`), so this composes with the rest of
+            // the loop without touching the inbound path.
+            _ = keepalive.tick() => {
+                if let Err(e) = write.send(WsMessage::Ping(Vec::new())).await {
+                    outcome = Err(format!("ws keepalive ping: {e}"));
+                    break 'conn;
+                }
+                // Surface each keepalive in the Activity pane so the operator can
+                // see the tunnel being kept warm between prompts.
+                let _ = app.emit(
+                    "app-log",
+                    json!({ "level": "info", "msg": "remote: keepalive ping sent" }),
+                );
             }
 
             // Inbound: a frame from the gateway.
