@@ -69,7 +69,13 @@ impl Remote {
             .prompt_tx
             .as_ref()
             .ok_or_else(|| "not connected — activate the remote connection first".to_string())?;
-        tx.send(msg).map_err(|_| "connection closed".to_string())
+        // A live `prompt_tx` whose receiver has gone means the connection is
+        // tearing down (the socket closed and `run_reconnecting` is about to
+        // retract the channel). Report that as clearly as the missing-channel
+        // case above rather than a bare "connection closed", which reads like a
+        // different, harder failure (review #3).
+        tx.send(msg)
+            .map_err(|_| "not connected — the remote connection just closed; reactivate it".to_string())
     }
 }
 
@@ -226,26 +232,52 @@ async fn run_once<R: Runtime>(
     // never by phase (ADR §3, "id correlation").
     let mut pending_prompt: Option<u64> = None;
 
+    // Relay replies (tunnelled `tools/list` / `tools/call`) come back through this
+    // channel instead of being sent inline, so a slow sidecar round-trip inside
+    // `handle_inner` no longer stalls the loop — queued prompts, cancels and chat
+    // chunks stay responsive while a `tools/call` is in flight (review #2). The
+    // single writer stays in the loop, so frames are still serialized on the wire.
+    let (reply_tx, mut reply_rx) = mpsc::unbounded_channel::<Value>();
+
     // Loop over BOTH inbound frames and outbound chat actions. `write` never leaves
     // the task; commands reach it only through `out_rx`.
     loop {
         tokio::select! {
-            // Outbound: a queued chat action from the UI.
-            out = out_rx.recv() => {
+            // Outbound: a queued chat action from the UI. The `Some` pattern
+            // disables this arm if the channel ever closes, so a `None` can never
+            // busy-spin the loop (review #4); in practice `out_tx` lives for the
+            // whole run, so it stays open until teardown.
+            Some(out) = out_rx.recv() => {
                 match out {
-                    Some(OutMsg::Prompt(text)) => {
-                        if let Some((id, frame)) = session.prompt(&text) {
+                    OutMsg::Prompt(text) => {
+                        // In-flight guard (review #1): single-shot turn model. A
+                        // second prompt while one is pending would overwrite
+                        // `pending_prompt` and orphan the first turn's `turn_end`
+                        // (the panel spinner would hang). Reject rather than clobber
+                        // — Part C's turn management gates this too, but the backend
+                        // must not depend on the UI for its own correctness.
+                        if pending_prompt.is_some() {
+                            let _ = app.emit(
+                                "app-log",
+                                json!({ "level": "warn", "msg": "remote: prompt ignored — a turn is already in flight" }),
+                            );
+                        } else if let Some((id, frame)) = session.prompt(&text) {
                             pending_prompt = Some(id);
                             send(&mut write, &frame).await?;
                         }
                     }
-                    Some(OutMsg::Cancel) => {
+                    OutMsg::Cancel => {
                         if let Some(frame) = session.cancel() {
                             send(&mut write, &frame).await?;
                         }
                     }
-                    None => {} // sender dropped; only out_tx holds it, so unreachable
                 }
+            }
+
+            // Outbound: a relay reply produced by a spawned `handle_inner` task
+            // (review #2). Same `Some`-pattern guard against a closed channel.
+            Some(reply) = reply_rx.recv() => {
+                send(&mut write, &reply).await?;
             }
 
             // Inbound: a frame from the gateway.
@@ -319,9 +351,19 @@ async fn run_once<R: Runtime>(
                         send(&mut write, &acp::connect_reply(id, &conn_id)).await?;
                     }
                     Inbound::Message { id, method, params, .. } => {
-                        if let Some(reply) = handle_inner(client, id, &method, params).await {
-                            send(&mut write, &reply).await?;
-                        }
+                        // Relay to the sidecar off the loop (review #2): a slow
+                        // `tools/call` must not block queued prompts/cancels or
+                        // streamed chat chunks. The reply returns via `reply_tx`
+                        // and is written by the loop's single writer. `McpClient`
+                        // is `Arc`-backed, so the clone is cheap; each reply carries
+                        // its own id, so out-of-order completion is fine for MCP.
+                        let client = client.clone();
+                        let reply_tx = reply_tx.clone();
+                        tauri::async_runtime::spawn(async move {
+                            if let Some(reply) = handle_inner(&client, id, &method, params).await {
+                                let _ = reply_tx.send(reply);
+                            }
+                        });
                     }
                     Inbound::Disconnect { id, .. } => {
                         send(&mut write, &acp::disconnect_reply(id)).await?;
