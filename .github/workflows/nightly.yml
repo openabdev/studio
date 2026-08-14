@@ -40,9 +40,14 @@ jobs:
       # apart (a static 0.1.0 would never compare as "newer"). Prerelease-tagged
       # so it sorts below any real 0.1.0 release. No-op for update detection on
       # pre-updater main, but harmless.
+      #
+      # Timestamp is Asia/Taipei (the operator's timezone), so a nightly version
+      # reads as local wall-clock. Switching from UTC to TPE only shifts the digits
+      # +8h forward, so monotonicity is preserved (no future build can stamp lower
+      # than a past UTC-stamped one).
       - name: Stamp a monotonic nightly version
         run: |
-          ver="0.1.0-nightly.$(date -u +%Y%m%d%H%M)"
+          ver="0.1.0-nightly.$(TZ='Asia/Taipei' date +%Y%m%d%H%M)"
           node -e "const fs=require('fs');const f='src-tauri/tauri.conf.json';const j=JSON.parse(fs.readFileSync(f,'utf8'));j.version='$ver';fs.writeFileSync(f,JSON.stringify(j,null,2)+'\n')"
           echo "NIGHTLY_VERSION=$ver" >> "$GITHUB_ENV"
           echo "stamped $ver"
