@@ -39,6 +39,29 @@ function rowHtml(d: Deployment): string {
     </tr>`;
 }
 
+// The ECS service name a Deployment maps to — the key `fleets.toml` `members`
+// are written as (`oab-{namespace}-{name}`). Kept here so the member/deployment
+// join lives in one place; mirrors studio-cp's `oab-{ns}-{name}` convention.
+export function serviceName(d: Deployment): string {
+  return `oab-${d.namespace}-${d.name}`;
+}
+
+// Pure: keep only the deployments belonging to a fleet's `members`. An empty
+// member list ⇒ the fleet covers the whole cluster (legacy semantics), so the
+// roster is unfiltered. A member matches either the full ECS service name
+// (`oab-{ns}-{name}`) or the short deployment name — mirroring studio-cp's
+// `resolve_service`, which accepts both forms.
+export function filterByMembers(
+  deployments: Deployment[],
+  members: string[],
+): Deployment[] {
+  if (members.length === 0) return deployments;
+  const wanted = new Set(members);
+  return deployments.filter(
+    (d) => wanted.has(serviceName(d)) || wanted.has(d.name),
+  );
+}
+
 // Pure: deployments -> roster table HTML. Kept side-effect-free so it is unit
 // testable without a DOM.
 export function rosterHtml(deployments: Deployment[]): string {
@@ -129,26 +152,40 @@ function credLine(f: FleetConfig["fleets"][number]): string {
   return parts.map(escapeHtml).join(" · ");
 }
 
+// The members line: the ECS services grouped into this fleet, or a note that an
+// empty member list means the whole cluster (legacy semantics).
+function membersLine(f: FleetConfig["fleets"][number]): string {
+  if (f.members.length === 0) {
+    return `<span class="cfg-members cfg-members-all">whole cluster</span>`;
+  }
+  const chips = f.members
+    .map((m) => `<span class="cfg-member">${escapeHtml(m)}</span>`)
+    .join("");
+  return `<span class="cfg-members">${chips}</span>`;
+}
+
 function fleetButton(
   f: FleetConfig["fleets"][number],
-  activeCluster: string,
+  activeFleet: string | null,
 ): string {
-  const active = f.cluster === activeCluster;
+  const active = f.name === activeFleet;
   const cls = active ? "cfg-fleet is-active" : "cfg-fleet";
-  return `<button class="${cls}" type="button" data-cluster="${escapeHtml(f.cluster)}" aria-pressed="${active}">
+  return `<button class="${cls}" type="button" data-fleet="${escapeHtml(f.name)}" aria-pressed="${active}">
       <span class="cfg-name">${escapeHtml(f.name || f.cluster)}</span>
       <span class="cfg-cluster">${escapeHtml(f.cluster)}</span>
+      ${membersLine(f)}
       <span class="cfg-cred">${credLine(f)}</span>
     </button>`;
 }
 
-// Pure: the fleet-binding config -> the config panel HTML. Each fleet is a
-// button that switches the active cluster (the "switch" step). `activeCluster`
-// marks which one is currently selected. An empty config still renders — it
-// shows where to add bindings, which is exactly the "no panel for config" gap.
+// Pure: the fleet-binding config -> the config panel HTML. A fleet is a
+// usage-based group, so each button switches by fleet **identity** (name), not
+// by cluster — two fleets may share a cluster. `activeFleet` (a name, or `null`
+// when none is selected) marks the current one. An empty config still renders —
+// it shows where to add bindings, which is exactly the "no panel for config" gap.
 export function fleetConfigHtml(
   cfg: FleetConfig | null,
-  activeCluster: string,
+  activeFleet: string | null,
 ): string {
   if (!cfg) {
     return `<div class="config"><span class="muted">fleet config unavailable</span></div>`;
@@ -157,8 +194,8 @@ export function fleetConfigHtml(
     ? `<span class="cfg-path" title="edit this file to configure fleets"><code>${escapeHtml(cfg.path)}</code></span>`
     : "";
   const body = cfg.fleets.length
-    ? `<div class="cfg-list">${cfg.fleets.map((f) => fleetButton(f, activeCluster)).join("")}</div>`
-    : `<p class="cfg-empty">No fleets configured — add <code>[[fleet]]</code> entries to the config file above. Managing <code>${escapeHtml(cfg.default_cluster)}</code> via the default credential chain.</p>`;
+    ? `<div class="cfg-list">${cfg.fleets.map((f) => fleetButton(f, activeFleet)).join("")}</div>`
+    : `<p class="cfg-empty">No fleets configured — add <code>[fleet.&lt;name&gt;]</code> entries to the config file above. Managing <code>${escapeHtml(cfg.default_cluster)}</code> via the default credential chain.</p>`;
   return `<div class="config">
       <div class="cfg-head">
         <span class="cfg-label">fleets</span>
@@ -172,7 +209,7 @@ export function fleetConfigHtml(
 export function renderFleetConfig(
   el: HTMLElement,
   cfg: FleetConfig | null,
-  activeCluster: string,
+  activeFleet: string | null,
 ): void {
-  el.innerHTML = fleetConfigHtml(cfg, activeCluster);
+  el.innerHTML = fleetConfigHtml(cfg, activeFleet);
 }

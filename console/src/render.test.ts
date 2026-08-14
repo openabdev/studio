@@ -1,5 +1,11 @@
 import { describe, it, expect } from "vitest";
-import { rosterHtml, identityHtml, fleetConfigHtml } from "./render";
+import {
+  rosterHtml,
+  identityHtml,
+  fleetConfigHtml,
+  filterByMembers,
+  serviceName,
+} from "./render";
 import {
   FIXTURE_DEPLOYMENTS,
   FIXTURE_FLEET_CONFIG,
@@ -122,26 +128,49 @@ describe("identityHtml", () => {
 });
 
 describe("fleetConfigHtml", () => {
-  it("renders one switchable button per configured fleet", () => {
-    const html = fleetConfigHtml(FIXTURE_FLEET_CONFIG, "oab");
+  it("renders one button per fleet, switchable by name", () => {
+    const html = fleetConfigHtml(FIXTURE_FLEET_CONFIG, "orca");
     const buttons = html.match(/class="cfg-fleet/g) ?? [];
     expect(buttons.length).toBe(FIXTURE_FLEET_CONFIG.fleets.length);
-    expect(html).toContain('data-cluster="oab"');
-    expect(html).toContain('data-cluster="oab-staging"');
+    expect(html).toContain('data-fleet="orca"');
+    expect(html).toContain('data-fleet="mira"');
   });
 
-  it("marks the active cluster and no other", () => {
-    const html = fleetConfigHtml(FIXTURE_FLEET_CONFIG, "oab-staging");
+  it("switches by fleet identity, not cluster (two fleets share a cluster)", () => {
+    // Both fixture fleets are on cluster "oab" — the switch key must be the name.
+    expect(FIXTURE_FLEET_CONFIG.fleets.every((f) => f.cluster === "oab")).toBe(
+      true,
+    );
+    const html = fleetConfigHtml(FIXTURE_FLEET_CONFIG, "mira");
     const active = html.match(/cfg-fleet is-active/g) ?? [];
     expect(active.length).toBe(1);
-    // the active button is the staging one
-    const idx = html.indexOf("oab-staging");
+    // the active button is the mira one
+    const idx = html.indexOf('data-fleet="mira"');
     expect(html.lastIndexOf("is-active", idx)).toBeGreaterThan(-1);
   });
 
+  it("marks no fleet active when the selection is null", () => {
+    const html = fleetConfigHtml(FIXTURE_FLEET_CONFIG, null);
+    expect(html).not.toContain("is-active");
+  });
+
+  it("renders each fleet's members", () => {
+    const html = fleetConfigHtml(FIXTURE_FLEET_CONFIG, "orca");
+    expect(html).toContain("oab-prod-orca");
+    expect(html).toContain("oab-prod-mira");
+    expect(html).toContain('class="cfg-member"');
+  });
+
+  it("shows 'whole cluster' when a fleet has no explicit members", () => {
+    const cfg = structuredClone(FIXTURE_FLEET_CONFIG);
+    cfg.fleets[0].members = [];
+    const html = fleetConfigHtml(cfg, "orca");
+    expect(html).toContain("whole cluster");
+  });
+
   it("shows the profile and region as the credential line", () => {
-    const html = fleetConfigHtml(FIXTURE_FLEET_CONFIG, "oab");
-    expect(html).toContain("orca-prod");
+    const html = fleetConfigHtml(FIXTURE_FLEET_CONFIG, "orca");
+    expect(html).toContain("oab-fleet");
     expect(html).toContain("ap-east-2");
   });
 
@@ -149,7 +178,7 @@ describe("fleetConfigHtml", () => {
     const cfg = structuredClone(FIXTURE_FLEET_CONFIG);
     cfg.fleets[0].profile = null;
     cfg.fleets[0].region = null;
-    expect(fleetConfigHtml(cfg, "oab")).toContain("default chain");
+    expect(fleetConfigHtml(cfg, "orca")).toContain("default chain");
   });
 
   it("renders an empty state with the config path when no fleets", () => {
@@ -160,7 +189,7 @@ describe("fleetConfigHtml", () => {
         fleets: [],
         text: "",
       },
-      "oab",
+      null,
     );
     expect(html).toContain("No fleets configured");
     expect(html).toContain("fleets.toml");
@@ -168,20 +197,56 @@ describe("fleetConfigHtml", () => {
   });
 
   it("always offers the Edit config action (even with fleets)", () => {
-    expect(fleetConfigHtml(FIXTURE_FLEET_CONFIG, "oab")).toContain(
+    expect(fleetConfigHtml(FIXTURE_FLEET_CONFIG, "orca")).toContain(
       'data-action="edit-config"',
     );
   });
 
   it("renders an unavailable state for null", () => {
-    expect(fleetConfigHtml(null, "oab")).toContain("fleet config unavailable");
+    expect(fleetConfigHtml(null, null)).toContain("fleet config unavailable");
   });
 
   it("escapes fleet fields", () => {
     const cfg = structuredClone(FIXTURE_FLEET_CONFIG);
     cfg.fleets[0].name = "<x>";
-    const html = fleetConfigHtml(cfg, "oab");
+    const html = fleetConfigHtml(cfg, "orca");
     expect(html).toContain("&lt;x&gt;");
     expect(html).not.toContain("<x>");
+  });
+});
+
+describe("filterByMembers", () => {
+  it("keeps only deployments whose ECS service name is a member", () => {
+    const kept = filterByMembers(FIXTURE_DEPLOYMENTS, ["oab-prod-orca"]);
+    expect(kept.map((d) => d.name)).toEqual(["orca"]);
+  });
+
+  it("matches multiple members across the roster", () => {
+    const kept = filterByMembers(FIXTURE_DEPLOYMENTS, [
+      "oab-prod-orca",
+      "oab-prod-mira",
+    ]);
+    expect(kept.map((d) => d.name).sort()).toEqual(["mira", "orca"]);
+  });
+
+  it("treats an empty member list as the whole cluster (unfiltered)", () => {
+    expect(filterByMembers(FIXTURE_DEPLOYMENTS, [])).toEqual(
+      FIXTURE_DEPLOYMENTS,
+    );
+  });
+
+  it("also accepts the short deployment name as a member (like resolve_service)", () => {
+    const kept = filterByMembers(FIXTURE_DEPLOYMENTS, ["kirin"]);
+    expect(kept.map((d) => d.name)).toEqual(["kirin"]);
+  });
+
+  it("drops everything when no member matches", () => {
+    expect(filterByMembers(FIXTURE_DEPLOYMENTS, ["oab-prod-nobody"])).toEqual(
+      [],
+    );
+  });
+
+  it("derives the ECS service name as oab-{namespace}-{name}", () => {
+    expect(serviceName({ ...FIXTURE_DEPLOYMENTS[0] })).toBe("oab-prod-orca");
   });
 });

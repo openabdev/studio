@@ -1,5 +1,10 @@
 import { defaultSource } from "./source";
-import { renderRoster, renderIdentity, renderFleetConfig } from "./render";
+import {
+  renderRoster,
+  renderIdentity,
+  renderFleetConfig,
+  filterByMembers,
+} from "./render";
 import type { FleetConfig } from "./types";
 import { createPane, bindBackend, type Level } from "./log";
 import { EditorView, basicSetup } from "codemirror";
@@ -10,10 +15,15 @@ import { toml } from "@codemirror/legacy-modes/mode/toml";
 const POLL_MS = 5000;
 const DEFAULT_CLUSTER = "oab";
 
-// The active fleet's cluster drives every read (roster + identity) and, through
-// oab-mcp's per-cluster binding, which credential/account we manage as. Selecting
-// a fleet in the config panel is the "switch" step of the ADR #19 loop.
+// The selection is a fleet **identity** (name), not a cluster — a fleet is a
+// usage-based group, so two fleets can share a cluster. The active fleet derives
+// the `activeCluster` every read targets (and thus, via oab-mcp's binding, which
+// credential/account we manage as) and the `activeMembers` the roster is filtered
+// to. `null` = no fleet selected: the default cluster, roster unfiltered.
+// Selecting a fleet in the config panel is the "switch" step of the ADR #19 loop.
+let activeFleet: string | null = null;
 let activeCluster = DEFAULT_CLUSTER;
+let activeMembers: string[] = [];
 let fleetConfig: FleetConfig | null = null;
 
 const roster = document.getElementById("roster");
@@ -85,7 +95,9 @@ let lastError = "";
 async function tick(): Promise<void> {
   if (!roster) return;
   try {
-    const deployments = await source.listDeployments(activeCluster);
+    const all = await source.listDeployments(activeCluster);
+    // Filter to the active fleet's members (empty ⇒ whole cluster).
+    const deployments = filterByMembers(all, activeMembers);
     renderRoster(roster, deployments);
     if (lastError) {
       note("info", `roster recovered — ${deployments.length} deployment(s)`);
@@ -127,23 +139,29 @@ async function refreshConfig(): Promise<void> {
   if (!configEl) return;
   try {
     fleetConfig = await source.fleetConfig();
-    renderFleetConfig(configEl, fleetConfig, activeCluster);
+    renderFleetConfig(configEl, fleetConfig, activeFleet);
   } catch (e) {
     note("error", `fleet config: ${errText(e)}`);
     fleetConfig = null;
-    renderFleetConfig(configEl, null, activeCluster);
+    renderFleetConfig(configEl, null, activeFleet);
   }
 }
 
-// Switch the active fleet: re-point every read at its cluster (and thus its
-// bound credential) and refresh immediately, so "switch fleet" == "switch
-// managing account" the ADR calls for. No-op if it's already active.
-function selectCluster(cluster: string): void {
-  if (!cluster || cluster === activeCluster) return;
-  activeCluster = cluster;
-  if (clusterLabel) clusterLabel.textContent = activeCluster;
-  note("info", `switched to cluster "${activeCluster}"`);
-  if (configEl) renderFleetConfig(configEl, fleetConfig, activeCluster);
+// Switch the active fleet by identity (name): re-point every read at its cluster
+// (and thus its bound credential), filter the roster to its members, and refresh
+// immediately — so "switch fleet" == "switch managing account + roster" the ADR
+// calls for. Two fleets may share a cluster, so the key is the name, not the
+// cluster. No-op if it's already active or unknown.
+function selectFleet(name: string): void {
+  if (!name || name === activeFleet) return;
+  const fleet = fleetConfig?.fleets.find((f) => f.name === name);
+  if (!fleet) return;
+  activeFleet = name;
+  activeCluster = fleet.cluster;
+  activeMembers = fleet.members;
+  if (clusterLabel) clusterLabel.textContent = `${activeFleet} · ${activeCluster}`;
+  note("info", `switched to fleet "${activeFleet}" (cluster "${activeCluster}")`);
+  if (configEl) renderFleetConfig(configEl, fleetConfig, activeFleet);
   void refreshIdentity();
   void tick();
 }
@@ -191,7 +209,7 @@ async function saveEditor(): Promise<void> {
   try {
     // The backend validates the TOML and rejects (without writing) on error.
     fleetConfig = await source.writeFleetConfig(text);
-    if (configEl) renderFleetConfig(configEl, fleetConfig, activeCluster);
+    if (configEl) renderFleetConfig(configEl, fleetConfig, activeFleet);
     note("info", "fleet config saved");
     closeEditor();
     // A binding change may alter the active fleet's credential — re-observe.
@@ -207,7 +225,7 @@ saveBtn?.addEventListener("click", () => void saveEditor());
 cancelBtn?.addEventListener("click", () => closeEditor());
 
 // One delegated listener on the config panel: "Edit config" opens the editor;
-// a click on any fleet button switches to its cluster.
+// a click on any fleet button switches to that fleet by name.
 if (configEl) {
   configEl.addEventListener("click", (ev) => {
     const target = ev.target as HTMLElement;
@@ -215,8 +233,8 @@ if (configEl) {
       openEditor();
       return;
     }
-    const btn = target.closest<HTMLElement>("[data-cluster]");
-    if (btn?.dataset.cluster) selectCluster(btn.dataset.cluster);
+    const btn = target.closest<HTMLElement>("[data-fleet]");
+    if (btn?.dataset.fleet) selectFleet(btn.dataset.fleet);
   });
 }
 
