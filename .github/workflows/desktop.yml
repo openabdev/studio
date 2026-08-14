@@ -48,19 +48,21 @@ jobs:
           targets: aarch64-apple-darwin
       - uses: Swatinem/rust-cache@v2
         with:
-          # prefix-key is bumped to v1 to force a fresh cache slot. rust-cache's
-          # key hashes Cargo.lock (+ rustc + cargo config) but NOT the
-          # [profile.*] sections of Cargo.toml, so adding `release-ci` in #51 did
-          # not change the key. Every run kept getting a "full match" against the
-          # pre-existing v0 cache — which only held deps built under `release/`,
-          # never `release-ci/`. So `cargo build --profile release-ci` recompiled
-          # the whole aws-sdk/aws-lc-sys tree cold (~20m) every time, and the post
-          # step reported "Cache up-to-date" and saved nothing (GitHub keys are
-          # immutable). Bumping the prefix mints a new key: the first run misses,
-          # does the cold build, and actually SAVES the release-ci deps. After
-          # that, unrelated PRs restore those deps and cargo's own fingerprinting
-          # recompiles only oab-mcp itself — minutes, as intended in #51.
+          # rust-cache's key hashes Cargo.lock (+ rustc + cargo config) but NOT
+          # the [profile.*] sections of Cargo.toml. So adding `release-ci` in #51
+          # did not change the key: every run got a "full match" against the old
+          # v0 cache — which only held deps built under `release/`, never
+          # `release-ci/`. `cargo build --profile release-ci` therefore recompiled
+          # the whole aws-sdk/aws-lc-sys tree cold (~20m) every run, and since the
+          # key matched, the post step said "Cache up-to-date" and saved nothing
+          # (GitHub keys are immutable) — so the release-ci deps never persisted.
+          #
+          # prefix-key bump = one-time reset off the poisoned v0 cache.
+          # key: hashFiles('Cargo.toml') folds the profile-defining manifest into
+          # the cache key, so any future profile edit auto-mints a fresh key and
+          # self-heals — no need to remember to bump prefix-key by hand again.
           prefix-key: "v1-rust"
+          key: ${{ hashFiles('Cargo.toml') }}
           workspaces: |
             . -> target
             src-tauri -> target
