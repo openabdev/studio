@@ -57,17 +57,44 @@ jobs:
           # key matched, the post step said "Cache up-to-date" and saved nothing
           # (GitHub keys are immutable) — so the release-ci deps never persisted.
           #
-          # prefix-key bump = one-time reset off the poisoned v0 cache.
           # key: hashFiles('Cargo.toml') folds the profile-defining manifest into
           # the cache key, so any future profile edit auto-mints a fresh key and
           # self-heals — no need to remember to bump prefix-key by hand again.
-          prefix-key: "v1-rust"
+          #
+          # But that self-heal never actually kicked in on v1: measured warm runs
+          # still recompiled the whole aws-sdk tree (~600s) under a cache "hit",
+          # because a PR that first mints a key SAVES a target that rust-cache has
+          # already pruned of the release-ci deps — and every later run with the
+          # same Cargo.{toml,lock} hits that immutable, half-empty key and can only
+          # report "Cache up-to-date". Two fixes:
+          #   - prefix-key v2 = one-time reset off the poisoned v1 cache.
+          #   - cache-all-crates keeps the aws-sdk deps in the saved target.
+          #   - save-if main-only: only `main` writes the cache, so PRs restore a
+          #     clean main-built cache instead of each minting its own half-empty,
+          #     immutable key (the standard rust-cache anti-PR-pollution pattern).
+          prefix-key: "v2-rust"
           key: ${{ hashFiles('Cargo.toml') }}
+          cache-all-crates: "true"
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           workspaces: |
             . -> target
             src-tauri -> target
+      # Content-address the built sidecar itself: most PR iterations only touch
+      # console/** (TS) and never the Rust, yet each still recompiled oab-mcp cold
+      # (~16m warm). Key on everything that determines the binary — the crate
+      # sources, the lockfile, and the profile-defining root manifest — so a run
+      # whose Rust is unchanged restores the binary and skips the build entirely.
+      # A single small file keyed on its inputs never collides with an immutable
+      # key (unlike the target-dir cache above), so this can't self-poison.
+      - name: Cache oab-mcp sidecar binary
+        id: sidecar-bin
+        uses: actions/cache@v4
+        with:
+          path: src-tauri/binaries/oab-mcp-aarch64-apple-darwin
+          key: sidecar-aarch64-apple-darwin-${{ hashFiles('crates/**', 'Cargo.lock', 'Cargo.toml', 'rust-toolchain*') }}
       - name: Build oab-mcp sidecar (arm64)
-        # release-ci profile (root Cargo.toml): opt-level 1 + codegen-units 256,
+        if: steps.sidecar-bin.outputs.cache-hit != 'true'
+        # release-ci profile (root Cargo.toml): opt-level 0 + codegen-units 256,
         # so the aws-sdk/aws-lc-sys tree compiles in minutes, not ~23. The sidecar
         # is I/O-bound (AWS API calls), so it doesn't need full release opt.
         run: |
