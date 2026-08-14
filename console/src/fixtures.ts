@@ -61,41 +61,47 @@ export const FIXTURE_RUNTIME_CONTEXT: RuntimeContext = {
 };
 
 // Stand-in fleet-binding config so the browser build renders the config panel
-// without a core. Two fleets on different accounts — the shape the panel lets
-// the operator switch between.
+// without a core. Two fleets that **share the `oab` cluster** (and one
+// credential) but list different `members` — the exact "group by usage, not by
+// cluster" shape the panel lets the operator switch between and filter the
+// roster by.
 export const FIXTURE_FLEET_CONFIG: FleetConfig = {
   path: "~/.config/oab-studio/fleets.toml",
   default_cluster: "oab",
   fleets: [
     {
-      name: "prod",
+      name: "orca",
       cluster: "oab",
+      members: ["oab-prod-orca"],
       region: "ap-east-2",
-      profile: "orca-prod",
+      profile: "oab-fleet",
       expected_principal:
         "arn:aws:iam::504190915686:role/openab-orca-task-role",
     },
     {
-      name: "staging",
-      cluster: "oab-staging",
-      region: "ap-southeast-1",
-      profile: "orca-staging",
+      name: "mira",
+      cluster: "oab",
+      members: ["oab-prod-mira"],
+      region: "ap-east-2",
+      profile: "oab-fleet",
       expected_principal: null,
     },
   ],
   text: `# OAB Studio fleet bindings — which credential manages which fleet.
+# A fleet is a usage-based group: orca and mira share the oab cluster (one
+# credential) but list different members.
 
-[[fleet]]
-name = "prod"
+[fleet.orca]
 cluster = "oab"
+members = ["oab-prod-orca"]
 region = "ap-east-2"
-profile = "orca-prod"
+profile = "oab-fleet"
 expected_principal = "arn:aws:iam::504190915686:role/openab-orca-task-role"
 
-[[fleet]]
-name = "staging"
-cluster = "oab-staging"
-region = "ap-southeast-1"
-profile = "orca-staging"
+[fleet.mira]
+cluster = "oab"
+members = ["oab-prod-mira"]
+region = "ap-east-2"
+profile = "oab-fleet"
 `,
 };

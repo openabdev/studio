@@ -44,11 +44,16 @@ export interface FleetBinding {
 }
 
 // One configured fleet → managing-credential binding — mirrors an entry of
-// oab-mcp's `fleet_config` tool (ADR #19). `cluster` is the switch key: selecting
-// a fleet makes subsequent calls target its cluster (and thus its credential).
+// oab-mcp's `fleet_config` tool (ADR #19, fleet-grouping ADR). `name` is the
+// switch key: a fleet is a usage-based logical group, so two fleets may share a
+// `cluster` (and thus one credential) while listing different `members`.
+// Selecting a fleet targets its `cluster` for reads and filters the roster to
+// its `members`. `members` are the ECS service names in the group; empty ⇒ the
+// fleet covers the whole cluster (legacy `[[fleet]]` semantics).
 export interface FleetConfigEntry {
   name: string;
   cluster: string;
+  members: string[];
   region: string | null;
   profile: string | null;
   expected_principal: string | null;

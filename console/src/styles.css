@@ -416,6 +416,26 @@ td.counts.warn {
   color: var(--muted);
   font-size: 12px;
 }
+.cfg-members {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 2px 0;
+}
+.cfg-member {
+  font-size: 11px;
+  color: var(--text);
+  background: var(--bg-alt, rgba(127, 127, 127, 0.12));
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 6px;
+  overflow-wrap: anywhere;
+}
+.cfg-members-all {
+  color: var(--muted);
+  font-size: 12px;
+  font-style: italic;
+}
 .cfg-cred {
   color: var(--muted);
   font-size: 12px;
