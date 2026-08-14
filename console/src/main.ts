@@ -238,6 +238,57 @@ if (configEl) {
   });
 }
 
+// ---- start / stop (ADR-2 write model: stop = scale→0, start = scale→1) -------
+// Scale a deployment off (0) or on (1). Reversible — ECS keeps the Spec at
+// desiredCount 0 — so this needs no state store. On success `tick()` re-renders
+// the roster (which recycles the button DOM), so we only re-enable on error.
+async function scale(
+  action: "start" | "stop",
+  name: string,
+  namespace: string,
+  btn: HTMLButtonElement,
+): Promise<void> {
+  const size = action === "start" ? 1 : 0;
+  btn.disabled = true;
+  try {
+    await source.scaleDeployment(name, size, namespace, activeCluster);
+    note("info", `${action === "start" ? "started" : "stopped"} ${namespace}/${name}`);
+    await tick();
+  } catch (e) {
+    note("error", `${action} ${namespace}/${name}: ${errText(e)}`);
+    btn.disabled = false;
+  }
+}
+
+// One delegated listener on the roster. Start executes on click; Stop is
+// disruptive (kills the running instance, though reversible), so it arms on the
+// first click and only executes on a confirming second click within 3s — a
+// webview-safe confirm that needs no dialog plugin. The 5s poll re-renders the
+// roster and would reset an armed button on its own; the 3s timer is tighter.
+if (roster) {
+  roster.addEventListener("click", (ev) => {
+    const btn = (ev.target as HTMLElement).closest<HTMLButtonElement>("button.act");
+    if (!btn) return;
+    const action = btn.dataset.action;
+    const { name, namespace } = btn.dataset;
+    if ((action !== "start" && action !== "stop") || !name || !namespace) return;
+    if (action === "stop" && btn.dataset.armed !== "1") {
+      btn.dataset.armed = "1";
+      btn.textContent = "Confirm stop";
+      btn.classList.add("armed");
+      window.setTimeout(() => {
+        if (btn.isConnected && btn.dataset.armed === "1") {
+          btn.dataset.armed = "";
+          btn.textContent = "Stop";
+          btn.classList.remove("armed");
+        }
+      }, 3000);
+      return;
+    }
+    void scale(action, name, namespace, btn);
+  });
+}
+
 // The Tauri command bridge — present only inside the desktop shell (the browser
 // build has no `__TAURI__`, so callers no-op / hide their UI).
 type Invoke = <T>(cmd: string, args?: Record<string, unknown>) => Promise<T>;

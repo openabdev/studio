@@ -76,6 +76,29 @@ describe("rosterHtml", () => {
     expect(html).toContain("&lt;x&gt;");
     expect(html).not.toContain("<x>");
   });
+
+  it("offers Stop for a running deployment and Start for a stopped one", () => {
+    const html = rosterHtml([
+      dep({ name: "on", namespace: "prod", desired: 1 }),
+      dep({ name: "off", namespace: "prod", desired: 0, instances: [] }),
+    ]);
+    expect(html).toContain('data-action="stop"');
+    expect(html).toContain('data-action="start"');
+    expect(html).toContain(">Stop</button>");
+    expect(html).toContain(">Start</button>");
+  });
+
+  it("carries name + namespace on the action button for the scale call", () => {
+    const html = rosterHtml([dep({ name: "orca", namespace: "prod" })]);
+    expect(html).toContain('data-name="orca"');
+    expect(html).toContain('data-namespace="prod"');
+  });
+
+  it("escapes name + namespace in action button data attributes", () => {
+    const html = rosterHtml([dep({ name: '"x', namespace: "n" })]);
+    expect(html).toContain("&quot;x");
+    expect(html).not.toContain('data-name=""x"');
+  });
 });
 
 describe("identityHtml", () => {

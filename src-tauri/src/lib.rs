@@ -169,6 +169,40 @@ async fn fleet_config_write(core: tauri::State<'_, Core>, text: String) -> Resul
     }
 }
 
+/// Bridge command: start (size 1) / stop (size 0) a deployment via the sidecar's
+/// `deploy_scale` tool (ADR-2 write model — stop = scale→0, start = scale→1; the
+/// Spec is kept by ECS, so it's reversible). An OAB service runs a single bot
+/// token, so size is 0/1 only; `namespace` is required upstream to resolve the
+/// service (`oab-{namespace}-{name}`) and the managing credential is per-cluster.
+#[tauri::command]
+async fn deploy_scale(
+    core: tauri::State<'_, Core>,
+    name: String,
+    size: i64,
+    namespace: Option<String>,
+    cluster: Option<String>,
+) -> Result<Value, String> {
+    let cluster = cluster.unwrap_or_else(default_cluster);
+    let client = {
+        let guard = core.0.lock().await;
+        guard
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| "core not started yet".to_string())?
+    };
+    let mut params = json!({ "name": name, "size": size, "cluster": cluster });
+    if let Some(ns) = namespace {
+        params["namespace"] = json!(ns);
+    }
+    match client.call_tool("deploy_scale", params).await {
+        Ok(v) => Ok(v),
+        Err(e) => {
+            client.log("error", &format!("deploy_scale: {e}"));
+            Err(e)
+        }
+    }
+}
+
 /// What the frontend needs to render the "update available" state: the version
 /// on the release vs. what's running, plus the release notes.
 #[derive(serde::Serialize)]
@@ -239,6 +273,7 @@ pub fn run() {
             runtime_context,
             fleet_config,
             fleet_config_write,
+            deploy_scale,
             check_update,
             install_update
         ])

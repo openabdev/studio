@@ -26,6 +26,19 @@ function badge(state: AgentState): string {
   return `<span class="badge ${STATE_CLASS[state]}">${state}</span>`;
 }
 
+// Start (scale→1) when the deployment is off, Stop (scale→0) when it's on.
+// Stop keeps the Spec — ECS retains the service at desiredCount 0 — so it's
+// reversible, no state store needed. The `data-*` carry the identity the
+// delegated handler needs; the managing credential is resolved per-cluster, so
+// the row only needs name + namespace (service = `oab-{namespace}-{name}`).
+function actionButton(d: Deployment): string {
+  const off = d.desired === 0;
+  const action = off ? "start" : "stop";
+  const label = off ? "Start" : "Stop";
+  const cls = off ? "act act-start" : "act act-stop";
+  return `<button class="${cls}" type="button" data-action="${action}" data-name="${escapeHtml(d.name)}" data-namespace="${escapeHtml(d.namespace)}">${label}</button>`;
+}
+
 function rowHtml(d: Deployment): string {
   const phases = d.instances.length
     ? d.instances.map((i) => badge(i.state)).join(" ")
@@ -36,6 +49,7 @@ function rowHtml(d: Deployment): string {
       <td class="name">${name}</td>
       <td class="counts ${health}">${d.ready}/${d.desired}<span class="muted"> · cur ${d.current}</span></td>
       <td class="phases">${phases}</td>
+      <td class="actions">${actionButton(d)}</td>
     </tr>`;
 }
 
@@ -76,7 +90,7 @@ export function rosterHtml(deployments: Deployment[]): string {
     .join("");
   return `<table class="roster">
       <thead>
-        <tr><th>Deployment</th><th>Ready / Desired</th><th>Instances · 6-state</th></tr>
+        <tr><th>Deployment</th><th>Ready / Desired</th><th>Instances · 6-state</th><th class="actions-h">Actions</th></tr>
       </thead>
       <tbody>${rows}</tbody>
     </table>`;

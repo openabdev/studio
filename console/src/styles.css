@@ -241,6 +241,43 @@ td.counts.warn {
   padding: 24px 10px;
 }
 
+/* ---- roster actions (start / stop) ---- */
+th.actions-h,
+td.actions {
+  text-align: right;
+  white-space: nowrap;
+}
+button.act {
+  cursor: pointer;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg);
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  padding: 3px 12px;
+}
+button.act:hover {
+  color: var(--text);
+}
+button.act-start:hover {
+  border-color: var(--s-running);
+  color: var(--s-running);
+}
+button.act-stop:hover {
+  border-color: var(--s-unhealthy);
+  color: var(--s-unhealthy);
+}
+button.act.armed {
+  border-color: var(--s-unhealthy);
+  background: var(--s-unhealthy);
+  color: #fff;
+}
+button.act:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
 .badge {
   display: inline-block;
   padding: 2px 8px;
