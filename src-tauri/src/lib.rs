@@ -26,7 +26,7 @@ async fn start_core(app: tauri::AppHandle, core: tauri::State<'_, Core>) -> Resu
     if guard.is_some() {
         return Ok(());
     }
-    let _ = app.emit("app-log", json!({ "level": "info", "msg": "OAB Studio starting…" }));
+    // (the `core: spawning…` line from McpClient::spawn covers the "starting" beat)
     match McpClient::spawn(&app, &default_cluster()).await {
         Ok(client) => {
             *guard = Some(client);
@@ -35,7 +35,7 @@ async fn start_core(app: tauri::AppHandle, core: tauri::State<'_, Core>) -> Resu
         Err(e) => {
             let _ = app.emit(
                 "app-log",
-                json!({ "level": "error", "msg": format!("failed to start core: {e}") }),
+                json!({ "level": "error", "msg": format!("core: failed to start — {e}") }),
             );
             Err(e)
         }
@@ -324,7 +324,7 @@ async fn install_update(app: tauri::AppHandle) -> Result<(), String> {
     };
     let _ = app.emit(
         "app-log",
-        json!({ "level": "info", "msg": format!("downloading update v{}…", update.version) }),
+        json!({ "level": "info", "msg": format!("update: downloading v{}…", update.version) }),
     );
     update
         .download_and_install(|_chunk, _total| {}, || {})
@@ -332,7 +332,7 @@ async fn install_update(app: tauri::AppHandle) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     let _ = app.emit(
         "app-log",
-        json!({ "level": "info", "msg": "update installed — restarting…" }),
+        json!({ "level": "info", "msg": "update: installed — restarting…" }),
     );
     app.restart();
 }

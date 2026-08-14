@@ -11,6 +11,7 @@
 //! module is structurally complete and compiles under `desktop.yml`.
 
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use acp_tunnel as acp;
 use acp_tunnel::config::RemoteConfig;
@@ -25,6 +26,19 @@ use tokio_tungstenite::tungstenite::http::HeaderValue;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 
 use crate::mcp::McpClient;
+
+/// How often the client probes an **idle** `/acp` socket for liveness. The probe
+/// is a request the gateway answers itself (`-32601`), so it costs no agent turn.
+/// Any inbound frame counts as liveness; two silent probe intervals in a row ⇒
+/// the socket is half-open and we reconnect. Keeps the socket warm too, so an
+/// intermediary's idle timeout can't reset it mid-think (the RST-churn source).
+const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(20);
+
+/// Client-side ceiling on a single in-flight turn. Past this we stop trusting a
+/// socket that has produced no result and force a reconnect — rather than waiting
+/// indefinitely on a possibly-wedged peer (ADR browser-tunnel-liveness R3). Mirrors
+/// katashiro's `ACP_PROMPT_TIMEOUT_MS`.
+const PROMPT_TIMEOUT: Duration = Duration::from_secs(600);
 
 /// Managed state: the running connection task (abort to disconnect) plus the last
 /// status string the UI renders.
@@ -74,8 +88,9 @@ impl Remote {
         // retract the channel). Report that as clearly as the missing-channel
         // case above rather than a bare "connection closed", which reads like a
         // different, harder failure (review #3).
-        tx.send(msg)
-            .map_err(|_| "not connected — the remote connection just closed; reactivate it".to_string())
+        tx.send(msg).map_err(|_| {
+            "not connected — the remote connection just closed; reactivate it".to_string()
+        })
     }
 }
 
@@ -148,13 +163,36 @@ pub async fn disconnect<R: Runtime>(app: &AppHandle<R>, remote: &Remote) {
     guard.status = "disconnected".to_string();
     guard.prompt_tx = None;
     emit_status(app, "disconnected");
+    let _ = app.emit(
+        "app-log",
+        json!({ "level": "info", "msg": "remote: disconnected by user" }),
+    );
 }
 
 /// Reconnect loop: one attempt, then back off and retry until the task is
 /// aborted (by [`disconnect`]).
+///
+/// The [`Session`] persists **across** attempts: once it has a `session_id`, a
+/// reconnect **resumes** that agent session instead of opening a brand-new one, so
+/// a brief socket blip no longer stacks a fresh server-side session (and orphaned
+/// turn) on every RST. Each attempt still mints a fresh per-connection server id
+/// via [`Session::redeclare`], which also resets the phase so the new socket runs
+/// a full `initialize` handshake.
 async fn run_reconnecting<R: Runtime>(app: AppHandle<R>, cfg: RemoteConfig, client: McpClient) {
+    let mut session = Session::new(vec![acp::oab_server(&uuid::Uuid::new_v4().to_string())]);
     loop {
-        let result = run_once(&app, &cfg, &client).await;
+        let conn_id = uuid::Uuid::new_v4().to_string();
+        // Fresh per-connection server id + phase reset; keeps `session_id` so
+        // `run_once` picks the resume path when one exists.
+        session.redeclare(vec![acp::oab_server(&conn_id)]);
+        if session.session_id().is_some() {
+            let _ = app.emit(
+                "app-log",
+                json!({ "level": "info", "msg": "remote: reconnecting — will resume the existing session" }),
+            );
+        }
+
+        let result = run_once(&app, &cfg, &client, &mut session, &conn_id).await;
         // The socket is gone — retract the outbound-chat channel so a prompt
         // between attempts fails fast rather than dropping into a dead sink.
         app.state::<Remote>().0.lock().await.prompt_tx = None;
@@ -166,16 +204,24 @@ async fn run_reconnecting<R: Runtime>(app: AppHandle<R>, cfg: RemoteConfig, clie
             );
         }
         emit_status(&app, "connecting");
+        let _ = app.emit(
+            "app-log",
+            json!({ "level": "info", "msg": "remote: reconnecting in 5s…" }),
+        );
         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
     }
 }
 
-/// One connection: dial, run the `initialize` → `session/new` handshake, then
-/// serve the gateway-initiated tunnel until the socket closes.
+/// One connection: dial, run the `initialize` → `session/new` (or
+/// `session/resume`) handshake, then serve the gateway-initiated tunnel until the
+/// socket closes — or until the client heartbeat / turn ceiling decides the socket
+/// is dead and returns `Err` so [`run_reconnecting`] reconnects.
 async fn run_once<R: Runtime>(
     app: &AppHandle<R>,
     cfg: &RemoteConfig,
     client: &McpClient,
+    session: &mut Session,
+    conn_id: &str,
 ) -> Result<(), String> {
     let mut req = cfg
         .url
@@ -201,16 +247,24 @@ async fn run_once<R: Runtime>(
         HeaderValue::from_static(acp::ACP_SUBPROTOCOL),
     );
 
+    // The URL carries no secret (the bearer rides the Authorization header), so it
+    // is safe to show which endpoint we're dialing — the reconnect cycle is
+    // otherwise invisible in Activity until it succeeds or errors.
+    let _ = app.emit(
+        "app-log",
+        json!({ "level": "info", "msg": format!("remote: dialing {}…", cfg.url) }),
+    );
     let (ws, _resp) = tokio_tungstenite::connect_async(req)
         .await
         .map_err(|e| format!("dial {}: {e}", cfg.url))?;
     let (mut write, mut read) = ws.split();
 
-    // Per-connection server id (contract §6.1); the stable name is "oab" (D1).
-    let conn_id = uuid::Uuid::new_v4().to_string();
-    let mut session = Session::new(vec![acp::oab_server(&conn_id)]);
+    // `session` and the per-connection server id (`conn_id`, contract §6.1; stable
+    // name "oab", D1) are owned by `run_reconnecting` and threaded in, so the
+    // session_id survives a reconnect and drives the resume path below.
 
-    // Drive the client handshake: initialize, then session/new declaring "oab".
+    // Drive the client handshake: initialize, then session/resume (if we carry a
+    // session id from a previous attempt) or session/new declaring "oab".
     // This is the outer **ACP** handshake — `protocolVersion` is a u16 integer
     // (the gateway deserializes it as `u16`). Do not copy MCP's date string here;
     // the MCP date string is correct only for the *tunnelled* inner `initialize`
@@ -239,19 +293,86 @@ async fn run_once<R: Runtime>(
     // single writer stays in the loop, so frames are still serialized on the wire.
     let (reply_tx, mut reply_rx) = mpsc::unbounded_channel::<Value>();
 
-    // Keepalive: Cloudflare's tunnel idle-closes a WS with no traffic (~100s) and
-    // tokio-tungstenite never pings on its own, so an idle `/acp` connection flaps
-    // roughly every 2 min — and until `session/resume` lands, each reconnect opens
-    // a fresh channel (lost agent context). A periodic WS Ping well inside that
-    // window counts as traffic and keeps the tunnel open between prompts. `Skip`
+    // True once we've sent a `session/resume` (vs `session/new`) this connection,
+    // so a handshake error can fall back to a fresh session and the "active" log
+    // can say "resumed".
+    let mut resume_attempted = false;
+    // Liveness bookkeeping for the heartbeat. Any inbound frame refreshes
+    // `last_activity` and clears `hb_outstanding`; a probe that goes a full
+    // interval unanswered marks the socket dead.
+    let mut last_activity = Instant::now();
+    let mut hb_outstanding = false;
+    // When the in-flight turn must be given up on (item 4). Set on send, cleared
+    // when its result arrives.
+    let mut prompt_deadline: Option<Instant> = None;
+    let mut heartbeat = tokio::time::interval(HEARTBEAT_INTERVAL);
+    heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+    // Keepalive (#54): the heartbeat probe above only runs once the session is
+    // active, but Cloudflare's tunnel idle-closes a WS with no traffic (~100s) and
+    // tokio-tungstenite never pings on its own — so an idle `/acp` connection flaps
+    // roughly every 2 min *during handshake*, before the heartbeat can cover it.
+    // A periodic low-level WS Ping counts as traffic and keeps the tunnel open in
+    // that window (and complements the JSON heartbeat once active). `Skip`
     // missed-tick behaviour avoids a burst of pings if the loop was ever busy.
     let mut keepalive = tokio::time::interval(std::time::Duration::from_secs(45));
     keepalive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
-    // Loop over BOTH inbound frames and outbound chat actions. `write` never leaves
-    // the task; commands reach it only through `out_rx`.
-    loop {
+    // The reason this connection ended. `break 'conn` sets it; a clean EOF / close
+    // leaves it `Ok`. Threaded out so the post-loop cleanup (abandoned-turn notice)
+    // runs on every exit path.
+    let mut outcome: Result<(), String> = Ok(());
+
+    // Loop over inbound frames, outbound chat actions, and the liveness timers.
+    // `write` never leaves the task; commands reach it only through `out_rx`.
+    'conn: loop {
         tokio::select! {
+            // Liveness + turn-ceiling timer. Fires every HEARTBEAT_INTERVAL.
+            _ = heartbeat.tick() => {
+                // Nothing to probe until the session is live.
+                if session.phase() != acp::Phase::SessionActive {
+                    continue;
+                }
+                // (item 4) The in-flight turn has run past the client ceiling with
+                // no result: stop trusting this socket and reconnect.
+                if let Some(deadline) = prompt_deadline {
+                    if Instant::now() >= deadline {
+                        let _ = app.emit(
+                            "app-log",
+                            json!({ "level": "warn", "msg": format!(
+                                "remote: turn exceeded {}s with no result — dropping the socket and reconnecting",
+                                PROMPT_TIMEOUT.as_secs()
+                            ) }),
+                        );
+                        outcome = Err("session/prompt timed out — reconnecting".to_string());
+                        break 'conn;
+                    }
+                }
+                // (item 1) Recent inbound traffic ⇒ alive; nothing to do.
+                if last_activity.elapsed() < HEARTBEAT_INTERVAL {
+                    hb_outstanding = false;
+                    continue;
+                }
+                if hb_outstanding {
+                    // A probe sent a full interval ago drew no response of any kind:
+                    // the socket is dead / half-open (the RST may never reach us).
+                    let _ = app.emit(
+                        "app-log",
+                        json!({ "level": "warn", "msg": "remote: liveness probe unanswered — socket half-open, reconnecting" }),
+                    );
+                    outcome = Err("heartbeat timeout — no response to liveness probe".to_string());
+                    break 'conn;
+                }
+                // Idle: send a probe the gateway answers itself (-32601). No agent
+                // turn, no tokens; also keeps the socket warm against idle RSTs.
+                let (_id, ping) = session.heartbeat();
+                if let Err(e) = send(&mut write, &ping).await {
+                    outcome = Err(e);
+                    break 'conn;
+                }
+                hb_outstanding = true;
+            }
+
             // Outbound: a queued chat action from the UI. The `Some` pattern
             // disables this arm if the channel ever closes, so a `None` can never
             // busy-spin the loop (review #4); in practice `out_tx` lives for the
@@ -272,12 +393,20 @@ async fn run_once<R: Runtime>(
                             );
                         } else if let Some((id, frame)) = session.prompt(&text) {
                             pending_prompt = Some(id);
-                            send(&mut write, &frame).await?;
+                            if let Err(e) = send(&mut write, &frame).await {
+                                outcome = Err(e);
+                                break 'conn;
+                            }
+                            // Start the turn ceiling (item 4); cleared on its result.
+                            prompt_deadline = Some(Instant::now() + PROMPT_TIMEOUT);
                         }
                     }
                     OutMsg::Cancel => {
                         if let Some(frame) = session.cancel() {
-                            send(&mut write, &frame).await?;
+                            if let Err(e) = send(&mut write, &frame).await {
+                                outcome = Err(e);
+                                break 'conn;
+                            }
                         }
                     }
                 }
@@ -286,7 +415,10 @@ async fn run_once<R: Runtime>(
             // Outbound: a relay reply produced by a spawned `handle_inner` task
             // (review #2). Same `Some`-pattern guard against a closed channel.
             Some(reply) = reply_rx.recv() => {
-                send(&mut write, &reply).await?;
+                if let Err(e) = send(&mut write, &reply).await {
+                    outcome = Err(e);
+                    break 'conn;
+                }
             }
 
             // Keepalive tick: send a WS Ping directly on `write` (the `send` helper
@@ -294,10 +426,10 @@ async fn run_once<R: Runtime>(
             // (`Ping | Pong | Frame => continue`), so this composes with the rest of
             // the loop without touching the inbound path.
             _ = keepalive.tick() => {
-                write
-                    .send(WsMessage::Ping(Vec::new()))
-                    .await
-                    .map_err(|e| format!("ws keepalive ping: {e}"))?;
+                if let Err(e) = write.send(WsMessage::Ping(Vec::new())).await {
+                    outcome = Err(format!("ws keepalive ping: {e}"));
+                    break 'conn;
+                }
                 // Surface each keepalive in the Activity pane so the operator can
                 // see the tunnel being kept warm between prompts.
                 let _ = app.emit(
@@ -308,16 +440,27 @@ async fn run_once<R: Runtime>(
 
             // Inbound: a frame from the gateway.
             msg = read.next() => {
-                let Some(msg) = msg else { break };
-                let msg = msg.map_err(|e| format!("ws read: {e}"))?;
+                let Some(msg) = msg else { break 'conn }; // stream ended cleanly
+                let msg = match msg {
+                    Ok(m) => m,
+                    Err(e) => {
+                        outcome = Err(format!("ws read: {e}"));
+                        break 'conn;
+                    }
+                };
+                // Any inbound frame — even a Ping/Pong or our own probe's reply —
+                // proves the socket + gateway are alive (item 1).
+                last_activity = Instant::now();
+                hb_outstanding = false;
                 let text = match msg {
                     WsMessage::Text(t) => t,
                     WsMessage::Binary(b) => String::from_utf8_lossy(&b).into_owned(),
-                    WsMessage::Close(_) => return Ok(()),
+                    WsMessage::Close(_) => break 'conn, // clean close
                     WsMessage::Ping(_) | WsMessage::Pong(_) | WsMessage::Frame(_) => continue,
                 };
                 if text.len() > acp::limits::MAX_FRAME_BYTES {
-                    return Err("inbound frame exceeds 8 MiB".to_string());
+                    outcome = Err("inbound frame exceeds 8 MiB".to_string());
+                    break 'conn;
                 }
                 let frame: Value = match serde_json::from_str(&text) {
                     Ok(v) => v,
@@ -329,30 +472,72 @@ async fn run_once<R: Runtime>(
                     match session.phase() {
                         acp::Phase::Initializing => {
                             session.on_initialized();
-                            let (_id, new) = session.open_session(&cfg.cwd);
-                            send(&mut write, &new).await?;
+                            // Resume the existing agent session if we have one
+                            // (item 2); otherwise open a fresh one.
+                            let handshake = match session.resume(&cfg.cwd) {
+                                Some((_id, resume)) => {
+                                    resume_attempted = true;
+                                    resume
+                                }
+                                None => session.open_session(&cfg.cwd).1,
+                            };
+                            if let Err(e) = send(&mut write, &handshake).await {
+                                outcome = Err(e);
+                                break 'conn;
+                            }
                         }
                         acp::Phase::Initialized => {
-                            let sid = frame
-                                .get("result")
-                                .and_then(|r| r.get("sessionId"))
-                                .and_then(Value::as_str)
-                                .unwrap_or_default()
-                                .to_string();
-                            session.on_session_created(sid);
-                            // Now a turn can be sent — publish the outbound channel.
-                            app.state::<Remote>().0.lock().await.prompt_tx = Some(out_tx.clone());
-                            emit_status(app, "connected");
-                            let _ = app.emit(
-                                "app-log",
-                                json!({ "level": "info", "msg": "remote: session active — oab tools published" }),
-                            );
+                            // A handshake error here is either session/new failing
+                            // (fatal) or session/resume rejected because the gateway
+                            // already reaped the session — fall back to a fresh one.
+                            if let Some(err) = frame.get("error") {
+                                let emsg = err
+                                    .get("message")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("unknown error");
+                                if resume_attempted {
+                                    let _ = app.emit(
+                                        "app-log",
+                                        json!({ "level": "warn", "msg": format!(
+                                            "remote: session/resume rejected ({emsg}) — opening a fresh session"
+                                        ) }),
+                                    );
+                                    session.forget_session();
+                                    resume_attempted = false;
+                                    let (_id, new) = session.open_session(&cfg.cwd);
+                                    if let Err(e) = send(&mut write, &new).await {
+                                        outcome = Err(e);
+                                        break 'conn;
+                                    }
+                                } else {
+                                    outcome = Err(format!("session handshake rejected: {emsg}"));
+                                    break 'conn;
+                                }
+                            } else {
+                                let sid = frame
+                                    .get("result")
+                                    .and_then(|r| r.get("sessionId"))
+                                    .and_then(Value::as_str)
+                                    .unwrap_or_default()
+                                    .to_string();
+                                session.on_session_created(sid);
+                                // Now a turn can be sent — publish the outbound channel.
+                                app.state::<Remote>().0.lock().await.prompt_tx = Some(out_tx.clone());
+                                emit_status(app, "connected");
+                                let msg = if resume_attempted {
+                                    "remote: session resumed — oab tools republished"
+                                } else {
+                                    "remote: session active — oab tools published"
+                                };
+                                let _ = app.emit("app-log", json!({ "level": "info", "msg": msg }));
+                            }
                         }
                         acp::Phase::SessionActive => {
                             // End the turn iff this is our in-flight prompt's result.
                             let fid = frame.get("id").and_then(Value::as_u64);
                             if fid.is_some() && fid == pending_prompt {
                                 pending_prompt = None;
+                                prompt_deadline = None;
                                 let stop = frame
                                     .get("result")
                                     .and_then(|r| r.get("stopReason"))
@@ -364,6 +549,9 @@ async fn run_once<R: Runtime>(
                                     json!({ "kind": "turn_end", "stopReason": stop }),
                                 );
                             }
+                            // Any other method-less frame (e.g. a heartbeat probe's
+                            // -32601 reply) is ignored — it already counted as
+                            // liveness above.
                         }
                         acp::Phase::New => {}
                     }
@@ -374,7 +562,10 @@ async fn run_once<R: Runtime>(
                 // or a streamed chat chunk.
                 match acp::parse_inbound(&frame) {
                     Inbound::Connect { id, .. } => {
-                        send(&mut write, &acp::connect_reply(id, &conn_id)).await?;
+                        if let Err(e) = send(&mut write, &acp::connect_reply(id, conn_id)).await {
+                            outcome = Err(e);
+                            break 'conn;
+                        }
                     }
                     Inbound::Message { id, method, params, .. } => {
                         // Relay to the sidecar off the loop (review #2): a slow
@@ -392,7 +583,10 @@ async fn run_once<R: Runtime>(
                         });
                     }
                     Inbound::Disconnect { id, .. } => {
-                        send(&mut write, &acp::disconnect_reply(id)).await?;
+                        if let Err(e) = send(&mut write, &acp::disconnect_reply(id)).await {
+                            outcome = Err(e);
+                            break 'conn;
+                        }
                     }
                     // A piece of the agent's chat reply → forward to the panel.
                     Inbound::AgentChunk { text } => {
@@ -403,7 +597,19 @@ async fn run_once<R: Runtime>(
             }
         }
     }
-    Ok(())
+
+    // (item 3) The socket ended with a turn still in flight — its result will never
+    // arrive here. The chat panel already closes the spinner off `remote-status`,
+    // but record *why* the turn ended so it's visible in the Activity panel rather
+    // than a silent drop. (`session/resume` on the next attempt may reattach to the
+    // same server-side turn if the gateway keeps it within its grace window.)
+    if pending_prompt.is_some() {
+        let _ = app.emit(
+            "app-log",
+            json!({ "level": "warn", "msg": "remote: connection dropped with a turn in flight — turn abandoned" }),
+        );
+    }
+    outcome
 }
 
 /// Answer one inner MCP method. `initialize` is answered locally (the sidecar is

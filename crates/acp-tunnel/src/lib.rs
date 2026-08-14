@@ -267,6 +267,29 @@ impl Session {
         ))
     }
 
+    /// Build a liveness-probe request (client heartbeat). The method is
+    /// deliberately one the gateway does **not** implement, so its read loop
+    /// answers it **itself** with an immediate `-32601` — the probe never reaches
+    /// the agent runtime, costs no model turn, and is answered even while a
+    /// `session/prompt` is in flight (the gateway spawns prompts, so its read loop
+    /// keeps servicing frames). A response of any kind proves the socket + gateway
+    /// are alive; silence across a probe interval means the socket is half-open.
+    /// Returns `(id, frame)`; the transport treats *any* inbound frame as liveness,
+    /// so it need not correlate this id.
+    pub fn heartbeat(&mut self) -> (u64, Value) {
+        let id = self.alloc_id();
+        (id, request(id, "studio/ping", json!({})))
+    }
+
+    /// Forget the current session id (keeping the declared servers and phase), so
+    /// the next handshake opens a **fresh** session via [`Session::open_session`]
+    /// instead of [`Session::resume`]. Used when the gateway rejects a
+    /// `session/resume` because it has already reaped the session past its grace
+    /// window — the transport then falls back to `session/new`.
+    pub fn forget_session(&mut self) {
+        self.session_id = None;
+    }
+
     /// Replace the declaration set — used on reconnect to swap in fresh per-
     /// connection server ids before a [`Session::resume`], and to reset the phase
     /// to [`Phase::New`] so a full `initialize` runs on the new socket.
@@ -407,10 +430,7 @@ mod tests {
 
     #[test]
     fn bearer_subprotocol_pairs_the_token_with_acp_v1() {
-        assert_eq!(
-            bearer_subprotocol("tok123"),
-            "openab.bearer.tok123, acp.v1"
-        );
+        assert_eq!(bearer_subprotocol("tok123"), "openab.bearer.tok123, acp.v1");
     }
 
     #[test]
@@ -559,7 +579,12 @@ mod tests {
             }
         });
         match parse_inbound(&frame) {
-            Inbound::Message { id, connection_id, method, params } => {
+            Inbound::Message {
+                id,
+                connection_id,
+                method,
+                params,
+            } => {
                 assert_eq!(id, Some(json!(12))); // request → reply owed
                 assert_eq!(connection_id, "conn-1");
                 assert_eq!(method, "tools/call");
@@ -606,15 +631,21 @@ mod tests {
         match parse_inbound(&disc) {
             Inbound::Disconnect { id, connection_id } => {
                 assert_eq!(connection_id, "conn-1");
-                assert_eq!(disconnect_reply(id), json!({ "jsonrpc": "2.0", "id": 3, "result": {} }));
+                assert_eq!(
+                    disconnect_reply(id),
+                    json!({ "jsonrpc": "2.0", "id": 3, "result": {} })
+                );
             }
             other => panic!("expected Disconnect, got {other:?}"),
         }
         // cancel is a notification keyed by the OUTER frame id of the abandoned request
-        let cancel = json!({ "jsonrpc": "2.0", "method": "mcp/cancel", "params": { "requestId": 42 } });
+        let cancel =
+            json!({ "jsonrpc": "2.0", "method": "mcp/cancel", "params": { "requestId": 42 } });
         assert_eq!(
             parse_inbound(&cancel),
-            Inbound::Cancel { request_id: json!(42) }
+            Inbound::Cancel {
+                request_id: json!(42)
+            }
         );
     }
 
@@ -639,7 +670,10 @@ mod tests {
     #[test]
     fn prompt_needs_a_session_then_builds_a_text_turn() {
         let mut fresh = Session::new(vec![oab_server("c")]);
-        assert!(fresh.prompt("hi").is_none(), "no prompt before a session exists");
+        assert!(
+            fresh.prompt("hi").is_none(),
+            "no prompt before a session exists"
+        );
 
         let mut s = active_session();
         let (id, frame) = s.prompt("hello there").expect("session active");
@@ -647,7 +681,10 @@ mod tests {
         assert_eq!(frame["id"], id);
         assert_eq!(frame["method"], "session/prompt");
         assert_eq!(frame["params"]["sessionId"], "sess-1");
-        assert_eq!(frame["params"]["prompt"][0], json!({ "type": "text", "text": "hello there" }));
+        assert_eq!(
+            frame["params"]["prompt"][0],
+            json!({ "type": "text", "text": "hello there" })
+        );
     }
 
     #[test]
@@ -661,6 +698,28 @@ mod tests {
     }
 
     #[test]
+    fn heartbeat_is_a_request_with_an_unimplemented_method() {
+        let mut s = active_session();
+        let (id, frame) = s.heartbeat();
+        assert_eq!(frame["jsonrpc"], "2.0");
+        assert_eq!(frame["id"], id);
+        // an unimplemented method → the gateway answers -32601 itself, never the agent
+        assert_eq!(frame["method"], "studio/ping");
+        // it carries an id (a request), so a response is owed and proves liveness
+        assert!(frame.get("id").is_some());
+    }
+
+    #[test]
+    fn forget_session_forces_a_fresh_open_not_a_resume() {
+        let mut s = active_session();
+        assert!(s.session_id().is_some());
+        s.forget_session();
+        assert!(s.session_id().is_none());
+        // with no session id, resume is unavailable — the transport must open a new one
+        assert!(s.resume("/w").is_none());
+    }
+
+    #[test]
     fn agent_message_chunk_is_classified_others_stay_other() {
         let chunk = json!({
             "jsonrpc": "2.0", "method": "session/update",
@@ -671,7 +730,9 @@ mod tests {
         });
         assert_eq!(
             parse_inbound(&chunk),
-            Inbound::AgentChunk { text: "the ocean is vast".into() }
+            Inbound::AgentChunk {
+                text: "the ocean is vast".into()
+            }
         );
         // thought / tool_call kinds openab does not emit yet → Other
         let thought = json!({ "method": "session/update", "params": { "update": {

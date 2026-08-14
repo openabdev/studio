@@ -43,6 +43,20 @@ struct Inner {
     emit: EmitFn,
 }
 
+/// Classify a raw core stderr line into an Activity level. The core emits all of
+/// its logs (INFO/WARN/ERROR) to stderr, so we can't treat the whole stream as one
+/// severity — level off the line's own text and default benign lines to `info`.
+fn core_level(line: &str) -> &'static str {
+    let l = line.to_ascii_lowercase();
+    if l.contains("error") || l.contains("panic") {
+        "error"
+    } else if l.contains("warn") {
+        "warn"
+    } else {
+        "info"
+    }
+}
+
 impl Inner {
     /// Lifecycle / error line for the Activity pane.
     fn emit_log(&self, level: &str, msg: &str) {
@@ -71,7 +85,7 @@ impl McpClient {
 
         emit(
             "app-log",
-            json!({ "level": "info", "msg": format!("spawning oab-mcp core (cluster {cluster})…") }),
+            json!({ "level": "info", "msg": format!("core: spawning (cluster {cluster})…") }),
         );
         let (mut rx, child) = app
             .shell()
@@ -117,13 +131,19 @@ impl McpClient {
                         let s = String::from_utf8_lossy(&bytes);
                         for line in s.lines() {
                             if !line.trim().is_empty() {
-                                reader.emit_log("warn", &format!("[core] {line}"));
+                                // The core writes ALL its logs to stderr (stdout is the
+                                // JSON-RPC channel), so a blanket `warn` painted every
+                                // benign INFO line orange. Level off the line's own text.
+                                reader.emit_log(core_level(line), &format!("core: {line}"));
                             }
                         }
                     }
-                    CommandEvent::Error(e) => reader.emit_log("error", &format!("[core] {e}")),
+                    CommandEvent::Error(e) => reader.emit_log("error", &format!("core: {e}")),
                     CommandEvent::Terminated(payload) => {
-                        reader.emit_log("error", &format!("oab-mcp exited (code {:?})", payload.code));
+                        reader.emit_log(
+                            "error",
+                            &format!("core: exited (code {:?}) — sidecar down", payload.code),
+                        );
                         break;
                     }
                     _ => {}
@@ -135,7 +155,7 @@ impl McpClient {
 
         let client = McpClient { inner };
         client.handshake().await?;
-        client.log("info", "core ready — MCP initialized");
+        client.log("info", "core: ready — MCP initialized");
         Ok(client)
     }
 
@@ -176,7 +196,8 @@ impl McpClient {
     }
 
     async fn notify(&self, method: &str) -> Result<(), String> {
-        self.send(&json!({ "jsonrpc": "2.0", "method": method })).await
+        self.send(&json!({ "jsonrpc": "2.0", "method": method }))
+            .await
     }
 
     async fn handshake(&self) -> Result<(), String> {
@@ -197,7 +218,10 @@ impl McpClient {
     /// `result.content[0].text` (rmcp `CallToolResult::success`).
     pub async fn call_tool(&self, name: &str, arguments: Value) -> Result<Value, String> {
         let result = self
-            .request("tools/call", json!({ "name": name, "arguments": arguments }))
+            .request(
+                "tools/call",
+                json!({ "name": name, "arguments": arguments }),
+            )
             .await?;
         let text = result
             .get("content")
@@ -209,7 +233,11 @@ impl McpClient {
         // A failed tool call comes back as a successful JSON-RPC result with
         // `isError: true` and the message as text — surface it verbatim instead
         // of trying to JSON-decode an error sentence.
-        if result.get("isError").and_then(Value::as_bool).unwrap_or(false) {
+        if result
+            .get("isError")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
             return Err(format!("{name}: {text}"));
         }
         serde_json::from_str::<Value>(text)
