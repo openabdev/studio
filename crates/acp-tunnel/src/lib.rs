@@ -226,6 +226,109 @@ impl Session {
     }
 }
 
+// ---- Inbound tunnel dispatch (slice 4) --------------------------------------
+// The tunnel is **gateway-initiated**: the gateway asks, Studio answers. This
+// layer is **pure** — it classifies an inbound frame and builds the reply — so
+// the async work (forwarding an inner MCP call to the running `oab-mcp` sidecar
+// and awaiting it) stays in the transport, and the routing is unit-testable
+// without a runtime. Correlation is **always** by the outer ACP frame id; inner
+// MCP carries no id (tunnel contract §4).
+
+/// A classified inbound `/acp` frame the transport must act on. Frames that are
+/// not part of the reverse-MCP tunnel (ACP chat `session/update`, unknown
+/// methods) parse to [`Inbound::Other`] and are ignored by the tunnel.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Inbound {
+    /// `mcp/connect` (request) — open a tunnel for a declared server. Reply with
+    /// a fresh `connectionId` ([`connect_reply`]).
+    Connect { id: Value, acp_id: String },
+    /// `mcp/message` — an inner MCP method flattened into the frame. `id` is
+    /// `Some` for a **request** (a reply is owed) and `None` for a
+    /// **notification** (e.g. `notifications/initialized`; no reply).
+    Message {
+        id: Option<Value>,
+        connection_id: String,
+        method: String,
+        params: Value,
+    },
+    /// `mcp/disconnect` (request) — release the connection; reply `{}`
+    /// ([`disconnect_reply`]).
+    Disconnect { id: Value, connection_id: String },
+    /// `mcp/cancel` (notification) — abandon the in-flight request whose **outer**
+    /// frame id is `request_id`. No reply is owed.
+    Cancel { request_id: Value },
+    /// Not a tunnel frame (ACP chat, unknown method) — the tunnel ignores it.
+    Other,
+}
+
+/// Classify an inbound `/acp` frame. Never fails — anything unrecognized is
+/// [`Inbound::Other`]. `params` sub-fields are read leniently (missing ⇒ empty /
+/// null), because a malformed frame should be handled by the transport, not
+/// panic here.
+pub fn parse_inbound(frame: &Value) -> Inbound {
+    let method = frame.get("method").and_then(Value::as_str).unwrap_or("");
+    let id = frame.get("id").cloned();
+    let params = frame.get("params").cloned().unwrap_or(Value::Null);
+    match method {
+        "mcp/connect" => Inbound::Connect {
+            id: id.unwrap_or(Value::Null),
+            acp_id: params
+                .get("acpId")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+        },
+        "mcp/message" => Inbound::Message {
+            id,
+            connection_id: params
+                .get("connectionId")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            method: params
+                .get("method")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            params: params.get("params").cloned().unwrap_or(Value::Null),
+        },
+        "mcp/disconnect" => Inbound::Disconnect {
+            id: id.unwrap_or(Value::Null),
+            connection_id: params
+                .get("connectionId")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+        },
+        "mcp/cancel" => Inbound::Cancel {
+            request_id: params.get("requestId").cloned().unwrap_or(Value::Null),
+        },
+        _ => Inbound::Other,
+    }
+}
+
+/// Reply to `mcp/connect` with the transport-assigned connection handle.
+pub fn connect_reply(id: Value, connection_id: &str) -> Value {
+    response(id, json!({ "connectionId": connection_id }))
+}
+
+/// Reply to a `mcp/message` **request** with the inner MCP result verbatim (the
+/// ACP response `result` *is* the inner MCP result — no re-wrapping).
+pub fn message_reply(id: Value, inner_result: Value) -> Value {
+    response(id, inner_result)
+}
+
+/// Reply to a `mcp/message` request whose inner MCP method failed, as an outer
+/// JSON-RPC error.
+pub fn message_error(id: Value, code: i64, message: &str) -> Value {
+    error_response(id, code, message)
+}
+
+/// Reply to `mcp/disconnect`.
+pub fn disconnect_reply(id: Value) -> Value {
+    response(id, json!({}))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -331,5 +434,104 @@ mod tests {
     fn studios_single_declaration_is_within_the_server_cap() {
         let s = Session::new(vec![oab_server("c1")]);
         assert!(s.declarations().len() <= limits::MAX_SERVERS_PER_SESSION);
+    }
+
+    // ---- inbound dispatch ----
+
+    #[test]
+    fn parses_connect_and_replies_with_a_connection_id() {
+        let frame = json!({
+            "jsonrpc": "2.0", "id": 9, "method": "mcp/connect",
+            "params": { "acpId": "srv-uuid" }
+        });
+        match parse_inbound(&frame) {
+            Inbound::Connect { id, acp_id } => {
+                assert_eq!(id, json!(9));
+                assert_eq!(acp_id, "srv-uuid");
+                assert_eq!(
+                    connect_reply(id, "conn-1"),
+                    json!({ "jsonrpc": "2.0", "id": 9, "result": { "connectionId": "conn-1" } })
+                );
+            }
+            other => panic!("expected Connect, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_a_message_request_and_flattens_the_inner_mcp() {
+        let frame = json!({
+            "jsonrpc": "2.0", "id": 12, "method": "mcp/message",
+            "params": {
+                "connectionId": "conn-1",
+                "method": "tools/call",
+                "params": { "name": "deploy_list", "arguments": { "fleet": "orca" } }
+            }
+        });
+        match parse_inbound(&frame) {
+            Inbound::Message { id, connection_id, method, params } => {
+                assert_eq!(id, Some(json!(12))); // request → reply owed
+                assert_eq!(connection_id, "conn-1");
+                assert_eq!(method, "tools/call");
+                assert_eq!(params["name"], "deploy_list");
+                // the inner MCP result becomes the ACP response result verbatim
+                let inner = json!({ "content": [{ "type": "text", "text": "[]" }] });
+                assert_eq!(
+                    message_reply(id.unwrap(), inner.clone()),
+                    json!({ "jsonrpc": "2.0", "id": 12, "result": inner })
+                );
+            }
+            other => panic!("expected Message, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_message_notification_owes_no_reply() {
+        // notifications/initialized arrives with no outer id
+        let frame = json!({
+            "jsonrpc": "2.0", "method": "mcp/message",
+            "params": { "connectionId": "conn-1", "method": "notifications/initialized", "params": {} }
+        });
+        match parse_inbound(&frame) {
+            Inbound::Message { id, method, .. } => {
+                assert_eq!(id, None); // notification → no reply
+                assert_eq!(method, "notifications/initialized");
+            }
+            other => panic!("expected Message, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn inner_error_becomes_an_outer_jsonrpc_error() {
+        let e = message_error(json!(5), -32000, "not connected");
+        assert_eq!(e["id"], json!(5));
+        assert_eq!(e["error"]["code"], json!(-32000));
+        assert_eq!(e["error"]["message"], "not connected");
+        assert!(e.get("result").is_none());
+    }
+
+    #[test]
+    fn parses_disconnect_and_cancel() {
+        let disc = json!({ "jsonrpc": "2.0", "id": 3, "method": "mcp/disconnect", "params": { "connectionId": "conn-1" } });
+        match parse_inbound(&disc) {
+            Inbound::Disconnect { id, connection_id } => {
+                assert_eq!(connection_id, "conn-1");
+                assert_eq!(disconnect_reply(id), json!({ "jsonrpc": "2.0", "id": 3, "result": {} }));
+            }
+            other => panic!("expected Disconnect, got {other:?}"),
+        }
+        // cancel is a notification keyed by the OUTER frame id of the abandoned request
+        let cancel = json!({ "jsonrpc": "2.0", "method": "mcp/cancel", "params": { "requestId": 42 } });
+        assert_eq!(
+            parse_inbound(&cancel),
+            Inbound::Cancel { request_id: json!(42) }
+        );
+    }
+
+    #[test]
+    fn non_tunnel_frames_are_other() {
+        let chat = json!({ "jsonrpc": "2.0", "method": "session/update", "params": {} });
+        assert_eq!(parse_inbound(&chat), Inbound::Other);
+        let unknown = json!({ "jsonrpc": "2.0", "id": 1, "result": {} });
+        assert_eq!(parse_inbound(&unknown), Inbound::Other);
     }
 }
