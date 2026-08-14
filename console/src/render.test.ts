@@ -3,12 +3,14 @@ import {
   rosterHtml,
   identityHtml,
   fleetConfigHtml,
+  remoteHtml,
   filterByMembers,
   serviceName,
 } from "./render";
 import {
   FIXTURE_DEPLOYMENTS,
   FIXTURE_FLEET_CONFIG,
+  FIXTURE_REMOTE_CONFIG,
   FIXTURE_RUNTIME_CONTEXT,
 } from "./fixtures";
 import { AGENT_STATES, type Deployment, type RuntimeContext } from "./types";
@@ -235,6 +237,63 @@ describe("fleetConfigHtml", () => {
     const html = fleetConfigHtml(cfg, "orca");
     expect(html).toContain("&lt;x&gt;");
     expect(html).not.toContain("<x>");
+  });
+});
+
+describe("remoteHtml", () => {
+  it("shows the endpoint and an Activate button when configured + disconnected", () => {
+    const html = remoteHtml(FIXTURE_REMOTE_CONFIG);
+    expect(html).toContain("wss://gateway.example/acp");
+    expect(html).toContain('data-action="remote-connect"');
+    expect(html).toContain("Activate remote connection");
+    expect(html).not.toContain("disabled");
+    // status badge reflects the state
+    expect(html).toContain("rm-disconnected");
+  });
+
+  it("disables Activate until url + token are configured", () => {
+    const html = remoteHtml({
+      ...FIXTURE_REMOTE_CONFIG,
+      configured: false,
+      url: "",
+    });
+    expect(html).toContain('data-action="remote-connect"');
+    expect(html).toContain("disabled");
+    expect(html).toContain("not configured");
+  });
+
+  it("shows Disconnect (not Activate) while connected", () => {
+    const html = remoteHtml({ ...FIXTURE_REMOTE_CONFIG, status: "connected" });
+    expect(html).toContain('data-action="remote-disconnect"');
+    expect(html).toContain("rm-connected");
+    expect(html).not.toContain('data-action="remote-connect"');
+  });
+
+  it("marks an error status", () => {
+    const html = remoteHtml({
+      ...FIXTURE_REMOTE_CONFIG,
+      status: "error: dial refused",
+    });
+    expect(html).toContain("rm-error");
+    expect(html).toContain("error: dial refused");
+    // an error is not "live", so it offers Activate again
+    expect(html).toContain('data-action="remote-connect"');
+  });
+
+  it("always offers Edit config", () => {
+    expect(remoteHtml(FIXTURE_REMOTE_CONFIG)).toContain(
+      'data-action="edit-remote-config"',
+    );
+  });
+
+  it("renders an unavailable state for null", () => {
+    expect(remoteHtml(null)).toContain("remote connection unavailable");
+  });
+
+  it("escapes the url", () => {
+    const html = remoteHtml({ ...FIXTURE_REMOTE_CONFIG, url: "wss://<x>/acp" });
+    expect(html).toContain("&lt;x&gt;");
+    expect(html).not.toContain("<x>/acp");
   });
 });
 

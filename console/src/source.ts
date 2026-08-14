@@ -1,7 +1,13 @@
-import type { Deployment, FleetConfig, RuntimeContext } from "./types";
+import type {
+  Deployment,
+  FleetConfig,
+  RemoteConfig,
+  RuntimeContext,
+} from "./types";
 import {
   FIXTURE_DEPLOYMENTS,
   FIXTURE_FLEET_CONFIG,
+  FIXTURE_REMOTE_CONFIG,
   FIXTURE_RUNTIME_CONTEXT,
 } from "./fixtures";
 
@@ -24,6 +30,12 @@ export interface Source {
     namespace: string,
     cluster?: string,
   ): Promise<void>;
+  // The remote reverse-MCP connection (Part B): its config/status, the raw
+  // `remote.toml` for the editor, and the explicit activate/deactivate actions.
+  remoteConfig(): Promise<RemoteConfig>;
+  writeRemoteConfig(text: string): Promise<RemoteConfig>;
+  remoteConnect(): Promise<void>;
+  remoteDisconnect(): Promise<void>;
 }
 
 // Fixture-backed source for the standalone / browser build — no core required.
@@ -45,6 +57,15 @@ export class MockSource implements Source {
   // Browser preview: no core, so scaling is a no-op — the fixture roster is
   // re-cloned each poll, so nothing would persist anyway.
   async scaleDeployment(): Promise<void> {}
+  async remoteConfig(): Promise<RemoteConfig> {
+    return structuredClone(FIXTURE_REMOTE_CONFIG);
+  }
+  async writeRemoteConfig(text: string): Promise<RemoteConfig> {
+    return { ...structuredClone(FIXTURE_REMOTE_CONFIG), text };
+  }
+  // Browser preview: no core to dial, so activate/deactivate are no-ops.
+  async remoteConnect(): Promise<void> {}
+  async remoteDisconnect(): Promise<void> {}
 }
 
 // Minimal shape of the Tauri global bridge (v2, `withGlobalTauri`). Accessed via
@@ -90,6 +111,18 @@ export class TauriSource implements Source {
       namespace,
       cluster,
     });
+  }
+  async remoteConfig(): Promise<RemoteConfig> {
+    return this.invoke()<RemoteConfig>("remote_config");
+  }
+  async writeRemoteConfig(text: string): Promise<RemoteConfig> {
+    return this.invoke()<RemoteConfig>("remote_config_write", { text });
+  }
+  async remoteConnect(): Promise<void> {
+    await this.invoke()<unknown>("remote_connect");
+  }
+  async remoteDisconnect(): Promise<void> {
+    await this.invoke()<unknown>("remote_disconnect");
   }
 }
 

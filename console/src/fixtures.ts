@@ -1,4 +1,24 @@
-import type { Deployment, FleetConfig, RuntimeContext } from "./types";
+import type {
+  Deployment,
+  FleetConfig,
+  RemoteConfig,
+  RuntimeContext,
+} from "./types";
+
+// Stand-in remote-connection view so the browser build renders the remote panel
+// without a core. A configured-but-disconnected example — the shape the panel
+// shows before the operator hits "Activate".
+export const FIXTURE_REMOTE_CONFIG: RemoteConfig = {
+  path: "~/.config/oab-studio/remote.toml",
+  text: `# OAB Studio — remote reverse-MCP connection (the /acp endpoint Studio dials)
+url = "wss://gateway.example/acp"
+token = "…"
+cwd = "/"
+`,
+  url: "wss://gateway.example/acp",
+  configured: true,
+  status: "disconnected",
+};
 
 // Stand-in data so the console renders without a live core. Mirrors the shape
 // studio-cp's `deploy_list` / `deploy_get` return. Swapped for the Tauri source

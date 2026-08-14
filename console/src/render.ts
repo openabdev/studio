@@ -2,6 +2,7 @@ import type {
   AgentState,
   Deployment,
   FleetConfig,
+  RemoteConfig,
   RuntimeContext,
 } from "./types";
 
@@ -226,4 +227,57 @@ export function renderFleetConfig(
   activeFleet: string | null,
 ): void {
   el.innerHTML = fleetConfigHtml(cfg, activeFleet);
+}
+
+// ---- Remote reverse-MCP connection panel (Part B) ---------------------------
+// The "activate the remote connection" surface: the /acp endpoint, live status,
+// an explicit Activate/Disconnect button, and Edit config (the same editor as
+// fleets.toml, over remote.toml).
+
+const REMOTE_STATUS_CLASS: Record<string, string> = {
+  connected: "rm-connected",
+  connecting: "rm-connecting",
+  disconnected: "rm-disconnected",
+  error: "rm-error",
+};
+
+function remoteStatusBadge(status: string): string {
+  const key = status.startsWith("error") ? "error" : status;
+  const cls = REMOTE_STATUS_CLASS[key] ?? "rm-disconnected";
+  return `<span class="rm-status ${cls}">${escapeHtml(status || "disconnected")}</span>`;
+}
+
+// Pure: the remote-connection view -> the panel HTML. `null` renders an
+// unavailable state. The button is Disconnect while connected/connecting, else
+// Activate — disabled until a URL + token are configured.
+export function remoteHtml(view: RemoteConfig | null): string {
+  if (!view) {
+    return `<div class="remote"><span class="muted">remote connection unavailable</span></div>`;
+  }
+  const live = view.status === "connected" || view.status === "connecting";
+  const action = live
+    ? `<button class="rm-btn rm-disconnect" type="button" data-action="remote-disconnect">Disconnect</button>`
+    : `<button class="rm-btn rm-connect" type="button" data-action="remote-connect"${view.configured ? "" : " disabled"}>Activate remote connection</button>`;
+  const target = view.configured
+    ? `<code class="rm-url">${escapeHtml(view.url)}</code>`
+    : `<span class="muted">not configured — set <code>url</code> + <code>token</code> in the config</span>`;
+  const path = view.path
+    ? `<span class="cfg-path" title="edit this file to configure the remote connection"><code>${escapeHtml(view.path)}</code></span>`
+    : "";
+  return `<div class="remote">
+      <div class="rm-head">
+        <span class="cfg-label">remote</span>
+        ${path}
+        <button class="cfg-edit" type="button" data-action="edit-remote-config">Edit config</button>
+      </div>
+      <div class="rm-body">
+        ${remoteStatusBadge(view.status)}
+        <span class="rm-target">${target}</span>
+        ${action}
+      </div>
+    </div>`;
+}
+
+export function renderRemote(el: HTMLElement, view: RemoteConfig | null): void {
+  el.innerHTML = remoteHtml(view);
 }

@@ -553,3 +553,80 @@ button.act:disabled {
   font-size: 12px;
   white-space: pre-wrap;
 }
+
+/* ---- Remote reverse-MCP connection panel (Part B) ---- */
+.remote-wrap {
+  margin: 0 0 12px;
+}
+.remote {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  padding: 10px 12px;
+  font-size: 13px;
+}
+.rm-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.rm-body {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.rm-status {
+  border-radius: 999px;
+  padding: 2px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #fff;
+  white-space: nowrap;
+}
+.rm-connected {
+  background: var(--s-running);
+}
+.rm-connecting {
+  background: var(--s-starting);
+}
+.rm-disconnected {
+  background: var(--s-stopped);
+}
+.rm-error {
+  background: var(--s-unhealthy);
+}
+.rm-target {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.rm-url {
+  font-size: 12px;
+}
+.rm-btn {
+  cursor: pointer;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  padding: 4px 12px;
+  white-space: nowrap;
+}
+.rm-connect {
+  border-color: var(--s-starting);
+  color: #fff;
+  background: var(--s-starting);
+}
+.rm-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.rm-disconnect:hover {
+  border-color: var(--s-unhealthy);
+  color: var(--s-unhealthy);
+}

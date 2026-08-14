@@ -72,6 +72,18 @@ export interface FleetConfig {
   text: string;
 }
 
+// The remote reverse-MCP connection view — mirrors src-tauri's `remote_config`
+// command (reverse-MCP client ADR, Part B). `path`/`text` back the in-app editor
+// for `remote.toml`; `url` + `configured` drive the panel; `status` is the live
+// connection state (`disconnected` | `connecting` | `connected` | `error: …`).
+export interface RemoteConfig {
+  path: string;
+  text: string;
+  url: string;
+  configured: boolean;
+  status: string;
+}
+
 // The effective runtime identity/context the control plane resolved for a
 // cluster — mirrors oab-mcp's `runtime_context` tool (ADR #19). `identity_matches`
 // is `null` when the binding declares no `expected_principal`.
