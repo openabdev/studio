@@ -43,18 +43,26 @@ outbound WebSocket it opened.
 | Party | Role | Where |
 |---|---|---|
 | **Studio** (Brett's laptop) | **ACP WS client + MCP server** — dials out, serves `oab-mcp` tools over the socket it holds | laptop (NAT'd) |
-| **OpenAB core / gateway** | ACP server + **MCP proxy/aggregator** (the OAB MCP Facade) | hosts Orca's session |
-| **Orca** | **the agent = MCP client** — discovers & calls Studio's tools via the facade meta-tools, executing under **Studio's** identity | ECS Fargate |
+| **OpenAB core / gateway** | ACP server + **MCP proxy/aggregator** (the OAB MCP Facade); spawns the agent for the session Studio creates | the agent runtime |
+| **the agent** (Orca) | **MCP client** — discovers & calls Studio's tools via the facade meta-tools, executing under **Studio's** identity | ECS Fargate |
 
-- **Studio dials out.** It solves NAT: Studio opens the `/acp` WSS; nothing
-  connects *to* Studio. The fleet is reachable only while Studio runs (accepted
-  cost of path (i); path (ii) covers the no-Studio case).
+- **Studio dials out and is the session creator (decision, 2026-08-14).** Studio,
+  the ACP client, opens the `/acp` WSS to the **remote agent runtime** (Orca's
+  OpenAB endpoint) and **creates the session** with `session/new`. The gateway
+  spawns the agent for that session — the **katashiro model** (§5, "Model A"): the
+  connection that serves the tools is the same one that owns the session, so its
+  `oab-mcp` tools reach *that session's* agent by construction. This is a
+  **dedicated fleet-management session**, distinct from Orca's Discord chat
+  session; a human later drives it through a chat surface in Studio (deferred —
+  §7). It solves NAT (nothing connects *to* Studio) and is reachable only while
+  Studio runs (path (ii) covers the no-Studio case).
 - **"Orca attaches to a running Studio"** (fleet ADR §3(i)) is the *logical*
-  view — the agent gains Studio's tools. The *physical* dial is
-  **Studio → gateway**.
+  reading — the agent gains Studio's tools. The *physical* dial is
+  **Studio → the agent runtime's gateway**, Studio creating the session.
 - **Studio's identity executes.** `oab-mcp` runs in Studio with Studio's
-  `fleets.toml` / AWS credentials (the fleet work of Part A). Orca calls the tools;
-  Studio performs the AWS actions. No AWS credentials are provisioned on Orca.
+  `fleets.toml` / AWS credentials (the fleet work of Part A). The agent calls the
+  tools; Studio performs the AWS actions. No AWS credentials are provisioned on
+  the agent.
 
 ```
   Orca (agent, ECS) ──in-pod──▶ OpenAB core (OAB MCP Facade)
@@ -151,7 +159,7 @@ callable directly, and let **both** transports sit on top of it:
 
 One tool implementation, two front doors. No tool logic is duplicated or forked.
 
-### 4.4 D1 — one `oab` server, fleet-parameterized tools (resolves §5 Q2)
+### 4.4 D1 — one `oab` server, fleet-parameterized tools (resolves fleet ADR §5 Q2)
 
 Studio declares a **single** `type:acp` server (`name: "oab"`), not one per fleet.
 A single server suffices for **any number of fleets** **because the tools are
@@ -177,7 +185,7 @@ discovers them and passes the right `fleet` per call.
   **implementation slice 1** below. It is also the completion of Part A on the MCP
   side: it makes fleet-scoped operation real beyond the console.
 
-### 4.5 D2 — writes are granted by the authed connection (resolves §5 Q1)
+### 4.5 D2 — writes are granted by the authed connection (resolves fleet ADR §5 Q1)
 
 `deploy_apply` / `deploy_scale` / `deploy_delete` are auto-approved, like reads.
 **The authed `/acp` connection is the grant** — consistent with upstream D-29
@@ -198,33 +206,42 @@ matches the upstream contract and the 2026-07-28 MCP spec direction (those
 surfaces are on a deprecation offramp). If a dynamic tool set ever appears, adopt
 the upstream mechanism then rather than shipping a deprecated form now.
 
-## 5. The one OpenAB-side dependency
+## 5. Session model — Model A (Studio creates the session)
 
-Everything above is Studio-local. **One** thing is not, and it is *not* auth (auth
-is settled: the transport bearer). It is **session attachment + endpoint**:
+There are two ways Studio's tools could reach an agent. **Decision (2026-08-14):
+Model A.**
 
-> **Studio's declared `oab-mcp` server must land on _Orca's_ session, and Studio
-> must be able to reach the gateway that hosts it.**
+**Model A — Studio creates a dedicated fleet-management session (chosen).** Studio,
+as the ACP client, dials the remote agent runtime and **creates the session**; the
+gateway spawns the agent for it. This is exactly the **katashiro pattern**: the
+connection that serves the tools also owns the session, so `session/new`'s declared
+`oab-mcp` server reaches *that session's* agent **by construction**. No
+"attach to a session you did not create" mechanism is required — the mechanism is
+already as-built upstream (#1447). A human later drives this session through a chat
+surface in Studio, to *work with the agent* on fleet management (that chat is
+deferred — §7).
 
-Orca's ACP chat session is driven by the **Discord adapter**, not by Studio. In the
-upstream browser example the tool-provider *is* the session's chat client, so its
-`session/new` naturally carries the tools into that session. Studio is a **third
-party** to Orca's session — it does not drive Orca's prompts. So the open item is:
+Because Model A reuses the settled path, the only OpenAB-side needs are **ordinary
+ACP-client concerns**, not a new capability:
 
-1. **Session binding.** How a connection that did **not** create Orca's session
-   contributes a `type:acp` server *into* it (keyed by Orca's `channel_id`), rather
-   than spawning a separate, agent-less session. The registry is already
-   `(channel_id, serverId)`-keyed; what is undefined is the **admission path for a
-   non-session-driving attacher** and the bearer that scopes it to that
-   `channel_id`.
-2. **Endpoint reachability.** Which gateway laptop-Studio dials to meet ECS-Orca
-   (a hosted/shared gateway, or Orca's core exposed), and how Studio obtains the
-   scoped bearer.
+1. **Endpoint.** Which agent-runtime gateway Studio dials (Orca's OpenAB endpoint,
+   reachable from the laptop) — topology/deployment, not protocol.
+2. **Bearer.** How Studio obtains the `/acp` transport bearer — the settled
+   transport auth, nothing new.
 
-This is the item to settle with OpenAB (Jelly). It is small and sharply bounded —
-but it is load-bearing: without it, path (i) cannot connect Studio's tools to Orca
-specifically. **Path (ii)** (headless standalone `oab-mcp`) has none of this and is
-the fallback that keeps Orca operating the fleet in the meantime.
+**Model B — inject tools into an agent's *already-running* session (deferred).**
+Making the always-on, Discord-driven Orca gain `oab-mcp` tools *in its existing
+chat session* would require a third party (Studio) to contribute a `type:acp`
+server into a session it did **not** create — keyed by that session's `channel_id`,
+with a bearer scoping the attacher to it. Upstream has `(channel_id, serverId)`
+keying and `session/resume` (a session's **own** client reconnecting), but **not**
+an admission path for a non-session-driving attacher. That is a genuine new
+OpenAB mechanism; it is **out of scope** here and revisited only if operating the
+live Discord Orca in-place proves necessary. Model A already delivers
+"an agent operates the fleet through Studio."
+
+**Path (ii)** (headless standalone `oab-mcp`) remains the no-Studio fallback and
+depends on none of this.
 
 ## 6. Consequences & implementation slices
 
@@ -247,18 +264,23 @@ the fallback that keeps Orca operating the fleet in the meantime.
    dispatch yet.
 4. **Tunnel dispatch** — `mcp/connect` / `mcp/message` / `mcp/disconnect` /
    `mcp/cancel` wired to the in-process handler; limits + id correlation. End-to-end
-   against a real gateway once §5 is settled.
+   against a real agent-runtime gateway (§5, Model A).
 
-Slices 1–2 need **no** OpenAB dependency and can land immediately. Slices 3–4's
-end-to-end verification depends on §5.
+Slices 1–2 need **no** OpenAB dependency and can land immediately. Slices 3–4 need
+only a reachable agent-runtime endpoint + bearer (§5) — ordinary ACP-client
+concerns, not a new upstream mechanism.
 
 ## 7. Open questions
 
-1. **Session attachment + endpoint (§5)** — the one OpenAB-side item; the
-   feasibility gate for path (i).
-2. **Per-fleet servers / cross-account (§4.4, fleet ADR §5 Q4)** — revisit if a
+1. **Endpoint + bearer (§5)** — which agent-runtime gateway Studio dials and how it
+   gets the transport bearer. Deployment/topology, not protocol.
+2. **The session chat surface** — Model A's session is driven by a human working
+   *with* the agent on fleet management; Studio needs a chat UI for that session.
+   Deferred; the mechanism (an ACP chat over the same `/acp` WS) exists.
+3. **Per-fleet servers / cross-account (§4.4, fleet ADR §5 Q4)** — revisit if a
    fleet ever carries distinct credentials or a session must be pinned to one fleet.
-3. **Fine-grained write consent (§4.5)** — deliberately deferred; would be an
+4. **Fine-grained write consent (§4.5)** — deliberately deferred; would be an
    upstream contract change, not Studio-local.
-4. **Reconnect UX** — how Studio surfaces "attached / detached from Orca's session"
-   in its UI (the human-in-the-loop value of path (i)).
+5. **Model B (inject into a live session)** — only if operating the always-on
+   Discord Orca in-place is later required; needs the new upstream admission path
+   described in §5.
