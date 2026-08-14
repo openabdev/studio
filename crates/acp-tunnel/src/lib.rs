@@ -33,6 +33,13 @@ pub const ACP_SUBPROTOCOL: &str = "acp.v1";
 /// `openab.bearer.<token>, acp.v1` (tunnel contract §1). The server echoes only
 /// `acp.v1`. The token is a secret — this returns it for the transport to place
 /// in the handshake header; never log the result.
+///
+/// ⚠️ Browser transport only. A native tokio-tungstenite (0.23) client must **not**
+/// feed this as a single `Sec-WebSocket-Protocol` value: that transport parses the
+/// offer with `split(",")` without trimming, so the ` acp.v1` element keeps a
+/// leading space and never matches the server's echoed `acp.v1`. Native clients
+/// send the bearer in the `Authorization` header and offer only [`ACP_SUBPROTOCOL`]
+/// (see `src-tauri/src/remote.rs`).
 pub fn bearer_subprotocol(token: &str) -> String {
     format!("openab.bearer.{token}, {ACP_SUBPROTOCOL}")
 }
@@ -341,6 +348,14 @@ mod tests {
             bearer_subprotocol("tok123"),
             "openab.bearer.tok123, acp.v1"
         );
+    }
+
+    #[test]
+    fn acp_subprotocol_is_a_single_clean_token() {
+        // Native transports offer this verbatim as one `Sec-WebSocket-Protocol`
+        // value; tokio-tungstenite 0.23 splits on "," without trimming, so any
+        // comma or whitespace here would break the match against the server's echo.
+        assert!(!ACP_SUBPROTOCOL.contains([',', ' ']));
     }
 
     #[test]
