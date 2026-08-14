@@ -17,7 +17,8 @@ use acp_tunnel::config::RemoteConfig;
 use acp_tunnel::{Inbound, Session};
 use futures_util::{Sink, SinkExt, StreamExt};
 use serde_json::{json, Value};
-use tauri::{AppHandle, Emitter, Runtime};
+use tauri::{AppHandle, Emitter, Manager, Runtime};
+use tokio::sync::mpsc;
 use tokio::sync::Mutex as AsyncMutex;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::HeaderValue;
@@ -35,6 +36,47 @@ pub struct RemoteState {
     task: Option<tauri::async_runtime::JoinHandle<()>>,
     /// `"disconnected"` | `"connecting"` | `"connected"` | `"error: …"`.
     pub status: String,
+    /// The live outbound-chat channel, present only while a session is active.
+    /// `agent_prompt` / `agent_cancel` push into it; `run_once` drains it onto the
+    /// socket. `None` ⇒ nothing to prompt (disconnected / mid-handshake).
+    prompt_tx: Option<mpsc::UnboundedSender<OutMsg>>,
+}
+
+/// A chat action the UI asks the live connection to perform (ADR
+/// *agent-chat-panel*, Part B). Pushed by the `agent_prompt` / `agent_cancel`
+/// commands into the per-connection channel that `run_once` drains onto the WS.
+pub enum OutMsg {
+    /// Send a chat turn (`session/prompt`).
+    Prompt(String),
+    /// Abandon the in-flight turn (`session/cancel`).
+    Cancel,
+}
+
+impl Remote {
+    /// Send a chat turn to the connected agent. Errors if no session is live.
+    pub async fn send_prompt(&self, text: String) -> Result<(), String> {
+        self.push(OutMsg::Prompt(text)).await
+    }
+
+    /// Cancel the in-flight turn (best-effort).
+    pub async fn send_cancel(&self) -> Result<(), String> {
+        self.push(OutMsg::Cancel).await
+    }
+
+    async fn push(&self, msg: OutMsg) -> Result<(), String> {
+        let guard = self.0.lock().await;
+        let tx = guard
+            .prompt_tx
+            .as_ref()
+            .ok_or_else(|| "not connected — activate the remote connection first".to_string())?;
+        // A live `prompt_tx` whose receiver has gone means the connection is
+        // tearing down (the socket closed and `run_reconnecting` is about to
+        // retract the channel). Report that as clearly as the missing-channel
+        // case above rather than a bare "connection closed", which reads like a
+        // different, harder failure (review #3).
+        tx.send(msg)
+            .map_err(|_| "not connected — the remote connection just closed; reactivate it".to_string())
+    }
 }
 
 /// `~/.config/oab-studio/remote.toml` — beside `fleets.toml`.
@@ -104,6 +146,7 @@ pub async fn disconnect<R: Runtime>(app: &AppHandle<R>, remote: &Remote) {
         t.abort();
     }
     guard.status = "disconnected".to_string();
+    guard.prompt_tx = None;
     emit_status(app, "disconnected");
 }
 
@@ -111,7 +154,11 @@ pub async fn disconnect<R: Runtime>(app: &AppHandle<R>, remote: &Remote) {
 /// aborted (by [`disconnect`]).
 async fn run_reconnecting<R: Runtime>(app: AppHandle<R>, cfg: RemoteConfig, client: McpClient) {
     loop {
-        if let Err(e) = run_once(&app, &cfg, &client).await {
+        let result = run_once(&app, &cfg, &client).await;
+        // The socket is gone — retract the outbound-chat channel so a prompt
+        // between attempts fails fast rather than dropping into a dead sink.
+        app.state::<Remote>().0.lock().await.prompt_tx = None;
+        if let Err(e) = result {
             emit_status(&app, &format!("error: {e}"));
             let _ = app.emit(
                 "app-log",
@@ -175,67 +222,159 @@ async fn run_once<R: Runtime>(
     }));
     send(&mut write, &init).await?;
 
-    // Read loop. Handshake responses (to our initialize / session/new) advance
-    // the session; gateway-initiated method frames are the tunnel.
-    while let Some(msg) = read.next().await {
-        let msg = msg.map_err(|e| format!("ws read: {e}"))?;
-        let text = match msg {
-            WsMessage::Text(t) => t,
-            WsMessage::Binary(b) => String::from_utf8_lossy(&b).into_owned(),
-            WsMessage::Close(_) => return Ok(()),
-            WsMessage::Ping(_) | WsMessage::Pong(_) | WsMessage::Frame(_) => continue,
-        };
-        if text.len() > acp::limits::MAX_FRAME_BYTES {
-            return Err("inbound frame exceeds 8 MiB".to_string());
-        }
-        let frame: Value = match serde_json::from_str(&text) {
-            Ok(v) => v,
-            Err(_) => continue, // ignore non-JSON keepalives
-        };
+    // Outbound-chat channel: `agent_prompt`/`agent_cancel` push `OutMsg`s here and
+    // the loop below drains them onto the socket. It is published into
+    // `RemoteState.prompt_tx` only once the session is active (below), so the UI
+    // can never prompt a half-open session; `run_reconnecting` retracts it on exit.
+    let (out_tx, mut out_rx) = mpsc::unbounded_channel::<OutMsg>();
+    // The id of the in-flight `session/prompt`. A prompt result is method-less —
+    // the same shape as a handshake ack — so the turn is ended by matching this id,
+    // never by phase (ADR §3, "id correlation").
+    let mut pending_prompt: Option<u64> = None;
 
-        // A response (no `method`) is the ack to one of our handshake requests.
-        if frame.get("method").is_none() {
-            if session.phase() == acp::Phase::Initializing {
-                session.on_initialized();
-                let (_id, new) = session.open_session(&cfg.cwd);
-                send(&mut write, &new).await?;
-            } else if session.phase() == acp::Phase::Initialized {
-                let sid = frame
-                    .get("result")
-                    .and_then(|r| r.get("sessionId"))
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_string();
-                session.on_session_created(sid);
-                emit_status(app, "connected");
-                let _ = app.emit(
-                    "app-log",
-                    json!({ "level": "info", "msg": "remote: session active — oab tools published" }),
-                );
-            }
-            continue;
-        }
+    // Relay replies (tunnelled `tools/list` / `tools/call`) come back through this
+    // channel instead of being sent inline, so a slow sidecar round-trip inside
+    // `handle_inner` no longer stalls the loop — queued prompts, cancels and chat
+    // chunks stay responsive while a `tools/call` is in flight (review #2). The
+    // single writer stays in the loop, so frames are still serialized on the wire.
+    let (reply_tx, mut reply_rx) = mpsc::unbounded_channel::<Value>();
 
-        // Otherwise it is a gateway-initiated tunnel frame.
-        match acp::parse_inbound(&frame) {
-            Inbound::Connect { id, .. } => {
-                send(&mut write, &acp::connect_reply(id, &conn_id)).await?;
-            }
-            Inbound::Message {
-                id,
-                method,
-                params,
-                ..
-            } => {
-                if let Some(reply) = handle_inner(client, id, &method, params).await {
-                    send(&mut write, &reply).await?;
+    // Loop over BOTH inbound frames and outbound chat actions. `write` never leaves
+    // the task; commands reach it only through `out_rx`.
+    loop {
+        tokio::select! {
+            // Outbound: a queued chat action from the UI. The `Some` pattern
+            // disables this arm if the channel ever closes, so a `None` can never
+            // busy-spin the loop (review #4); in practice `out_tx` lives for the
+            // whole run, so it stays open until teardown.
+            Some(out) = out_rx.recv() => {
+                match out {
+                    OutMsg::Prompt(text) => {
+                        // In-flight guard (review #1): single-shot turn model. A
+                        // second prompt while one is pending would overwrite
+                        // `pending_prompt` and orphan the first turn's `turn_end`
+                        // (the panel spinner would hang). Reject rather than clobber
+                        // — Part C's turn management gates this too, but the backend
+                        // must not depend on the UI for its own correctness.
+                        if pending_prompt.is_some() {
+                            let _ = app.emit(
+                                "app-log",
+                                json!({ "level": "warn", "msg": "remote: prompt ignored — a turn is already in flight" }),
+                            );
+                        } else if let Some((id, frame)) = session.prompt(&text) {
+                            pending_prompt = Some(id);
+                            send(&mut write, &frame).await?;
+                        }
+                    }
+                    OutMsg::Cancel => {
+                        if let Some(frame) = session.cancel() {
+                            send(&mut write, &frame).await?;
+                        }
+                    }
                 }
             }
-            Inbound::Disconnect { id, .. } => {
-                send(&mut write, &acp::disconnect_reply(id)).await?;
+
+            // Outbound: a relay reply produced by a spawned `handle_inner` task
+            // (review #2). Same `Some`-pattern guard against a closed channel.
+            Some(reply) = reply_rx.recv() => {
+                send(&mut write, &reply).await?;
             }
-            // Cancellation is best-effort; relays are short and not tracked here.
-            Inbound::Cancel { .. } | Inbound::Other => {}
+
+            // Inbound: a frame from the gateway.
+            msg = read.next() => {
+                let Some(msg) = msg else { break };
+                let msg = msg.map_err(|e| format!("ws read: {e}"))?;
+                let text = match msg {
+                    WsMessage::Text(t) => t,
+                    WsMessage::Binary(b) => String::from_utf8_lossy(&b).into_owned(),
+                    WsMessage::Close(_) => return Ok(()),
+                    WsMessage::Ping(_) | WsMessage::Pong(_) | WsMessage::Frame(_) => continue,
+                };
+                if text.len() > acp::limits::MAX_FRAME_BYTES {
+                    return Err("inbound frame exceeds 8 MiB".to_string());
+                }
+                let frame: Value = match serde_json::from_str(&text) {
+                    Ok(v) => v,
+                    Err(_) => continue, // ignore non-JSON keepalives
+                };
+
+                // A response (no `method`) is a handshake ack or a prompt result.
+                if frame.get("method").is_none() {
+                    match session.phase() {
+                        acp::Phase::Initializing => {
+                            session.on_initialized();
+                            let (_id, new) = session.open_session(&cfg.cwd);
+                            send(&mut write, &new).await?;
+                        }
+                        acp::Phase::Initialized => {
+                            let sid = frame
+                                .get("result")
+                                .and_then(|r| r.get("sessionId"))
+                                .and_then(Value::as_str)
+                                .unwrap_or_default()
+                                .to_string();
+                            session.on_session_created(sid);
+                            // Now a turn can be sent — publish the outbound channel.
+                            app.state::<Remote>().0.lock().await.prompt_tx = Some(out_tx.clone());
+                            emit_status(app, "connected");
+                            let _ = app.emit(
+                                "app-log",
+                                json!({ "level": "info", "msg": "remote: session active — oab tools published" }),
+                            );
+                        }
+                        acp::Phase::SessionActive => {
+                            // End the turn iff this is our in-flight prompt's result.
+                            let fid = frame.get("id").and_then(Value::as_u64);
+                            if fid.is_some() && fid == pending_prompt {
+                                pending_prompt = None;
+                                let stop = frame
+                                    .get("result")
+                                    .and_then(|r| r.get("stopReason"))
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("end_turn")
+                                    .to_string();
+                                let _ = app.emit(
+                                    "agent-update",
+                                    json!({ "kind": "turn_end", "stopReason": stop }),
+                                );
+                            }
+                        }
+                        acp::Phase::New => {}
+                    }
+                    continue;
+                }
+
+                // Otherwise it is a gateway-initiated frame: the reverse-MCP tunnel
+                // or a streamed chat chunk.
+                match acp::parse_inbound(&frame) {
+                    Inbound::Connect { id, .. } => {
+                        send(&mut write, &acp::connect_reply(id, &conn_id)).await?;
+                    }
+                    Inbound::Message { id, method, params, .. } => {
+                        // Relay to the sidecar off the loop (review #2): a slow
+                        // `tools/call` must not block queued prompts/cancels or
+                        // streamed chat chunks. The reply returns via `reply_tx`
+                        // and is written by the loop's single writer. `McpClient`
+                        // is `Arc`-backed, so the clone is cheap; each reply carries
+                        // its own id, so out-of-order completion is fine for MCP.
+                        let client = client.clone();
+                        let reply_tx = reply_tx.clone();
+                        tauri::async_runtime::spawn(async move {
+                            if let Some(reply) = handle_inner(&client, id, &method, params).await {
+                                let _ = reply_tx.send(reply);
+                            }
+                        });
+                    }
+                    Inbound::Disconnect { id, .. } => {
+                        send(&mut write, &acp::disconnect_reply(id)).await?;
+                    }
+                    // A piece of the agent's chat reply → forward to the panel.
+                    Inbound::AgentChunk { text } => {
+                        let _ = app.emit("agent-update", json!({ "kind": "chunk", "text": text }));
+                    }
+                    Inbound::Cancel { .. } | Inbound::Other => {}
+                }
+            }
         }
     }
     Ok(())

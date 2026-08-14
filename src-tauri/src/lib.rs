@@ -272,6 +272,23 @@ async fn remote_disconnect(
     Ok(())
 }
 
+/// Send a chat turn to the connected agent (ADR *agent-chat-panel*): pushes a
+/// `session/prompt` onto the live `/acp` session. The reply streams back as
+/// `agent-update` events. Errors if no session is active.
+#[tauri::command]
+async fn agent_prompt(
+    remote: tauri::State<'_, remote::Remote>,
+    text: String,
+) -> Result<(), String> {
+    remote.send_prompt(text).await
+}
+
+/// Abandon the in-flight chat turn (`session/cancel`). Best-effort.
+#[tauri::command]
+async fn agent_cancel(remote: tauri::State<'_, remote::Remote>) -> Result<(), String> {
+    remote.send_cancel().await
+}
+
 /// What the frontend needs to render the "update available" state: the version
 /// on the release vs. what's running, plus the release notes.
 #[derive(serde::Serialize)]
@@ -348,6 +365,8 @@ pub fn run() {
             remote_config_write,
             remote_connect,
             remote_disconnect,
+            agent_prompt,
+            agent_cancel,
             check_update,
             install_update
         ])
