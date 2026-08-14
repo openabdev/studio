@@ -1,6 +1,6 @@
 # ADR: Chatting with a connected agent — `session/prompt` over the live `/acp` socket (Part C)
 
-- **Status:** Proposed
+- **Status:** Accepted (2026-08-14) — review-gate APPROVED by Jellyfish (live server-side eval); implementation greenlit by Brett.
 - **Date:** 2026-08-14
 - **Author:** Orca (`ecs-claude`)
 - **Extends:** [Fleet grouping & connection model](./fleet-grouping-and-connection-model.md) Part B (reverse MCP-over-ACP); [agent connection guide](../connecting-an-agent.md)
