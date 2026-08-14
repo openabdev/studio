@@ -36,7 +36,7 @@ Chat is **additive on the one live `/acp` session**, not a second connection. `s
 - `run_once` `tokio::select!`s between `read.next()` and `prompt_rx.recv()`; a received frame goes out through the existing private `send()` helper, so the WS `write` sink never leaves the task.
 - **The drop site becomes the chat hook** — the new `Inbound::AgentChunk` arm `app.emit("agent-update", …)`, the same emit/listen model as `remote-status`.
 - **Correctness — id correlation:** the read loop today treats *any* method-less frame as a handshake ack that advances the session phase. `session/prompt` responses are **also** method-less; they must be **correlated by request id** (a `pendingReqs` map, as katashiro does) so a prompt result never mis-drives the phase state machine.
-- **Resume, not new:** persist the `sessionId`; on connect, drive `Session::resume()` (already in `acp-tunnel`) when we have one and fall back to `session/new` if the gateway rejects it (katashiro's pattern). This is what keeps the **agent's own** memory of the conversation continuous across reconnect/restart — not just the local scrollback. The `sessionId` lives in the Rust core (`RemoteState`/on disk), out of the webview's reach.
+- **Resume, not new:** persist the `sessionId`; on connect, drive `Session::resume()` (already in `acp-tunnel`) when we have one and fall back to `session/new` if the gateway rejects it (katashiro's pattern). **Resume params are `{ sessionId, cwd, mcpServers }`** — verified live (Jellyfish): `{ sessionId }` alone fails `-32602 missing field cwd`, and the `oab` `mcpServers` **must be re-declared** so the reverse-MCP tunnel re-attaches on the resumed session — otherwise the agent remembers the conversation but **loses Studio's `oab` tools**. So resume keeps **both** the agent's memory *and* the tool tunnel continuous (confirmed: seed a codeword on one socket → close → resume on a fresh socket → the agent recalls it). The `sessionId` lives in the Rust core (`RemoteState`/on disk), out of the webview's reach.
 
 **`src-tauri/src/lib.rs`:** two `#[tauri::command]`s next to `remote_connect` — `agent_prompt` (push a `session/prompt` `Value` into the sender) and `agent_cancel` (push `session/cancel`) — taking `tauri::State<'_, remote::Remote>` (+ `AppHandle`), registered in the `invoke_handler!` list.
 
@@ -74,11 +74,11 @@ A new panel/tab in the vanilla-TS `console` (add `<section id="chat">` + a `#tab
 - **Facade routing — ✅ confirmed.** `session/prompt` routes to the bound agent, runs (incl. a `bash` tool call), and returns `{ stopReason: "end_turn" }`. Not gated behind a capability; Part B is viable.
 - **`session/update` taxonomy — resolved.** openab emits **only** `agent_message_chunk`, a **single terminal** one; **zero** `tool_call` / thought frames (two live prompts, incl. a tool-forcing one). Folded into §2/§5 (streaming + cards are upstream-blocked).
 - **`remote.rs` refactor — ✅ sound.** The mpsc + `select!` + `pendingReqs` id-correlation is correct and necessary (prompt results are method-less, same shape as handshake acks).
+- **`session/resume` — ✅ honoured, memory preserved across reconnect.** Seed a codeword on one socket → close → `session/resume` on a fresh socket → the agent recalls it. Requires `{ sessionId, cwd, mcpServers }` with `oab` re-declared (folded into §3).
 
 ### Still open
 
-1. **`session/resume` server-side** — the resume-not-new handshake (§3) assumes the gateway honours `session/resume`; not yet live-verified. Confirm before the resume path lands.
-2. **Persistence store** — history + resume are **in MVP** (Brett); open detail is *where* state lives. Leaning: `sessionId` in the Rust core (`RemoteState` + a small on-disk file, out of the webview), transcript in a Tauri app-data store keyed by agent. Confirm when Part C lands.
-3. **Threat model under Tauri** — where the `/acp` bearer lives relative to the webview, and what Studio CSP replaces katashiro's MV3 egress lock.
+1. **Persistence store** — history + resume are **in MVP** (Brett); open detail is *where* state lives. Leaning: `sessionId` in the Rust core (`RemoteState` + a small on-disk file, out of the webview), transcript in a Tauri app-data store keyed by agent. Confirm when Part C lands.
+2. **Threat model under Tauri** — where the `/acp` bearer lives relative to the webview, and what Studio CSP replaces katashiro's MV3 egress lock.
 
 This is a direction-alignment ADR; implementation lands in slices (Part B backend — builders + mpsc + id-correlation, streaming-independent, can start first — then Part C MVP panel), each verified against the live gateway.
