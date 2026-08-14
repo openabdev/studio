@@ -4,12 +4,14 @@ resolver = "2"
 
 # Fast profile for the CI-built `oab-mcp` sidecar (desktop.yml). The sidecar is an
 # MCP server that shells out to AWS — it is I/O-bound with no hot loops, so it does
-# not need full `release` optimization. Dropping to opt-level 1 + max codegen-units
-# turns a ~23-min release compile of the aws-sdk/aws-lc-sys tree into a few minutes;
-# the shipped binary is a touch larger/slower but functionally identical.
+# not need any optimization. opt-level 0 + max codegen-units minimises codegen: the
+# measured cost of a warm sidecar build was ~299s in oab-mcp's own final codegen
+# (monomorphising the aws-sdk generics) on top of the dep tree, and opt-level is the
+# only remaining lever once lto/debug are already off. The shipped binary is larger
+# and a touch slower, but for an I/O-bound tool that's functionally invisible.
 [profile.release-ci]
 inherits = "release"
-opt-level = 1
+opt-level = 0
 codegen-units = 256
 lto = false
 debug = false
