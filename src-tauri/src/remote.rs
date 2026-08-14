@@ -298,6 +298,12 @@ async fn run_once<R: Runtime>(
                     .send(WsMessage::Ping(Vec::new()))
                     .await
                     .map_err(|e| format!("ws keepalive ping: {e}"))?;
+                // Surface each keepalive in the Activity pane so the operator can
+                // see the tunnel being kept warm between prompts.
+                let _ = app.emit(
+                    "app-log",
+                    json!({ "level": "info", "msg": "remote: keepalive ping sent" }),
+                );
             }
 
             // Inbound: a frame from the gateway.
