@@ -163,6 +163,10 @@ pub async fn disconnect<R: Runtime>(app: &AppHandle<R>, remote: &Remote) {
     guard.status = "disconnected".to_string();
     guard.prompt_tx = None;
     emit_status(app, "disconnected");
+    let _ = app.emit(
+        "app-log",
+        json!({ "level": "info", "msg": "remote: disconnected by user" }),
+    );
 }
 
 /// Reconnect loop: one attempt, then back off and retry until the task is
@@ -200,6 +204,10 @@ async fn run_reconnecting<R: Runtime>(app: AppHandle<R>, cfg: RemoteConfig, clie
             );
         }
         emit_status(&app, "connecting");
+        let _ = app.emit(
+            "app-log",
+            json!({ "level": "info", "msg": "remote: reconnecting in 5s…" }),
+        );
         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
     }
 }
@@ -239,6 +247,13 @@ async fn run_once<R: Runtime>(
         HeaderValue::from_static(acp::ACP_SUBPROTOCOL),
     );
 
+    // The URL carries no secret (the bearer rides the Authorization header), so it
+    // is safe to show which endpoint we're dialing — the reconnect cycle is
+    // otherwise invisible in Activity until it succeeds or errors.
+    let _ = app.emit(
+        "app-log",
+        json!({ "level": "info", "msg": format!("remote: dialing {}…", cfg.url) }),
+    );
     let (ws, _resp) = tokio_tungstenite::connect_async(req)
         .await
         .map_err(|e| format!("dial {}: {e}", cfg.url))?;

@@ -161,7 +161,7 @@ async function tick(): Promise<void> {
     prunePending(deployments);
     renderRoster(roster, deployments, pendingKeys());
     if (lastError) {
-      note("info", `roster recovered — ${deployments.length} deployment(s)`);
+      note("info", `roster: recovered — ${deployments.length} deployment(s)`);
       lastError = "";
     }
     if (pollStatus) {
@@ -202,7 +202,7 @@ async function refreshConfig(): Promise<void> {
     fleetConfig = await source.fleetConfig();
     renderFleetConfig(configEl, fleetConfig, activeFleet);
   } catch (e) {
-    note("error", `fleet config: ${errText(e)}`);
+    note("error", `config: fleet load failed — ${errText(e)}`);
     fleetConfig = null;
     renderFleetConfig(configEl, null, activeFleet);
   }
@@ -217,7 +217,7 @@ async function refreshRemote(): Promise<void> {
     remoteConfig = await source.remoteConfig();
     renderRemote(remoteEl, remoteConfig);
   } catch (e) {
-    note("error", `remote config: ${errText(e)}`);
+    note("error", `config: remote load failed — ${errText(e)}`);
     remoteConfig = null;
     renderRemote(remoteEl, null);
   }
@@ -236,7 +236,7 @@ function selectFleet(name: string): void {
   activeCluster = fleet.cluster;
   activeMembers = fleet.members;
   if (clusterLabel) clusterLabel.textContent = `${activeFleet} · ${activeCluster}`;
-  note("info", `switched to fleet "${activeFleet}" (cluster "${activeCluster}")`);
+  note("info", `config: switched to fleet "${activeFleet}" (cluster "${activeCluster}")`);
   if (configEl) renderFleetConfig(configEl, fleetConfig, activeFleet);
   void refreshIdentity();
   void tick();
@@ -295,12 +295,12 @@ async function saveEditor(): Promise<void> {
     if (editorTarget === "remote") {
       remoteConfig = await source.writeRemoteConfig(text);
       if (remoteEl) renderRemote(remoteEl, remoteConfig);
-      note("info", "remote config saved");
+      note("info", "config: remote saved");
       closeEditor();
     } else {
       fleetConfig = await source.writeFleetConfig(text);
       if (configEl) renderFleetConfig(configEl, fleetConfig, activeFleet);
-      note("info", "fleet config saved");
+      note("info", "config: fleet saved");
       closeEditor();
       // A binding change may alter the active fleet's credential — re-observe.
       void refreshIdentity();
@@ -336,13 +336,13 @@ async function remoteAction(kind: "connect" | "disconnect"): Promise<void> {
   try {
     if (kind === "connect") {
       await source.remoteConnect();
-      note("info", "activating remote connection…");
+      note("info", "remote: activating…");
     } else {
       await source.remoteDisconnect();
-      note("info", "remote connection deactivated");
+      note("info", "remote: deactivated");
     }
   } catch (e) {
-    note("error", `remote ${kind}: ${errText(e)}`);
+    note("error", `remote: ${kind} failed — ${errText(e)}`);
   }
   void refreshRemote();
 }
@@ -477,7 +477,7 @@ async function stopTurn(): Promise<void> {
     await source.agentCancel();
     note("info", "chat: cancel sent");
   } catch (e) {
-    note("error", `chat cancel: ${errText(e)}`);
+    note("error", `chat: cancel failed — ${errText(e)}`);
   }
   // The backend still emits a `turn_end` (stopReason `cancelled`), which clears
   // `turnActive` and flushes the queue — no local state change needed here.
@@ -589,11 +589,11 @@ async function scale(
   repaintRoster(); // disable the button immediately
   try {
     await source.scaleDeployment(name, size, namespace, activeCluster);
-    note("info", `${action === "start" ? "started" : "stopped"} ${namespace}/${name}`);
+    note("info", `roster: ${action === "start" ? "started" : "stopped"} ${namespace}/${name}`);
     // tick() observes the new desiredCount and prunes the guard when it flips.
     await tick();
   } catch (e) {
-    note("error", `${action} ${namespace}/${name}: ${errText(e)}`);
+    note("error", `roster: ${action} ${namespace}/${name} failed — ${errText(e)}`);
     clearPending(key);
     repaintRoster();
   }
@@ -643,7 +643,7 @@ async function startCore(): Promise<void> {
   try {
     await invoke("start_core");
   } catch (e) {
-    note("error", `start_core: ${errText(e)}`);
+    note("error", `core: start failed — ${errText(e)}`);
   }
 }
 
@@ -678,15 +678,15 @@ function setupUpdater(): void {
         pending = info;
         btn.textContent = `Update to v${info.version} ↻`;
         btn.classList.add("has-update");
-        note("info", `New version v${info.version} available (current v${info.current}) — click to install and restart`);
+        note("info", `update: v${info.version} available (current v${info.current}) — click to install`);
       } else {
-        note("info", "Already up to date");
+        note("info", "update: already up to date");
         btn.textContent = "Up to date";
         window.setTimeout(reset, 4000);
       }
     } catch (e) {
       reset();
-      note("error", `Update check failed: ${errText(e)}`);
+      note("error", `update: check failed — ${errText(e)}`);
     } finally {
       btn.disabled = false;
     }
@@ -701,7 +701,7 @@ function setupUpdater(): void {
     } catch (e) {
       btn.disabled = false;
       btn.textContent = pending ? `Update to v${pending.version} ↻` : "Check for updates";
-      note("error", `Update install failed: ${errText(e)}`);
+      note("error", `update: install failed — ${errText(e)}`);
     }
   }
 
@@ -747,7 +747,7 @@ async function boot(): Promise<void> {
   renderChat();
   updateChatControls();
   if (clusterLabel) clusterLabel.textContent = activeCluster;
-  note("info", `polling cluster "${activeCluster}" every ${POLL_MS / 1000}s`);
+  note("info", `app: polling cluster "${activeCluster}" every ${POLL_MS / 1000}s`);
   setupUpdater();
   await startCore();
   void refreshConfig();

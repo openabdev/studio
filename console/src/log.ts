@@ -62,7 +62,7 @@ export async function bindBackend(activity: Pane, mcp: Pane): Promise<void> {
   const tauri = (globalThis as { __TAURI__?: TauriEventGlobal }).__TAURI__;
   const listen = tauri?.event?.listen;
   if (!listen) {
-    activity.push({ cls: "lv-info", tag: "INFO", msg: "browser build — no core (fixtures)" });
+    activity.push({ cls: "lv-info", tag: "INFO", msg: "app: browser build — no core (fixtures)" });
     return;
   }
   await listen<{ level: Level; msg: string }>("app-log", (e) => {
