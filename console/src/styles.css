@@ -810,3 +810,63 @@ button.act:disabled {
   border-color: var(--s-unhealthy);
   color: var(--s-unhealthy);
 }
+
+/* Config tab — pin the oab-mcp target (cluster / profile / region). */
+.pane.config {
+  padding: 16px;
+  overflow: auto;
+}
+.config-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-width: 420px;
+}
+.config-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.config-form input {
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+}
+.config-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.config-actions button {
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--text);
+  cursor: pointer;
+}
+.config-actions button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.config-status {
+  font-size: 12px;
+  color: var(--muted);
+}
+.config-status.ok {
+  color: var(--ok);
+}
+.config-status.err {
+  color: var(--s-unhealthy);
+}
+.config-hint {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted);
+}
