@@ -1,4 +1,5 @@
 import { defaultSource } from "./source";
+import { initConfigTab } from "./config";
 import {
   renderRoster,
   renderIdentity,
@@ -750,6 +751,9 @@ async function boot(): Promise<void> {
   note("info", `app: polling cluster "${activeCluster}" every ${POLL_MS / 1000}s`);
   setupUpdater();
   await startCore();
+  // Config tab: pin the oab-mcp target (cluster/profile/region → hermetic env);
+  // on save the backend reloads the core, so refresh the roster after.
+  initConfigTab({ onSaved: () => void tick() });
   void refreshConfig();
   void refreshIdentity();
   void refreshRemote();
