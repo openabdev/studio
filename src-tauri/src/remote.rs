@@ -11,6 +11,8 @@
 //! module is structurally complete and compiles under `desktop.yml`.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use acp_tunnel as acp;
@@ -54,6 +56,9 @@ pub struct RemoteState {
     /// `agent_prompt` / `agent_cancel` push into it; `run_once` drains it onto the
     /// socket. `None` ⇒ nothing to prompt (disconnected / mid-handshake).
     prompt_tx: Option<mpsc::UnboundedSender<OutMsg>>,
+    /// Set by [`disconnect`] so [`run_reconnecting`] stops instead of reconnecting
+    /// after the current attempt tears down. Shared with the reconnect task.
+    stop: Option<Arc<AtomicBool>>,
 }
 
 /// A chat action the UI asks the live connection to perform (ADR
@@ -64,6 +69,10 @@ pub enum OutMsg {
     Prompt(String),
     /// Abandon the in-flight turn (`session/cancel`).
     Cancel,
+    /// User is disconnecting: abandon any in-flight turn and close the socket
+    /// **cleanly** (a WS Close frame) so the gateway can release the session slot
+    /// immediately instead of waiting out its TTL / liveness reaper.
+    Shutdown,
 }
 
 impl Remote {
@@ -145,21 +154,45 @@ pub async fn connect<R: Runtime>(
         return Ok(());
     }
     let app_task = app.clone();
+    let stop = Arc::new(AtomicBool::new(false));
+    let stop_task = stop.clone();
     let task = tauri::async_runtime::spawn(async move {
-        run_reconnecting(app_task, cfg, client).await;
+        run_reconnecting(app_task, cfg, client, stop_task).await;
     });
     guard.task = Some(task);
+    guard.stop = Some(stop);
     guard.status = "connecting".to_string();
     emit_status(&app, "connecting");
     Ok(())
 }
 
-/// Deactivate: abort the connection task.
+/// Deactivate. Unlike a bare `task.abort()`, this asks the live loop to close the
+/// socket **cleanly** first (a `session/cancel` for any in-flight turn + a WS Close
+/// frame) so the gateway releases the session slot immediately rather than holding
+/// it for a resume that will never come (until its TTL / liveness reaper fires).
+/// Safe to call on app teardown and from the Disconnect button; a no-op if idle.
 pub async fn disconnect<R: Runtime>(app: &AppHandle<R>, remote: &Remote) {
-    let mut guard = remote.0.lock().await;
-    if let Some(t) = guard.task.take() {
+    // Flag the reconnect loop to stop, and grab the pieces we need to tear down
+    // outside the lock (so the loop can take the lock to retract `prompt_tx`).
+    let (task, tx) = {
+        let mut guard = remote.0.lock().await;
+        if let Some(stop) = guard.stop.take() {
+            stop.store(true, Ordering::SeqCst);
+        }
+        (guard.task.take(), guard.prompt_tx.take())
+    };
+    // Ask the running connection to flush a graceful close.
+    if let Some(tx) = tx {
+        let _ = tx.send(OutMsg::Shutdown);
+    }
+    // Give the loop a brief window to send the Close frame, then stop the task for
+    // good. (`stop` already prevents a reconnect; the abort is the hard backstop in
+    // case the loop is wedged mid-await.)
+    if let Some(t) = task {
+        tokio::time::sleep(Duration::from_millis(400)).await;
         t.abort();
     }
+    let mut guard = remote.0.lock().await;
     guard.status = "disconnected".to_string();
     guard.prompt_tx = None;
     emit_status(app, "disconnected");
@@ -178,9 +211,17 @@ pub async fn disconnect<R: Runtime>(app: &AppHandle<R>, remote: &Remote) {
 /// turn) on every RST. Each attempt still mints a fresh per-connection server id
 /// via [`Session::redeclare`], which also resets the phase so the new socket runs
 /// a full `initialize` handshake.
-async fn run_reconnecting<R: Runtime>(app: AppHandle<R>, cfg: RemoteConfig, client: McpClient) {
+async fn run_reconnecting<R: Runtime>(
+    app: AppHandle<R>,
+    cfg: RemoteConfig,
+    client: McpClient,
+    stop: Arc<AtomicBool>,
+) {
     let mut session = Session::new(vec![acp::oab_server(&uuid::Uuid::new_v4().to_string())]);
     loop {
+        if stop.load(Ordering::SeqCst) {
+            break;
+        }
         let conn_id = uuid::Uuid::new_v4().to_string();
         // Fresh per-connection server id + phase reset; keeps `session_id` so
         // `run_once` picks the resume path when one exists.
@@ -196,6 +237,11 @@ async fn run_reconnecting<R: Runtime>(app: AppHandle<R>, cfg: RemoteConfig, clie
         // The socket is gone — retract the outbound-chat channel so a prompt
         // between attempts fails fast rather than dropping into a dead sink.
         app.state::<Remote>().0.lock().await.prompt_tx = None;
+        // User-initiated disconnect: stop here instead of reconnecting (and skip
+        // the misleading "reconnecting…" log).
+        if stop.load(Ordering::SeqCst) {
+            break;
+        }
         if let Err(e) = result {
             emit_status(&app, &format!("error: {e}"));
             let _ = app.emit(
@@ -408,6 +454,19 @@ async fn run_once<R: Runtime>(
                                 break 'conn;
                             }
                         }
+                    }
+                    OutMsg::Shutdown => {
+                        // Best-effort graceful close: abandon any in-flight turn,
+                        // then send a WS Close frame so the gateway sees an
+                        // intentional close (not a resumable blip) and frees the
+                        // session slot now. Errors are ignored — we're leaving.
+                        if let Some(frame) = session.cancel() {
+                            let _ = send(&mut write, &frame).await;
+                        }
+                        let _ = write.send(WsMessage::Close(None)).await;
+                        let _ = write.flush().await;
+                        outcome = Ok(());
+                        break 'conn;
                     }
                 }
             }

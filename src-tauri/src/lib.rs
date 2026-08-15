@@ -370,6 +370,16 @@ pub fn run() {
             check_update,
             install_update
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app_handle, event| {
+            // On app teardown, close the remote /acp session cleanly so the gateway
+            // frees the session slot immediately instead of holding it for a resume
+            // that will never come (until its TTL / liveness reaper fires). The
+            // Disconnect button already does this; this covers Cmd-Q / window close.
+            if let tauri::RunEvent::ExitRequested { .. } = event {
+                let remote = app_handle.state::<remote::Remote>();
+                tauri::async_runtime::block_on(remote::disconnect(app_handle, &remote));
+            }
+        });
 }
