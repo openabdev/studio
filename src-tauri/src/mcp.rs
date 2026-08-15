@@ -37,7 +37,9 @@ pub struct McpClient {
 }
 
 struct Inner {
-    child: Mutex<CommandChild>,
+    /// `Option` so `shutdown` can take the child out and `kill()` it (which
+    /// consumes the handle) for a reload; `None` once the core is down.
+    child: Mutex<Option<CommandChild>>,
     pending: Mutex<HashMap<u64, oneshot::Sender<Value>>>,
     next_id: AtomicU64,
     emit: EmitFn,
@@ -72,11 +74,13 @@ impl Inner {
 
 impl McpClient {
     /// Spawn the sidecar, wire up the stdout reader, and complete the MCP
-    /// handshake. `cluster` is passed through as `OAB_CLUSTER` so the core
-    /// defaults match the desktop's.
+    /// handshake. The core's target is pinned from `target`: its cluster becomes
+    /// `OAB_CLUSTER`, and the child is spawned with a **hermetic** env (built from
+    /// empty — see [`crate::config::McpTarget::hermetic_env`]) so no ambient
+    /// credential/region can drag the sidecar onto the wrong identity.
     pub async fn spawn<R: tauri::Runtime>(
         app: &tauri::AppHandle<R>,
-        cluster: &str,
+        target: &crate::config::McpTarget,
     ) -> Result<Self, String> {
         let app_emit = app.clone();
         let emit: EmitFn = Arc::new(move |event: &str, payload: Value| {
@@ -85,18 +89,20 @@ impl McpClient {
 
         emit(
             "app-log",
-            json!({ "level": "info", "msg": format!("core: spawning (cluster {cluster})…") }),
+            json!({ "level": "info", "msg": format!("core: spawning (cluster {})…", target.cluster()) }),
         );
+        // Hermetic child env: cleared, then exactly the allow-list + target vars.
         let (mut rx, child) = app
             .shell()
             .sidecar("oab-mcp")
             .map_err(|e| format!("locate oab-mcp sidecar: {e}"))?
-            .env("OAB_CLUSTER", cluster)
+            .env_clear()
+            .envs(target.hermetic_env())
             .spawn()
             .map_err(|e| format!("spawn oab-mcp: {e}"))?;
 
         let inner = Arc::new(Inner {
-            child: Mutex::new(child),
+            child: Mutex::new(Some(child)),
             pending: Mutex::new(HashMap::new()),
             next_id: AtomicU64::new(1),
             emit: emit.clone(),
@@ -172,8 +178,20 @@ impl McpClient {
             .child
             .lock()
             .await
+            .as_mut()
+            .ok_or_else(|| "core is shut down".to_string())?
             .write(&line)
             .map_err(|e| format!("write to oab-mcp: {e}"))
+    }
+
+    /// Kill the sidecar child (best-effort) so a reload can spawn a fresh one on a
+    /// new target. Idempotent — a second call is a no-op once the child is gone.
+    pub async fn shutdown(&self) {
+        if let Some(child) = self.inner.child.lock().await.take() {
+            let _ = child.kill();
+        }
+        // Unblock any in-flight waiters rather than hanging them.
+        self.inner.pending.lock().await.clear();
     }
 
     /// Send a request and await the correlated `result` (or a formatted error).
