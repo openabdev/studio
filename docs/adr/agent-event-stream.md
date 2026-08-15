@@ -10,6 +10,9 @@
   reconcile-loop half of ADR-4 is a sibling that can build on this.
 - **Builds on:** [ADR-1](./agent-lifecycle.md) (6-state vocabulary),
   [ADR-2](./deployment-control-plane.md) (read/write model + MCP surface).
+- **Consolidates:** the earlier *push-notifications* draft — its skin↔core
+  subscription phasing, the poll-as-reconciliation-backstop invariant, and the
+  user-facing-notification consumer fold into §2.4 here (single event canon).
 
 > In the context of front-ends and agents needing to **know when an Instance
 > changes** (a task dies, a service goes impaired, a probe fails), facing the
@@ -111,6 +114,30 @@ sources ──AgentEvent──▶ EventHub ──▶ pull:  deploy_events(list)
   UI subscription away.
 - The **webhook** sink is the *only* path that reaches an operator while **no
   MCP client is connected** (see §5).
+
+### 2.4 Delivery, phasing & the reconciliation backstop
+(Folds the *push-notifications* draft into this ADR.)
+
+- **Skin ↔ core, Phase 1 (client wiring).** Today the desktop `McpClient` reader
+  correlates replies **by `id` only**; unsolicited `notifications/resources/updated`
+  land inertly in the MCP pane. Phase 1 makes the reader **act on id-less
+  notifications** — forward `resources/updated` to the frontend as an event — and
+  **removes the skin's 5 s `deploy_list` poll**. The roster becomes an MCP
+  resource (`oab://deployments/{cluster}`, ADR-2 shape) the skin
+  `resources/subscribe`s.
+- **Poll is the reconciliation backstop, not the primary path.** Push delivery is
+  **best-effort**; a low-frequency full resync (on subscribe/reconnect + every N
+  minutes) repairs missed or out-of-order events so state never silently drifts.
+  In Phase 1 the core MAY still poll AWS internally; once `EcsEventSource::subscribe`
+  (§3) lands, steady-state ECS polling drops to ~zero and the resync stays only as
+  the backstop.
+- **User-facing notifications are a downstream consumer**, not a bespoke channel:
+  OS/desktop alerts ("tell me when orca goes `Unhealthy`") subscribe to the same
+  `EventHub` stream that drives the roster; the §2.3 webhook sink covers the
+  no-client-connected case. **Caveat (from §1):** on ECS the `RUNNING`→unhealthy
+  flip is *not* event-emitted, so that specific alert rides the reconcile/probe
+  path, not the stream — the abstraction must not promise every transition is
+  push-observable on every platform.
 
 ## 3. Scope (now)
 
