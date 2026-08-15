@@ -1,3 +1,4 @@
+mod config;
 mod mcp;
 mod remote;
 
@@ -27,7 +28,7 @@ async fn start_core(app: tauri::AppHandle, core: tauri::State<'_, Core>) -> Resu
         return Ok(());
     }
     // (the `core: spawning…` line from McpClient::spawn covers the "starting" beat)
-    match McpClient::spawn(&app, &default_cluster()).await {
+    match McpClient::spawn(&app, &config::load(&app)).await {
         Ok(client) => {
             *guard = Some(client);
             Ok(())
@@ -36,6 +37,45 @@ async fn start_core(app: tauri::AppHandle, core: tauri::State<'_, Core>) -> Resu
             let _ = app.emit(
                 "app-log",
                 json!({ "level": "error", "msg": format!("core: failed to start — {e}") }),
+            );
+            Err(e)
+        }
+    }
+}
+
+/// The persisted (or env-seeded default) sidecar connection target, for the
+/// Config tab to render/edit.
+#[tauri::command]
+async fn mcp_target_get(app: tauri::AppHandle) -> Result<config::McpTarget, String> {
+    Ok(config::load(&app))
+}
+
+/// Persist a new sidecar target and **reload the core onto it** without an app
+/// restart: kill the running sidecar, spawn a fresh one with the new hermetic env.
+#[tauri::command]
+async fn mcp_target_set(
+    app: tauri::AppHandle,
+    core: tauri::State<'_, Core>,
+    target: config::McpTarget,
+) -> Result<(), String> {
+    config::save(&app, &target)?;
+    let mut guard = core.0.lock().await;
+    if let Some(old) = guard.take() {
+        old.shutdown().await;
+        let _ = app.emit(
+            "app-log",
+            json!({ "level": "info", "msg": "core: reloading onto new target…" }),
+        );
+    }
+    match McpClient::spawn(&app, &target).await {
+        Ok(client) => {
+            *guard = Some(client);
+            Ok(())
+        }
+        Err(e) => {
+            let _ = app.emit(
+                "app-log",
+                json!({ "level": "error", "msg": format!("core: reload failed — {e}") }),
             );
             Err(e)
         }
@@ -356,6 +396,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             start_core,
+            mcp_target_get,
+            mcp_target_set,
             deploy_list,
             runtime_context,
             fleet_config,
