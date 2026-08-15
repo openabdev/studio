@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 
 use acp_tunnel as acp;
 use acp_tunnel::config::RemoteConfig;
-use acp_tunnel::{Inbound, Session};
+use acp_tunnel::{DisconnectReason, Inbound, Session};
 use futures_util::{Sink, SinkExt, StreamExt};
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager, Runtime};
@@ -218,6 +218,10 @@ async fn run_reconnecting<R: Runtime>(
     stop: Arc<AtomicBool>,
 ) {
     let mut session = Session::new(vec![acp::oab_server(&uuid::Uuid::new_v4().to_string())]);
+    // Consecutive-failure counter driving the reconnect backoff. Reset to 0 once an
+    // attempt has held a live connection for a while (see below), so a long-running
+    // session that blips reconnects promptly instead of at the capped delay.
+    let mut attempt: u32 = 0;
     loop {
         if stop.load(Ordering::SeqCst) {
             break;
@@ -233,6 +237,7 @@ async fn run_reconnecting<R: Runtime>(
             );
         }
 
+        let started = Instant::now();
         let result = run_once(&app, &cfg, &client, &mut session, &conn_id).await;
         // The socket is gone — retract the outbound-chat channel so a prompt
         // between attempts fails fast rather than dropping into a dead sink.
@@ -242,19 +247,34 @@ async fn run_reconnecting<R: Runtime>(
         if stop.load(Ordering::SeqCst) {
             break;
         }
+        // A drop after a decently long-lived connection is a fresh incident, not an
+        // escalating failure — reset the backoff so we retry quickly. A fast failure
+        // (bad dial / handshake) keeps escalating.
+        if started.elapsed() >= Duration::from_secs(15) {
+            attempt = 0;
+        }
         if let Err(e) = result {
-            emit_status(&app, &format!("error: {e}"));
+            // Classify so the status line says *why* (network / auth rejected /
+            // server at capacity / protocol) instead of a raw error blob.
+            let reason = DisconnectReason::classify(&e);
+            emit_status(&app, &format!("error: {}", reason.label()));
             let _ = app.emit(
                 "app-log",
-                json!({ "level": "error", "msg": format!("remote: {e}") }),
+                json!({ "level": "error", "msg": format!("remote: {} — {e}", reason.label()) }),
             );
         }
+        // Exponential backoff (capped 30s) + per-connection jitter, so a flapping
+        // link doesn't hammer the gateway — which only has a handful of session
+        // slots — on a fixed cadence.
+        let salt = conn_id.as_bytes().first().copied().unwrap_or(0);
+        let delay = acp::backoff_delay(attempt, salt);
+        attempt = attempt.saturating_add(1);
         emit_status(&app, "connecting");
         let _ = app.emit(
             "app-log",
-            json!({ "level": "info", "msg": "remote: reconnecting in 5s…" }),
+            json!({ "level": "info", "msg": format!("remote: reconnecting in {}s…", delay.as_secs()) }),
         );
-        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        tokio::time::sleep(delay).await;
     }
 }
 

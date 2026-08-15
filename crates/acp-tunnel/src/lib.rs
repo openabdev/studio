@@ -25,6 +25,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 pub mod config;
+pub mod reconnect;
+pub use reconnect::{backoff_delay, DisconnectReason};
 
 /// The ACP sub-protocol token the server echoes back on the `/acp` upgrade.
 pub const ACP_SUBPROTOCOL: &str = "acp.v1";
