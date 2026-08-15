@@ -73,9 +73,9 @@ impls. Contract = **lowest-common-denominator semantics**; native features are
 optimizations, never in the contract.
 
 Port operations:
-- **membership** — put/get/del fleet; add/remove deployment↔fleet; list deployments in fleet
-- **desired spec** — put/get deployment spec (with `generation`); list
-- **instance registry** — register / heartbeat-update / get / list by (fleet|deployment|owner) / delete
+- **membership** — put/get/del fleet; add/remove instance↔fleet; list instances in fleet
+- **desired spec** — put/get fleet spec (with `generation`); list fleets
+- **instance registry** — register / heartbeat-update / get / list by (fleet|owner) / delete
 - **epoch-CAS** — conditional write "*apply only if epoch ≥ stored*" (the fencing primitive)
 - **expiry query** — `list_expired(now)` for the reaper to poll
 
@@ -109,23 +109,63 @@ the store or AWS directly.
   only one controller" for correctness.**
 
 ### 3.4 Canonical schema
+
+Per the **unified fleet model** (§3.6) the store has **two tiers, not three**: the
+desired spec ADR-2 carried on a separate `Deployment` is **folded into the
+`Fleet`** (a singleton agent is a *size-1 fleet*), and the `Instance` is the unit.
+
 ```
-Fleet        key=(cluster, namespace, name); provider; members=[deployment refs];
-             generation                          # persistent membership (fixes authoring-only gap)
-Deployment   key=(cluster, namespace, name); fleet ref; identity(configRef, image/template,
-             credentialSource); replicas(desired); admission(accepting_work, ADR-1);
-             identityPolicy: pinned | ephemeral  # slot; filled by the ephemeral ADR
-             generation
-Instance     handle(canonical id); nativeRef(opaque, driver-owned); deployment ref;
-             identity_verified(latch, persisted);  lease{tokenId, expiry}; epoch(monotonic);
-             phaseCache(AgentState)+observedAt;  credentialHandle(ref, not the secret);
-             owner ref; ttl/idle deadline         # slots; filled by the ephemeral ADR
+Fleet     key=(cluster, namespace, name); provider;
+          spec{ configRef, image/template, credentialSource,
+                replicas(desired), admission(accepting_work, ADR-1),
+                identityPolicy: pinned | ephemeral };   # spec folded in from ADR-2's Deployment
+          members=[instance refs]; generation           # persistent membership (fixes authoring-only gap)
+Instance  handle(canonical id); nativeRef(opaque, driver-owned); fleet ref;
+          identity_verified(latch, persisted); lease{tokenId, expiry}; epoch(monotonic);
+          phaseCache(AgentState)+observedAt; credentialHandle(ref, not the secret);
+          owner ref; ttl/idle deadline                  # slots; filled by the ephemeral ADR
 ```
+
+`identityPolicy` is the real axis (not a kind): **pinned** (named / fixed token /
+long-lived — today's Orca, Mira) vs **ephemeral** (minted seat/API + TTL + owner,
+reapable). A singleton is just `replicas=1, identityPolicy=pinned, ttl=∞` — no
+special-case code path.
 
 ### 3.5 Regulation carried from design
 A **Fleet is bound to a single cluster** (= single driver target / single
 provider). Fleet key is `(cluster, namespace, name)`; cross-cluster is modeled as
 N single-cluster fleets + a higher placement layer (out of scope).
+
+**Namespace is the implicit fleet.** With no explicitly configured fleet, the
+**namespace itself is the fleet** — so there is *always* a fleet even at zero
+config. Hierarchy: `namespace ⊇ [explicit fleet │ implicit namespace-fleet] ⊇
+instance`. Policy cascades **namespace default → fleet override → instance
+override**, so `identityPolicy` / `ttl` resolve at the instance.
+
+> **Reaper safety (hard rule).** An implicit namespace-fleet holds today's
+> **pinned, long-lived** agents (e.g. `prod` carries orca + mira). Therefore the
+> namespace-fleet's **default policy is `no-reap` / `pinned`**, and the reaper
+> decides what to kill **strictly per-instance `identityPolicy`** — it **never**
+> does a namespace-wide reap, or it would take down resident agents.
+> Per-instance policy is exactly what makes mixing pinned + ephemeral in one
+> namespace safe. (The reap triggers themselves are ADR-4 / the ephemeral ADR;
+> this ADR only fixes *where* owner/ttl/policy live and the safety invariant.)
+
+### 3.6 Alignment with the unified fleet model
+This ADR is written against the **unified fleet decision** (2026-08-11): the
+resource model is **always fleet + instance**; there is **one kind — `Fleet`** (the
+`OABService` vs `OABFleet` two-KIND split is retired), a singleton is a size-1
+fleet, and identity/credential live at the **instance** layer while the fleet
+holds template + policy. Consequences for this store:
+
+- **Amends ADR-2's vocabulary.** ADR-2 modelled `Agent → Deployment(→N Instances);
+  Fleet = set of Deployments`. Here the desired spec is folded onto the `Fleet`
+  (§3.4); "Deployment" survives only as ADR-2 prose, not as a store tier.
+- **One reconcile loop** maintains desired *and* reaps the dead; a singleton just
+  never triggers reap (`ttl=∞`, `identityPolicy=pinned`). No separate
+  self-heal-vs-reap paths.
+- The read-model is uniformly *"list a fleet's instances `{handle, owner,
+  state(6), ttl}`"* — Orca today = `fleet=orca, instances=[1]`.
 
 ## 4. Principles
 
@@ -168,4 +208,3 @@ N single-cluster fleets + a higher placement layer (out of scope).
 - The file/S3 impl has a **whole-object read-modify-write ceiling** → migrate to
   a per-item backend (sqlite/Dynamo) at high write rate or thousands of
   instances. Mitigated by principle 4 (keep it cold).
-```
