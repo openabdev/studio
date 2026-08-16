@@ -8,6 +8,7 @@ license = "MIT"
 [dependencies]
 oabctl = { path = "../oabctl" }
 agent-lifecycle = { path = "../agent-lifecycle" }
+studio-compose = { path = "../studio-compose" }
 aws-config = "1.5"
 aws-sdk-sts = "1"
 anyhow = "1.0"

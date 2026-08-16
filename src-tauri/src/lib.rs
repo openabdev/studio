@@ -116,6 +116,54 @@ async fn compose_preview(
     compose::preview(&library, &template, overlay.as_deref())
 }
 
+/// Provision an agent from the compose library over MCP (`deploy_provision`):
+/// compose `template ⊕ overlay`, push the bundle to the agent's S3 artifacts
+/// prefix, and redeploy the ECS service at the chosen image tag (agent-deployment
+/// ADR slice 2). The heavy lifting (compose + S3 + apply) runs in the sidecar
+/// with its hermetic AWS env; this is a thin bridge like `deploy_scale`.
+#[tauri::command]
+async fn deploy_provision(
+    core: tauri::State<'_, Core>,
+    library: Value,
+    template: String,
+    overlay: Option<String>,
+    name: String,
+    namespace: Option<String>,
+    image: Option<String>,
+    cluster: Option<String>,
+) -> Result<Value, String> {
+    let cluster = cluster.unwrap_or_else(default_cluster);
+    let client = {
+        let guard = core.0.lock().await;
+        guard
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| "core not started yet".to_string())?
+    };
+    let mut params = json!({
+        "library": library,
+        "template": template,
+        "name": name,
+        "cluster": cluster,
+    });
+    if let Some(o) = overlay {
+        params["overlay"] = json!(o);
+    }
+    if let Some(ns) = namespace {
+        params["namespace"] = json!(ns);
+    }
+    if let Some(img) = image.filter(|s| !s.is_empty()) {
+        params["image_tag"] = json!(img);
+    }
+    match client.call_tool("deploy_provision", params).await {
+        Ok(v) => Ok(v),
+        Err(e) => {
+            client.log("error", &format!("deploy_provision: {e}"));
+            Err(e)
+        }
+    }
+}
+
 /// List services (`deploy_list`) then fetch each one's per-instance 6-state
 /// (`deploy_get`), all over MCP — the two-step the in-process bridge used,
 /// now over the wire. Console view-model shape is unchanged.
@@ -435,6 +483,7 @@ pub fn run() {
             compose_library_get,
             compose_library_set,
             compose_preview,
+            deploy_provision,
             deploy_list,
             runtime_context,
             fleet_config,

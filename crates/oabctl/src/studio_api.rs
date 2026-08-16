@@ -118,6 +118,74 @@ pub async fn provision(
         .context("failed to apply manifest during provision")
 }
 
+/// Load the desired `OABService` manifest oabctl persists at
+/// `manifests/{namespace}/{name}.yaml` in the control-plane bucket. Returns
+/// `Ok(None)` when the agent has no stored manifest yet (never applied); other
+/// S3/parse errors propagate. This is the deploy config's single source of truth
+/// — networking/resources/secrets already live here, so a redeploy reuses them
+/// instead of re-collecting them.
+pub async fn load_manifest(
+    config: &aws_config::SdkConfig,
+    namespace: &str,
+    name: &str,
+    control_plane_bucket: Option<&str>,
+) -> Result<Option<OABServiceManifest>> {
+    let bucket = crate::control_plane::resolve_bucket(config, control_plane_bucket).await?;
+    let s3 = aws_sdk_s3::Client::new(config);
+    let key = format!("manifests/{namespace}/{name}.yaml");
+    match s3.get_object().bucket(&bucket).key(&key).send().await {
+        Ok(resp) => {
+            let bytes = resp
+                .body
+                .collect()
+                .await
+                .with_context(|| format!("failed to read stored manifest '{key}'"))?
+                .into_bytes();
+            let manifest: OABServiceManifest = serde_yaml::from_slice(&bytes)
+                .with_context(|| format!("failed to parse stored manifest '{key}'"))?;
+            Ok(Some(manifest))
+        }
+        // A missing object is the "not provisioned yet" signal, not an error.
+        Err(err) if err.as_service_error().map(|e| e.is_no_such_key()).unwrap_or(false) => Ok(None),
+        Err(err) => {
+            Err(anyhow::Error::new(err).context(format!("failed to fetch stored manifest '{key}'")))
+        }
+    }
+}
+
+/// Re-provision an already-created agent from a freshly composed bundle: load its
+/// stored manifest, repoint it at `image` (when given) and the bundle prefix,
+/// **push the bundle, then apply**. Networking/resources/secrets are untouched —
+/// they ride along from the stored manifest — so a redeploy needs no infra input.
+///
+/// Errors if the agent has no stored manifest (it must be `create`d first). This
+/// is the ECS "update this agent to a new image / persona / skills" path.
+pub async fn redeploy(
+    config: &aws_config::SdkConfig,
+    cluster: &str,
+    namespace: &str,
+    name: &str,
+    image: Option<&str>,
+    objects: &[(String, Vec<u8>)],
+    control_plane_bucket: Option<&str>,
+) -> Result<crate::apply::ApplyReport> {
+    // Resolve the bucket once and thread it through, so load/push/apply all agree.
+    let bucket = crate::control_plane::resolve_bucket(config, control_plane_bucket).await?;
+    let mut manifest = load_manifest(config, namespace, name, Some(&bucket))
+        .await?
+        .with_context(|| {
+            format!("no stored manifest for {namespace}/{name} — create the agent before redeploying")
+        })?;
+
+    if let Some(img) = image.filter(|s| !s.is_empty()) {
+        manifest.spec.image = img.to_string();
+    }
+    manifest.spec.bundle_from = Some(bundle_from_uri(&bucket, namespace, name));
+
+    let yaml = serde_yaml::to_string(&manifest).context("failed to serialize patched manifest")?;
+    provision(config, cluster, &yaml, objects, Some(&bucket)).await
+}
+
 /// Immediate scale of an OAB service to `size` replicas via ECS `UpdateService`.
 ///
 /// The service name is `oab-{namespace}-{name}`. OAB services carry a single
