@@ -47,6 +47,8 @@ pub struct FleetTemplate {
     #[serde(default)]
     pub resources: Option<Resources>,
     #[serde(default)]
+    pub bundle_from: Option<String>,
+    #[serde(default)]
     pub bootstrap_from: Option<String>,
     #[serde(default)]
     pub secrets: HashMap<String, String>,
@@ -62,6 +64,8 @@ pub struct AgentOverride {
     pub config_from: String,
     #[serde(default)]
     pub resources: Option<Resources>,
+    #[serde(default)]
+    pub bundle_from: Option<String>,
     #[serde(default)]
     pub bootstrap_from: Option<String>,
     #[serde(default)]
@@ -123,6 +127,9 @@ impl OABFleetManifest {
                         .unwrap_or_else(|| self.spec.template.image.clone()),
                     resources,
                     config_from: agent.config_from.replace("${name}", &agent.name),
+                    bundle_from: agent.bundle_from.clone()
+                        .or(self.spec.template.bundle_from.clone())
+                        .map(|s| s.replace("${name}", &agent.name)),
                     bootstrap_from: agent.bootstrap_from.clone()
                         .or(self.spec.template.bootstrap_from.clone())
                         .map(|s| s.replace("${name}", &agent.name)),
@@ -152,6 +159,14 @@ pub struct Spec {
     pub image: String,
     pub resources: Resources,
     pub config_from: String,
+    /// Optional S3 **prefix** URI (`s3://{bucket}/artifacts/{ns}/{name}/`) holding
+    /// the agent's full composed file bundle — config + persona + skills (agent
+    /// deployment ADR, path A). The runtime restores this prefix into `~` at first
+    /// boot; `configFrom` remains the single-file config source it reads directly.
+    /// Omitted for legacy config-only services, so existing manifests are
+    /// unchanged.
+    #[serde(default)]
+    pub bundle_from: Option<String>,
     #[serde(default)]
     pub bootstrap_from: Option<String>,
     #[serde(default)]

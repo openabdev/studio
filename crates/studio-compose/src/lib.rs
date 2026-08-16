@@ -141,6 +141,32 @@ impl Bundle {
     }
 }
 
+/// The S3 **artifacts prefix** an agent's composed bundle lands under (path A of
+/// the deployment ADR): `artifacts/{namespace}/{name}`. The control-plane bucket
+/// already grants the runtime `s3:GetObject` on `{bucket}/artifacts/*`, and
+/// `config.toml` already lives here as the manifest's `configFrom`; slice 2 fans
+/// the *whole* bundle out under the same prefix, and the runtime restores the
+/// prefix into `~` at first boot. No trailing slash (callers join with `/`).
+pub fn artifacts_prefix(namespace: &str, name: &str) -> String {
+    format!("artifacts/{namespace}/{name}")
+}
+
+impl Bundle {
+    /// The `(s3_key, bytes)` objects to upload for this bundle under an agent's
+    /// [`artifacts_prefix`] — each bundle path becomes
+    /// `artifacts/{ns}/{name}/{path}`. Sorted (bundle files are a `BTreeMap`), so
+    /// the upload set is deterministic. The provisioner (slice 2, `oabctl`) puts
+    /// each of these; this mapping is pure so the key layout is unit-testable
+    /// without touching S3.
+    pub fn artifact_objects(&self, namespace: &str, name: &str) -> Vec<(String, Vec<u8>)> {
+        let prefix = artifacts_prefix(namespace, name);
+        self.files
+            .iter()
+            .map(|(path, bytes)| (format!("{prefix}/{path}"), bytes.clone()))
+            .collect()
+    }
+}
+
 /// A UTF-8-lossy, serde-friendly view of one bundle file for the preview UI.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FilePreview {
@@ -625,6 +651,32 @@ mod tests {
         let claude = p.files.iter().find(|f| f.path == "CLAUDE.md").unwrap();
         assert_eq!(claude.text, "# base persona\n");
         assert!(!claude.binary);
+    }
+
+    #[test]
+    fn artifact_objects_key_each_file_under_agent_prefix() {
+        let lib = SkillsLibrary::from_iter([("s", skill_with(&[("SKILL.md", "hi\n")]))]);
+        let mut t = tmpl();
+        t.skills = vec!["s".into()];
+        let bundle = compose(&t, &Overlay::default(), &lib).unwrap();
+        let objs = bundle.artifact_objects("prod", "orca");
+        let keys: Vec<_> = objs.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(
+            keys,
+            vec![
+                "artifacts/prod/orca/.claude/skills/s/SKILL.md",
+                "artifacts/prod/orca/CLAUDE.md",
+                "artifacts/prod/orca/config.toml",
+            ]
+        );
+        // bytes travel with the key, unmodified
+        let (_, cfg) = objs.iter().find(|(k, _)| k.ends_with("/config.toml")).unwrap();
+        assert_eq!(cfg, b"[agent]\nname = \"base\"\n");
+    }
+
+    #[test]
+    fn artifacts_prefix_has_no_trailing_slash() {
+        assert_eq!(artifacts_prefix("ns", "a"), "artifacts/ns/a");
     }
 
     #[test]
