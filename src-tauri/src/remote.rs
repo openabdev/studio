@@ -10,13 +10,14 @@
 //! are validated against the live gateway once the §5 endpoint exists; this
 //! module is structurally complete and compiles under `desktop.yml`.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use acp_tunnel as acp;
-use acp_tunnel::config::RemoteConfig;
+use acp_tunnel::config::{AgentEndpoint, AgentRegistry, RemoteConfig};
 use acp_tunnel::{DisconnectReason, Inbound, Session};
 use futures_util::{Sink, SinkExt, StreamExt};
 use serde_json::{json, Value};
@@ -42,10 +43,14 @@ const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(20);
 /// katashiro's `ACP_PROMPT_TIMEOUT_MS`.
 const PROMPT_TIMEOUT: Duration = Duration::from_secs(600);
 
-/// Managed state: the running connection task (abort to disconnect) plus the last
-/// status string the UI renders.
+/// Managed state: a map of **per-agent** connections keyed by the endpoint name
+/// (ADR agent-consoles Part B — `RemoteState` is no longer a singleton). Each
+/// agent console dials its own endpoint; the management console is just the entry
+/// keyed by the `management` endpoint's name. The map grows on connect and each
+/// entry carries its own task/status/reconnect, so opening one console never
+/// disturbs another.
 #[derive(Default)]
-pub struct Remote(pub AsyncMutex<RemoteState>);
+pub struct Remote(pub AsyncMutex<HashMap<String, RemoteState>>);
 
 #[derive(Default)]
 pub struct RemoteState {
@@ -76,21 +81,22 @@ pub enum OutMsg {
 }
 
 impl Remote {
-    /// Send a chat turn to the connected agent. Errors if no session is live.
-    pub async fn send_prompt(&self, text: String) -> Result<(), String> {
-        self.push(OutMsg::Prompt(text)).await
+    /// Send a chat turn to the named agent. Errors if that agent's session is not
+    /// live (each agent console has its own connection, so the target is explicit).
+    pub async fn send_prompt(&self, agent: &str, text: String) -> Result<(), String> {
+        self.push(agent, OutMsg::Prompt(text)).await
     }
 
-    /// Cancel the in-flight turn (best-effort).
-    pub async fn send_cancel(&self) -> Result<(), String> {
-        self.push(OutMsg::Cancel).await
+    /// Cancel the named agent's in-flight turn (best-effort).
+    pub async fn send_cancel(&self, agent: &str) -> Result<(), String> {
+        self.push(agent, OutMsg::Cancel).await
     }
 
-    async fn push(&self, msg: OutMsg) -> Result<(), String> {
+    async fn push(&self, agent: &str, msg: OutMsg) -> Result<(), String> {
         let guard = self.0.lock().await;
         let tx = guard
-            .prompt_tx
-            .as_ref()
+            .get(agent)
+            .and_then(|st| st.prompt_tx.as_ref())
             .ok_or_else(|| "not connected — activate the remote connection first".to_string())?;
         // A live `prompt_tx` whose receiver has gone means the connection is
         // tearing down (the socket closed and `run_reconnecting` is about to
@@ -103,11 +109,79 @@ impl Remote {
     }
 }
 
-/// `~/.config/oab-studio/remote.toml` — beside `fleets.toml`.
+/// Legacy single-endpoint config `~/.config/oab-studio/remote.toml` — beside
+/// `fleets.toml`. Still the file the current management-console editor writes; the
+/// registry adopts it as one `management = true` entry when `agents.toml` is
+/// absent (ADR agent-consoles Part B back-compat).
 pub fn config_path() -> Result<PathBuf, String> {
     dirs::config_dir()
         .map(|d| d.join("oab-studio").join("remote.toml"))
         .ok_or_else(|| "no config directory resolved".to_string())
+}
+
+/// The per-agent endpoint registry `~/.config/oab-studio/agents.toml`. When
+/// present it is the source of truth; the legacy `remote.toml` is the fallback.
+pub fn registry_path() -> Result<PathBuf, String> {
+    dirs::config_dir()
+        .map(|d| d.join("oab-studio").join("agents.toml"))
+        .ok_or_else(|| "no config directory resolved".to_string())
+}
+
+/// The stable name given to a legacy `remote.toml` when it is adopted into the
+/// registry as the single management entry.
+pub const LEGACY_MANAGEMENT_NAME: &str = "management";
+
+/// Load the endpoint registry: prefer `agents.toml`; if it is missing or empty,
+/// adopt the legacy `remote.toml` as one `management = true` entry so existing
+/// single-endpoint setups keep working untouched.
+pub fn load_registry() -> Result<AgentRegistry, String> {
+    let rp = registry_path()?;
+    match std::fs::read_to_string(&rp) {
+        Ok(s) if !s.trim().is_empty() => {
+            return AgentRegistry::parse(&s).map_err(|e| format!("invalid agents.toml: {e}"))
+        }
+        Ok(_) => {} // present but empty → fall through to legacy
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(format!("read {}: {e}", rp.display())),
+    }
+    let legacy = load_config()?;
+    if legacy.is_configured() {
+        Ok(AgentRegistry::from_legacy(legacy, LEGACY_MANAGEMENT_NAME))
+    } else {
+        // Nothing configured anywhere → empty registry (the app shows
+        // "not configured" rather than erroring).
+        Ok(AgentRegistry::default())
+    }
+}
+
+/// Resolve a command's optional `agent` argument to just the connection **key**
+/// (the map name). `Some` is already the key; `None` resolves to the management
+/// endpoint's name. Cheaper than [`resolve_endpoint`] when only the key is needed
+/// (disconnect / prompt / cancel target an already-open connection).
+pub fn resolve_name(agent: Option<&str>) -> Result<String, String> {
+    match agent {
+        Some(n) => Ok(n.to_string()),
+        None => load_registry()?
+            .management()
+            .map(|e| e.name.clone())
+            .ok_or_else(|| "no management agent configured".to_string()),
+    }
+}
+
+/// Resolve a command's optional `agent` argument to a concrete endpoint. `None`
+/// means the legacy single-endpoint commands — resolve to the management entry.
+pub fn resolve_endpoint(agent: Option<&str>) -> Result<AgentEndpoint, String> {
+    let reg = load_registry()?;
+    match agent {
+        Some(name) => reg
+            .get(name)
+            .cloned()
+            .ok_or_else(|| format!("no agent named {name:?} in the registry")),
+        None => reg
+            .management()
+            .cloned()
+            .ok_or_else(|| "no management agent configured".to_string()),
+    }
 }
 
 /// Raw file text for the editor; a missing file is empty ("not configured").
@@ -135,34 +209,46 @@ fn load_config() -> Result<RemoteConfig, String> {
     RemoteConfig::parse(&read_config_text()?).map_err(|e| format!("invalid remote.toml: {e}"))
 }
 
-fn emit_status<R: Runtime>(app: &AppHandle<R>, status: &str) {
-    let _ = app.emit("remote-status", json!({ "status": status }));
+/// Emit a connection-status change for a specific agent. The `agent` field lets
+/// the UI route the update to the matching console (the management console keys
+/// off the management endpoint's name); a single-agent UI can ignore it.
+fn emit_status<R: Runtime>(app: &AppHandle<R>, agent: &str, status: &str) {
+    let _ = app.emit("remote-status", json!({ "agent": agent, "status": status }));
 }
 
-/// Activate the remote connection: validate config, spawn the connection task.
-/// Idempotent — a no-op if already connected.
+/// Activate a named agent's connection: validate the endpoint, spawn its
+/// connection task keyed under the endpoint name. Idempotent — a no-op if that
+/// agent is already connecting/connected. Reverse-MCP `oab` fleet-control tools
+/// are published **only** when the endpoint is `management` (least privilege): an
+/// ordinary agent console dials, chats, and (later) edits files without granting
+/// the agent fleet control.
 pub async fn connect<R: Runtime>(
     app: AppHandle<R>,
     remote: &Remote,
     client: McpClient,
+    endpoint: AgentEndpoint,
 ) -> Result<(), String> {
-    let cfg = load_config()?;
-    cfg.validate()?;
+    endpoint.validate()?;
+    let agent = endpoint.name.clone();
+    let cfg = endpoint.conn();
+    let management = endpoint.management;
 
     let mut guard = remote.0.lock().await;
-    if guard.task.is_some() {
+    let st = guard.entry(agent.clone()).or_default();
+    if st.task.is_some() {
         return Ok(());
     }
     let app_task = app.clone();
+    let agent_task = agent.clone();
     let stop = Arc::new(AtomicBool::new(false));
     let stop_task = stop.clone();
     let task = tauri::async_runtime::spawn(async move {
-        run_reconnecting(app_task, cfg, client, stop_task).await;
+        run_reconnecting(app_task, agent_task, cfg, management, client, stop_task).await;
     });
-    guard.task = Some(task);
-    guard.stop = Some(stop);
-    guard.status = "connecting".to_string();
-    emit_status(&app, "connecting");
+    st.task = Some(task);
+    st.stop = Some(stop);
+    st.status = "connecting".to_string();
+    emit_status(&app, &agent, "connecting");
     Ok(())
 }
 
@@ -171,15 +257,18 @@ pub async fn connect<R: Runtime>(
 /// frame) so the gateway releases the session slot immediately rather than holding
 /// it for a resume that will never come (until its TTL / liveness reaper fires).
 /// Safe to call on app teardown and from the Disconnect button; a no-op if idle.
-pub async fn disconnect<R: Runtime>(app: &AppHandle<R>, remote: &Remote) {
+pub async fn disconnect<R: Runtime>(app: &AppHandle<R>, remote: &Remote, agent: &str) {
     // Flag the reconnect loop to stop, and grab the pieces we need to tear down
     // outside the lock (so the loop can take the lock to retract `prompt_tx`).
     let (task, tx) = {
         let mut guard = remote.0.lock().await;
-        if let Some(stop) = guard.stop.take() {
+        let Some(st) = guard.get_mut(agent) else {
+            return; // never connected — nothing to tear down
+        };
+        if let Some(stop) = st.stop.take() {
             stop.store(true, Ordering::SeqCst);
         }
-        (guard.task.take(), guard.prompt_tx.take())
+        (st.task.take(), st.prompt_tx.take())
     };
     // Ask the running connection to flush a graceful close.
     if let Some(tx) = tx {
@@ -192,14 +281,36 @@ pub async fn disconnect<R: Runtime>(app: &AppHandle<R>, remote: &Remote) {
         tokio::time::sleep(Duration::from_millis(400)).await;
         t.abort();
     }
-    let mut guard = remote.0.lock().await;
-    guard.status = "disconnected".to_string();
-    guard.prompt_tx = None;
-    emit_status(app, "disconnected");
+    if let Some(st) = remote.0.lock().await.get_mut(agent) {
+        st.status = "disconnected".to_string();
+        st.prompt_tx = None;
+    }
+    emit_status(app, agent, "disconnected");
     let _ = app.emit(
         "app-log",
-        json!({ "level": "info", "msg": "remote: disconnected by user" }),
+        json!({ "level": "info", "msg": format!("remote: {agent} disconnected by user") }),
     );
+}
+
+/// Disconnect **every** live agent connection (app teardown): close each socket
+/// cleanly so the gateway frees all held session slots at once.
+pub async fn disconnect_all<R: Runtime>(app: &AppHandle<R>, remote: &Remote) {
+    let agents: Vec<String> = remote.0.lock().await.keys().cloned().collect();
+    for agent in agents {
+        disconnect(app, remote, &agent).await;
+    }
+}
+
+/// The reverse-MCP `oab` server declaration for a connection, **only** when this
+/// endpoint is the management binding. A non-management agent console declares no
+/// servers, so the gateway never tunnels Studio's fleet-control tools to it
+/// (least privilege, ADR agent-consoles Part A).
+fn servers_for(management: bool, conn_id: &str) -> Vec<acp::ServerDecl> {
+    if management {
+        vec![acp::oab_server(conn_id)]
+    } else {
+        vec![]
+    }
 }
 
 /// Reconnect loop: one attempt, then back off and retry until the task is
@@ -213,11 +324,16 @@ pub async fn disconnect<R: Runtime>(app: &AppHandle<R>, remote: &Remote) {
 /// a full `initialize` handshake.
 async fn run_reconnecting<R: Runtime>(
     app: AppHandle<R>,
+    agent: String,
     cfg: RemoteConfig,
+    management: bool,
     client: McpClient,
     stop: Arc<AtomicBool>,
 ) {
-    let mut session = Session::new(vec![acp::oab_server(&uuid::Uuid::new_v4().to_string())]);
+    let mut session = Session::new(servers_for(
+        management,
+        &uuid::Uuid::new_v4().to_string(),
+    ));
     // Consecutive-failure counter driving the reconnect backoff. Reset to 0 once an
     // attempt has held a live connection for a while (see below), so a long-running
     // session that blips reconnects promptly instead of at the capped delay.
@@ -228,20 +344,24 @@ async fn run_reconnecting<R: Runtime>(
         }
         let conn_id = uuid::Uuid::new_v4().to_string();
         // Fresh per-connection server id + phase reset; keeps `session_id` so
-        // `run_once` picks the resume path when one exists.
-        session.redeclare(vec![acp::oab_server(&conn_id)]);
+        // `run_once` picks the resume path when one exists. `servers_for` gates the
+        // `oab` declaration on `management`, so a non-management console re-attaches
+        // without ever republishing fleet-control tools.
+        session.redeclare(servers_for(management, &conn_id));
         if session.session_id().is_some() {
             let _ = app.emit(
                 "app-log",
-                json!({ "level": "info", "msg": "remote: reconnecting — will resume the existing session" }),
+                json!({ "level": "info", "msg": format!("remote: {agent} reconnecting — will resume the existing session") }),
             );
         }
 
         let started = Instant::now();
-        let result = run_once(&app, &cfg, &client, &mut session, &conn_id).await;
-        // The socket is gone — retract the outbound-chat channel so a prompt
-        // between attempts fails fast rather than dropping into a dead sink.
-        app.state::<Remote>().0.lock().await.prompt_tx = None;
+        let result = run_once(&app, &agent, &cfg, management, &client, &mut session, &conn_id).await;
+        // The socket is gone — retract this agent's outbound-chat channel so a
+        // prompt between attempts fails fast rather than dropping into a dead sink.
+        if let Some(st) = app.state::<Remote>().0.lock().await.get_mut(&agent) {
+            st.prompt_tx = None;
+        }
         // User-initiated disconnect: stop here instead of reconnecting (and skip
         // the misleading "reconnecting…" log).
         if stop.load(Ordering::SeqCst) {
@@ -257,10 +377,10 @@ async fn run_reconnecting<R: Runtime>(
             // Classify so the status line says *why* (network / auth rejected /
             // server at capacity / protocol) instead of a raw error blob.
             let reason = DisconnectReason::classify(&e);
-            emit_status(&app, &format!("error: {}", reason.label()));
+            emit_status(&app, &agent, &format!("error: {}", reason.label()));
             let _ = app.emit(
                 "app-log",
-                json!({ "level": "error", "msg": format!("remote: {} — {e}", reason.label()) }),
+                json!({ "level": "error", "msg": format!("remote: {agent} {} — {e}", reason.label()) }),
             );
         }
         // Exponential backoff (capped 30s) + per-connection jitter, so a flapping
@@ -269,10 +389,10 @@ async fn run_reconnecting<R: Runtime>(
         let salt = conn_id.as_bytes().first().copied().unwrap_or(0);
         let delay = acp::backoff_delay(attempt, salt);
         attempt = attempt.saturating_add(1);
-        emit_status(&app, "connecting");
+        emit_status(&app, &agent, "connecting");
         let _ = app.emit(
             "app-log",
-            json!({ "level": "info", "msg": format!("remote: reconnecting in {}s…", delay.as_secs()) }),
+            json!({ "level": "info", "msg": format!("remote: {agent} reconnecting in {}s…", delay.as_secs()) }),
         );
         tokio::time::sleep(delay).await;
     }
@@ -284,7 +404,9 @@ async fn run_reconnecting<R: Runtime>(
 /// is dead and returns `Err` so [`run_reconnecting`] reconnects.
 async fn run_once<R: Runtime>(
     app: &AppHandle<R>,
+    agent: &str,
     cfg: &RemoteConfig,
+    management: bool,
     client: &McpClient,
     session: &mut Session,
     conn_id: &str,
@@ -318,7 +440,7 @@ async fn run_once<R: Runtime>(
     // otherwise invisible in Activity until it succeeds or errors.
     let _ = app.emit(
         "app-log",
-        json!({ "level": "info", "msg": format!("remote: dialing {}…", cfg.url) }),
+        json!({ "level": "info", "msg": format!("remote: {agent} dialing {}…", cfg.url) }),
     );
     let (ws, _resp) = tokio_tungstenite::connect_async(req)
         .await
@@ -578,7 +700,7 @@ async fn run_once<R: Runtime>(
                                     let _ = app.emit(
                                         "app-log",
                                         json!({ "level": "warn", "msg": format!(
-                                            "remote: session/resume rejected ({emsg}) — opening a fresh session"
+                                            "remote: {agent} session/resume rejected ({emsg}) — opening a fresh session"
                                         ) }),
                                     );
                                     session.forget_session();
@@ -600,15 +722,30 @@ async fn run_once<R: Runtime>(
                                     .unwrap_or_default()
                                     .to_string();
                                 session.on_session_created(sid);
-                                // Now a turn can be sent — publish the outbound channel.
-                                app.state::<Remote>().0.lock().await.prompt_tx = Some(out_tx.clone());
-                                emit_status(app, "connected");
-                                let msg = if resume_attempted {
-                                    "remote: session resumed — oab tools republished"
+                                // Now a turn can be sent — publish this agent's outbound channel.
+                                if let Some(st) =
+                                    app.state::<Remote>().0.lock().await.get_mut(agent)
+                                {
+                                    st.prompt_tx = Some(out_tx.clone());
+                                    st.status = "connected".to_string();
+                                }
+                                emit_status(app, agent, "connected");
+                                // Only the management binding publishes `oab` tools; an
+                                // agent console runs chat-only (least privilege).
+                                let tools = if management {
+                                    if resume_attempted {
+                                        " — oab tools republished"
+                                    } else {
+                                        " — oab tools published"
+                                    }
                                 } else {
-                                    "remote: session active — oab tools published"
+                                    ""
                                 };
-                                let _ = app.emit("app-log", json!({ "level": "info", "msg": msg }));
+                                let verb = if resume_attempted { "resumed" } else { "active" };
+                                let _ = app.emit(
+                                    "app-log",
+                                    json!({ "level": "info", "msg": format!("remote: {agent} session {verb}{tools}") }),
+                                );
                             }
                         }
                         acp::Phase::SessionActive => {
@@ -625,7 +762,7 @@ async fn run_once<R: Runtime>(
                                     .to_string();
                                 let _ = app.emit(
                                     "agent-update",
-                                    json!({ "kind": "turn_end", "stopReason": stop }),
+                                    json!({ "agent": agent, "kind": "turn_end", "stopReason": stop }),
                                 );
                             }
                             // Any other method-less frame (e.g. a heartbeat probe's
@@ -669,7 +806,7 @@ async fn run_once<R: Runtime>(
                     }
                     // A piece of the agent's chat reply → forward to the panel.
                     Inbound::AgentChunk { text } => {
-                        let _ = app.emit("agent-update", json!({ "kind": "chunk", "text": text }));
+                        let _ = app.emit("agent-update", json!({ "agent": agent, "kind": "chunk", "text": text }));
                     }
                     Inbound::Cancel { .. } | Inbound::Other => {}
                 }
@@ -685,7 +822,7 @@ async fn run_once<R: Runtime>(
     if pending_prompt.is_some() {
         let _ = app.emit(
             "app-log",
-            json!({ "level": "warn", "msg": "remote: connection dropped with a turn in flight — turn abandoned" }),
+            json!({ "level": "warn", "msg": format!("remote: {agent} connection dropped with a turn in flight — turn abandoned") }),
         );
     }
     outcome

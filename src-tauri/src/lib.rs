@@ -338,7 +338,20 @@ async fn remote_view(remote: &remote::Remote) -> Result<Value, String> {
     let path = remote::config_path()
         .map(|p| p.display().to_string())
         .unwrap_or_default();
-    let status = remote.0.lock().await.status.clone();
+    // Status of the management connection — the one this legacy panel controls.
+    // `RemoteState` is now keyed per agent, so look it up under the management
+    // endpoint's name (the legacy `remote.toml` adopts the name "management").
+    let mgmt_name = remote::load_registry()
+        .ok()
+        .and_then(|r| r.management().map(|e| e.name.clone()))
+        .unwrap_or_else(|| remote::LEGACY_MANAGEMENT_NAME.to_string());
+    let status = remote
+        .0
+        .lock()
+        .await
+        .get(&mgmt_name)
+        .map(|st| st.status.clone())
+        .unwrap_or_default();
     Ok(json!({
         "path": path,
         "text": text,
@@ -352,6 +365,37 @@ async fn remote_view(remote: &remote::Remote) -> Result<Value, String> {
 #[tauri::command]
 async fn remote_config(remote: tauri::State<'_, remote::Remote>) -> Result<Value, String> {
     remote_view(&remote).await
+}
+
+/// The per-agent endpoint registry with each entry's live status — the data an
+/// agent-console selector renders (ADR agent-consoles Parts B/C). Reads
+/// `agents.toml` (or the adopted legacy `remote.toml`) and overlays each entry's
+/// current connection status. Tokens are **not** included (secrets never cross
+/// this bridge); only whether the entry is configured.
+#[tauri::command]
+async fn remote_agents(remote: tauri::State<'_, remote::Remote>) -> Result<Value, String> {
+    let reg = remote::load_registry()?;
+    let guard = remote.0.lock().await;
+    let agents: Vec<Value> = reg
+        .agents
+        .iter()
+        .map(|a| {
+            let status = guard
+                .get(&a.name)
+                .map(|st| st.status.clone())
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "disconnected".to_string());
+            json!({
+                "name": a.name,
+                "url": a.url,
+                "cwd": a.cwd,
+                "management": a.management,
+                "configured": a.is_configured(),
+                "status": status,
+            })
+        })
+        .collect();
+    Ok(json!({ "agents": agents }))
 }
 
 /// Persist the edited `remote.toml` (validates it parses before writing) and
@@ -373,6 +417,7 @@ async fn remote_connect(
     app: tauri::AppHandle,
     core: tauri::State<'_, Core>,
     remote: tauri::State<'_, remote::Remote>,
+    agent: Option<String>,
 ) -> Result<(), String> {
     let client = {
         let guard = core.0.lock().await;
@@ -381,34 +426,47 @@ async fn remote_connect(
             .cloned()
             .ok_or_else(|| "core not started yet — start the core before connecting".to_string())?
     };
-    remote::connect(app, &remote, client).await
+    // `None` ⇒ the management endpoint (legacy single-console behaviour); `Some`
+    // ⇒ a specific agent console from the registry.
+    let endpoint = remote::resolve_endpoint(agent.as_deref())?;
+    remote::connect(app, &remote, client, endpoint).await
 }
 
-/// Deactivate the remote connection.
+/// Deactivate a connection. `None` targets the management endpoint.
 #[tauri::command]
 async fn remote_disconnect(
     app: tauri::AppHandle,
     remote: tauri::State<'_, remote::Remote>,
+    agent: Option<String>,
 ) -> Result<(), String> {
-    remote::disconnect(&app, &remote).await;
+    let name = remote::resolve_name(agent.as_deref())?;
+    remote::disconnect(&app, &remote, &name).await;
     Ok(())
 }
 
-/// Send a chat turn to the connected agent (ADR *agent-chat-panel*): pushes a
-/// `session/prompt` onto the live `/acp` session. The reply streams back as
-/// `agent-update` events. Errors if no session is active.
+/// Send a chat turn to an agent (ADR *agent-chat-panel*): pushes a `session/prompt`
+/// onto that agent's live `/acp` session. The reply streams back as `agent-update`
+/// events tagged with the agent name. `None` targets the management endpoint.
+/// Errors if that agent's session is not active.
 #[tauri::command]
 async fn agent_prompt(
     remote: tauri::State<'_, remote::Remote>,
+    agent: Option<String>,
     text: String,
 ) -> Result<(), String> {
-    remote.send_prompt(text).await
+    let name = remote::resolve_name(agent.as_deref())?;
+    remote.send_prompt(&name, text).await
 }
 
-/// Abandon the in-flight chat turn (`session/cancel`). Best-effort.
+/// Abandon an agent's in-flight chat turn (`session/cancel`). Best-effort.
+/// `None` targets the management endpoint.
 #[tauri::command]
-async fn agent_cancel(remote: tauri::State<'_, remote::Remote>) -> Result<(), String> {
-    remote.send_cancel().await
+async fn agent_cancel(
+    remote: tauri::State<'_, remote::Remote>,
+    agent: Option<String>,
+) -> Result<(), String> {
+    let name = remote::resolve_name(agent.as_deref())?;
+    remote.send_cancel(&name).await
 }
 
 /// What the frontend needs to render the "update available" state: the version
@@ -490,6 +548,7 @@ pub fn run() {
             fleet_config_write,
             deploy_scale,
             remote_config,
+            remote_agents,
             remote_config_write,
             remote_connect,
             remote_disconnect,
@@ -507,7 +566,7 @@ pub fn run() {
             // Disconnect button already does this; this covers Cmd-Q / window close.
             if let tauri::RunEvent::ExitRequested { .. } = event {
                 let remote = app_handle.state::<remote::Remote>();
-                tauri::async_runtime::block_on(remote::disconnect(app_handle, &remote));
+                tauri::async_runtime::block_on(remote::disconnect_all(app_handle, &remote));
             }
         });
 }
