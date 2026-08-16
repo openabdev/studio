@@ -1,6 +1,6 @@
 # ADR: Two consoles — a management console and per-agent agent consoles (endpoint registry + remote file editor)
 
-- **Status:** Proposed
+- **Status:** Accepted (2026-08-16 — implementation started, slices 1–4)
 - **Date:** 2026-08-14
 - **Author:** Orca (`ecs-claude`)
 - **Extends:** [Chatting with a connected agent — `session/prompt` over `/acp` (Part C)](./agent-chat-panel.md); [Fleet grouping & connection model](./fleet-grouping-and-connection-model.md); [Deployment control plane (ADR-2)](./deployment-control-plane.md)
