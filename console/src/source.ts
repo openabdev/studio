@@ -1,10 +1,12 @@
 import type {
+  AgentEndpointView,
   Deployment,
   FleetConfig,
   RemoteConfig,
   RuntimeContext,
 } from "./types";
 import {
+  FIXTURE_AGENTS,
   FIXTURE_DEPLOYMENTS,
   FIXTURE_FLEET_CONFIG,
   FIXTURE_REMOTE_CONFIG,
@@ -34,13 +36,21 @@ export interface Source {
   // `remote.toml` for the editor, and the explicit activate/deactivate actions.
   remoteConfig(): Promise<RemoteConfig>;
   writeRemoteConfig(text: string): Promise<RemoteConfig>;
-  remoteConnect(): Promise<void>;
-  remoteDisconnect(): Promise<void>;
+  // Dial / tear down a connection. `agent` names a registry endpoint (an agent
+  // console); omitted ⇒ the management endpoint (legacy single-console path).
+  remoteConnect(agent?: string): Promise<void>;
+  remoteDisconnect(agent?: string): Promise<void>;
+  // The per-agent endpoint registry with each entry's live status — what an
+  // agent-console selector renders (ADR agent-consoles Parts B/C). Tokens are
+  // never included.
+  remoteAgents(): Promise<AgentEndpointView[]>;
   // Chat over the live connection (Part C): send one turn (`session/prompt`) or
-  // cancel the in-flight turn (`session/cancel`). The reply streams back as
-  // `agent-update` events, not through this call, so both resolve immediately.
-  agentPrompt(text: string): Promise<void>;
-  agentCancel(): Promise<void>;
+  // cancel the in-flight turn (`session/cancel`) for a given endpoint. `agent`
+  // names the registry endpoint; omitted ⇒ the management endpoint. The reply
+  // streams back as `agent-update` events, not through this call, so both
+  // resolve immediately.
+  agentPrompt(text: string, agent?: string): Promise<void>;
+  agentCancel(agent?: string): Promise<void>;
 }
 
 // Fixture-backed source for the standalone / browser build — no core required.
@@ -71,6 +81,9 @@ export class MockSource implements Source {
   // Browser preview: no core to dial, so activate/deactivate are no-ops.
   async remoteConnect(): Promise<void> {}
   async remoteDisconnect(): Promise<void> {}
+  async remoteAgents(): Promise<AgentEndpointView[]> {
+    return structuredClone(FIXTURE_AGENTS);
+  }
   // Browser preview: no live agent. `main.ts` detects the mock (no Tauri shell)
   // and drives a canned reply locally so the panel is still demonstrable.
   async agentPrompt(): Promise<void> {}
@@ -127,17 +140,23 @@ export class TauriSource implements Source {
   async writeRemoteConfig(text: string): Promise<RemoteConfig> {
     return this.invoke()<RemoteConfig>("remote_config_write", { text });
   }
-  async remoteConnect(): Promise<void> {
-    await this.invoke()<unknown>("remote_connect");
+  async remoteConnect(agent?: string): Promise<void> {
+    await this.invoke()<unknown>("remote_connect", { agent });
   }
-  async remoteDisconnect(): Promise<void> {
-    await this.invoke()<unknown>("remote_disconnect");
+  async remoteDisconnect(agent?: string): Promise<void> {
+    await this.invoke()<unknown>("remote_disconnect", { agent });
   }
-  async agentPrompt(text: string): Promise<void> {
-    await this.invoke()<unknown>("agent_prompt", { text });
+  async remoteAgents(): Promise<AgentEndpointView[]> {
+    const res = await this.invoke()<{ agents: AgentEndpointView[] }>(
+      "remote_agents",
+    );
+    return res.agents;
   }
-  async agentCancel(): Promise<void> {
-    await this.invoke()<unknown>("agent_cancel");
+  async agentPrompt(text: string, agent?: string): Promise<void> {
+    await this.invoke()<unknown>("agent_prompt", { text, agent });
+  }
+  async agentCancel(agent?: string): Promise<void> {
+    await this.invoke()<unknown>("agent_cancel", { agent });
   }
 }
 
