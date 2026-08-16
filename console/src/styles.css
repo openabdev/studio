@@ -870,3 +870,136 @@ button.act:disabled {
   line-height: 1.5;
   color: var(--muted);
 }
+
+/* Compose tab (agent-deployment ADR, slice 1): library editor + bundle preview. */
+.pane.compose {
+  padding: 16px;
+  overflow: auto;
+}
+.compose-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 16px;
+}
+.compose-lib-head,
+.compose-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.compose-lib-head {
+  margin-bottom: 6px;
+}
+.compose-spacer {
+  flex: 1;
+}
+.compose-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+.compose-lib-path {
+  font-size: 11px;
+  color: var(--muted);
+}
+.compose-lib-text {
+  width: 100%;
+  min-height: 360px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  resize: vertical;
+}
+.compose-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.compose-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.compose-select {
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+}
+.compose-actions button {
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--text);
+  cursor: pointer;
+}
+.compose-status {
+  font-size: 12px;
+  color: var(--muted);
+}
+.compose-status.ok {
+  color: var(--ok);
+}
+.compose-status.err {
+  color: var(--s-unhealthy);
+}
+.compose-bundle-head {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  margin-bottom: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  font-size: 12px;
+}
+.compose-k {
+  display: inline-block;
+  width: 52px;
+  color: var(--muted);
+}
+.compose-file {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  margin-bottom: 6px;
+  background: var(--bg);
+}
+.compose-file summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.compose-file-meta {
+  color: var(--muted);
+  font-size: 11px;
+}
+.compose-file-body {
+  margin: 0;
+  padding: 8px 10px;
+  border-top: 1px solid var(--border);
+  overflow: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.compose-file-binary {
+  color: var(--muted);
+  font-style: italic;
+}

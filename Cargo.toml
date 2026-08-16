@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/agent-lifecycle", "crates/oabctl", "crates/studio-cp", "crates/oab-mcp", "crates/acp-tunnel"]
+members = ["crates/agent-lifecycle", "crates/oabctl", "crates/studio-cp", "crates/studio-compose", "crates/oab-mcp", "crates/acp-tunnel"]
 resolver = "2"
 
 # Fast profile for the CI-built `oab-mcp` sidecar (desktop.yml). The sidecar is an

@@ -1,5 +1,6 @@
 import { defaultSource } from "./source";
 import { initConfigTab } from "./config";
+import { initComposeTab } from "./compose";
 import {
   renderRoster,
   renderIdentity,
@@ -754,6 +755,9 @@ async function boot(): Promise<void> {
   // Config tab: pin the oab-mcp target (cluster/profile/region → hermetic env);
   // on save the backend reloads the core, so refresh the roster after.
   initConfigTab({ onSaved: () => void tick() });
+  // Compose tab: author the template/overlay/skills library + preview the
+  // composed bundle (agent-deployment ADR, slice 1). Self-contained; no polling.
+  initComposeTab();
   void refreshConfig();
   void refreshIdentity();
   void refreshRemote();

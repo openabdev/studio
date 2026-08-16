@@ -1,0 +1,15 @@
+[package]
+name = "studio-compose"
+version = "0.1.0"
+edition = "2021"
+description = "Studio bundle composition — template ⊕ overlay + skills-by-reference → a deterministic {path → bytes} agent bundle (ADR: agent deployment)"
+license = "MIT"
+
+# Deliberately dependency-light and **pure**: no async, no AWS, no filesystem. This
+# is the compose seam of the deployment ADR (slice 1) — everything here is unit
+# testable with `cargo test` alone. The provider drivers (slice 2+: S3/ConfigMap)
+# consume a `Bundle` but live elsewhere.
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"

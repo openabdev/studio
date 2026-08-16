@@ -32,6 +32,12 @@ tokio = { version = "1", features = ["sync", "rt", "macros", "net", "time"] }
 # session state machine + remote-connection config live in `acp-tunnel`; the WS
 # transport here dials `/acp` and relays tunnelled MCP to the sidecar `McpClient`.
 acp-tunnel = { path = "../crates/acp-tunnel" }
+
+# Bundle composition (ADR: agent deployment, slice 1): the pure `template ⊕ overlay
+# → {path → bytes}` compose seam. No AWS/runtime here — the desktop authors the
+# library + previews the composed bundle; the provider drivers (slice 2+) consume a
+# `Bundle`.
+studio-compose = { path = "../crates/studio-compose" }
 tokio-tungstenite = { version = "0.23", features = ["rustls-tls-webpki-roots"] }
 futures-util = "0.3"
 uuid = { version = "1", features = ["v4"] }

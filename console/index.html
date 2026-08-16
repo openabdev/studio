@@ -50,10 +50,57 @@
         <nav class="tabs" id="tabs">
           <button class="tab is-active" data-target="log">Activity</button>
           <button class="tab" data-target="mcpio">MCP · oab-mcp</button>
+          <button class="tab" data-target="compose">Compose</button>
           <button class="tab" data-target="config">Config</button>
         </nav>
         <div id="log" class="log pane"></div>
         <div id="mcpio" class="log pane mcpio" hidden></div>
+        <div id="compose" class="pane compose" hidden>
+          <div class="compose-grid">
+            <div class="compose-lib">
+              <div class="compose-lib-head">
+                <span class="compose-label">Library</span>
+                <span class="compose-lib-path">template ⊕ overlay + skills</span>
+                <span class="compose-spacer"></span>
+                <button type="button" id="compose-save" class="cfg-btn">Save library</button>
+              </div>
+              <textarea
+                id="compose-lib-text"
+                class="compose-lib-text"
+                spellcheck="false"
+                autocomplete="off"
+                placeholder='{ "templates": {}, "overlays": {}, "skills": { "skills": {} } }'
+              ></textarea>
+            </div>
+            <div class="compose-preview-col">
+              <form id="compose-form" class="compose-form" autocomplete="off">
+                <label
+                  >Template
+                  <select id="compose-template" class="compose-select"></select>
+                </label>
+                <label
+                  >Overlay
+                  <select id="compose-overlay" class="compose-select">
+                    <option value="">— none (bare template) —</option>
+                  </select>
+                </label>
+                <div class="compose-actions">
+                  <button type="submit" id="compose-preview-btn">Preview bundle</button>
+                  <span class="compose-status" id="compose-status"></span>
+                </div>
+              </form>
+              <div id="compose-preview" class="compose-preview"></div>
+            </div>
+          </div>
+          <p class="config-hint">
+            Author a reusable <strong>template</strong> (golden bundle + default
+            image tag) and per-agent <strong>overlays</strong>; skills are shared
+            by reference. Compose is deterministic, last-writer-wins per path
+            (overlay &gt; skills &gt; template), and produces a
+            <code>{path → bytes}</code> bundle. Preview is local — no deploy. The
+            provider drivers that land a bundle on a runtime are a later slice.
+          </p>
+        </div>
         <div id="config" class="pane config" hidden>
           <form id="config-form" class="config-form" autocomplete="off">
             <label
