@@ -1,6 +1,6 @@
 # ADR: Agent deployment — template/skills bundles → provider-tagged provisioning
 
-- **Status:** Proposed (draft)
+- **Status:** Accepted (2026-08-16) — direction greenlit by Brett; slices 1&2 in flight.
 - **Date:** 2026-08-15
 - **Author:** Orca (`ecs-claude`)
 - **Builds on:** [Deployment control plane (ADR-2)](./deployment-control-plane.md); [Runtime identity/context (ADR-19)](./runtime-identity-context.md); [Desktop core sidecar](./desktop-core-sidecar.md)
