@@ -1,3 +1,4 @@
+mod compose;
 mod config;
 mod mcp;
 mod remote;
@@ -80,6 +81,39 @@ async fn mcp_target_set(
             Err(e)
         }
     }
+}
+
+// ---- Bundle composition (ADR: agent deployment, slice 1) --------------------
+
+/// The persisted template/overlay/skills library for the Compose panel to
+/// render/edit. Empty on first run (or if the file is missing/corrupt).
+#[tauri::command]
+async fn compose_library_get(app: tauri::AppHandle) -> Result<studio_compose::Library, String> {
+    Ok(compose::load(&app))
+}
+
+/// Persist the edited library and return it back (round-tripped through the same
+/// serde the preview uses, so the editor and disk agree).
+#[tauri::command]
+async fn compose_library_set(
+    app: tauri::AppHandle,
+    library: studio_compose::Library,
+) -> Result<studio_compose::Library, String> {
+    compose::save(&app, &library)?;
+    Ok(library)
+}
+
+/// Compose a preview of `template ⊕ overlay` from the (possibly unsaved) library
+/// the editor currently holds — so the operator sees the effect of edits before
+/// saving. Compose errors (unknown template/overlay/skill, missing image tag)
+/// surface to the panel.
+#[tauri::command]
+async fn compose_preview(
+    library: studio_compose::Library,
+    template: String,
+    overlay: Option<String>,
+) -> Result<studio_compose::BundlePreview, String> {
+    compose::preview(&library, &template, overlay.as_deref())
 }
 
 /// List services (`deploy_list`) then fetch each one's per-instance 6-state
@@ -398,6 +432,9 @@ pub fn run() {
             start_core,
             mcp_target_get,
             mcp_target_set,
+            compose_library_get,
+            compose_library_set,
+            compose_preview,
             deploy_list,
             runtime_context,
             fleet_config,
