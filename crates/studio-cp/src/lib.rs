@@ -537,6 +537,75 @@ pub async fn apply_deployment(
         .map_err(|e| anyhow::anyhow!("apply failed [{:?}]: {e}", e.kind))
 }
 
+pub use studio_compose::Library;
+
+/// Structured outcome of a [`provision_from_library`] call — enough for the UI to
+/// confirm what was deployed without holding the bundle bytes.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ProvisionOutcome {
+    /// The image tag the service was pointed at.
+    pub image: String,
+    /// Content-address of the composed bundle (`sha256:…`).
+    pub digest: String,
+    /// Number of bundle files uploaded to the agent's artifacts prefix.
+    pub objects: usize,
+    /// Number of ECS services reconciled (1 for a single agent).
+    pub services_applied: usize,
+    /// The reconcile action on the (first) service, e.g. `Created` / `Updated`.
+    pub action: String,
+}
+
+/// Provision an agent from the compose **library**: compose `template ⊕ overlay`,
+/// then **redeploy** — push the bundle to the agent's artifacts prefix and apply
+/// its stored manifest at the chosen image tag (agent-deployment ADR slice 2,
+/// path A). Networking/resources/secrets ride along from the stored manifest, so
+/// this is the "update this agent to new persona / skills / image" path; the
+/// agent must already have been `create`d.
+///
+/// `image_override` (when non-empty) wins over the bundle's own default image tag.
+pub async fn provision_from_library(
+    aws_config: &aws_config::SdkConfig,
+    cluster: &str,
+    namespace: &str,
+    name: &str,
+    library: &Library,
+    template: &str,
+    overlay: Option<&str>,
+    image_override: Option<&str>,
+) -> anyhow::Result<ProvisionOutcome> {
+    let bundle = studio_compose::compose_named(library, template, overlay)
+        .map_err(|e| anyhow::anyhow!("compose failed: {e}"))?;
+    let image = image_override
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| bundle.image_tag.clone());
+    let objects = bundle.artifact_objects(namespace, name);
+    let digest = bundle.digest();
+
+    let report = oabctl::studio_api::redeploy(
+        aws_config,
+        cluster,
+        namespace,
+        name,
+        Some(&image),
+        &objects,
+        None,
+    )
+    .await?;
+
+    Ok(ProvisionOutcome {
+        image,
+        digest,
+        objects: objects.len(),
+        services_applied: report.services.len(),
+        action: report
+            .services
+            .first()
+            .map(|s| format!("{:?}", s.action))
+            .unwrap_or_default(),
+    })
+}
+
 /// Scale an OAB service to `size` replicas (0 = off, 1 = on).
 ///
 /// Config-free: `cluster` / `namespace` are explicit (service = `oab-{namespace}-{name}`).

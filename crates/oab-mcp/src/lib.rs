@@ -6,7 +6,8 @@
 //!
 //! - read: `deploy_list`, `deploy_get`, `get_agent_states`, `deploy_events`,
 //!   `runtime_context`, `fleet_config`
-//! - write: `deploy_apply`, `deploy_scale`, `deploy_delete`, `fleet_config_write`
+//! - write: `deploy_apply`, `deploy_provision`, `deploy_scale`, `deploy_delete`,
+//!   `fleet_config_write`
 //!
 //! **Transport-agnostic on purpose.** The handler is a *library* so the same
 //! tool logic serves two front doors: the `oab-mcp` binary drives it over
@@ -141,6 +142,24 @@ pub fn tools() -> Vec<Tool> {
                     "namespace": { "type": "string", "description": "Namespace (default \"default\")." }
                 },
                 "required": ["name", "size"]
+            })),
+        ),
+        Tool::new(
+            "deploy_provision",
+            "Provision an agent from the compose library: compose template ⊕ overlay into a file bundle, push it to the agent's S3 artifacts prefix, and redeploy the ECS service at the chosen image tag. Reuses the agent's stored manifest for networking/resources/secrets, so the agent must already have been created.",
+            as_map(json!({
+                "type": "object",
+                "properties": {
+                    "library": { "type": "object", "description": "The compose library document: { templates, overlays, skills }." },
+                    "template": { "type": "string", "description": "Template name in the library." },
+                    "overlay": { "type": "string", "description": "Overlay name (optional; omitted composes the bare template)." },
+                    "name": { "type": "string", "description": "Agent / service name (service = oab-{namespace}-{name})." },
+                    "namespace": { "type": "string", "description": "Namespace (default \"default\")." },
+                    "image_tag": { "type": "string", "description": "Image tag override (defaults to the bundle's own image tag)." },
+                    "fleet": { "type": "string", "description": "Fleet name (see fleet_config): targets the fleet's cluster and managing credential; a write to a service outside the fleet's members is refused. Overrides the cluster arg." },
+                    "cluster": { "type": "string", "description": "ECS cluster (defaults to the server's configured cluster)." }
+                },
+                "required": ["library", "template", "name"]
             })),
         ),
         Tool::new(
@@ -294,6 +313,7 @@ impl OabMcp {
             "get_agent_states" => self.t_states(args).await,
             "deploy_events" => self.t_events(args).await,
             "deploy_apply" => self.t_apply(args).await,
+            "deploy_provision" => self.t_provision(args).await,
             "deploy_scale" => self.t_scale(args).await,
             "deploy_delete" => self.t_delete(args).await,
             "runtime_context" => self.t_runtime_context(args).await,
@@ -468,6 +488,61 @@ impl OabMcp {
             "since_minutes": since_minutes,
             "count": events.len(),
             "events": events.iter().map(event_json).collect::<Vec<_>>(),
+        }))
+    }
+
+    async fn t_provision(&self, args: &Map<String, Value>) -> Result<Value> {
+        let t = self.target(args)?;
+        let cluster = t.cluster.clone();
+        let namespace = args
+            .get("namespace")
+            .and_then(Value::as_str)
+            .unwrap_or("default");
+        let name = args
+            .get("name")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("missing required arg: name"))?;
+        let template = args
+            .get("template")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("missing required arg: template"))?;
+        let overlay = args.get("overlay").and_then(Value::as_str);
+        let image = args.get("image_tag").and_then(Value::as_str);
+        let library: scp::Library = serde_json::from_value(
+            args.get("library")
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("missing required arg: library"))?,
+        )
+        .map_err(|e| anyhow::anyhow!("invalid library: {e}"))?;
+
+        // Same fleet-scope guard as scale/delete: a fleet handle only provisions
+        // its own members, so a scoped call can't reach a co-located non-member.
+        let service_name = format!("oab-{namespace}-{name}");
+        if !t.includes(&service_name, name) {
+            anyhow::bail!("service {service_name:?} is not a member of the named fleet");
+        }
+
+        let outcome = scp::provision_from_library(
+            &self.aws_for(&cluster).await,
+            &cluster,
+            namespace,
+            name,
+            &library,
+            template,
+            overlay,
+            image,
+        )
+        .await?;
+        Ok(json!({
+            "ok": true,
+            "cluster": cluster,
+            "namespace": namespace,
+            "name": name,
+            "image": outcome.image,
+            "digest": outcome.digest,
+            "objects": outcome.objects,
+            "action": outcome.action,
+            "services_applied": outcome.services_applied,
         }))
     }
 
@@ -705,13 +780,14 @@ mod tests {
             .iter()
             .map(|t| t["name"].as_str().expect("tool has a name").to_string())
             .collect();
-        assert_eq!(names.len(), 10);
+        assert_eq!(names.len(), 11);
         for expected in [
             "deploy_list",
             "deploy_get",
             "get_agent_states",
             "deploy_events",
             "deploy_apply",
+            "deploy_provision",
             "deploy_scale",
             "deploy_delete",
             "runtime_context",

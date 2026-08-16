@@ -1003,3 +1003,33 @@ button.act:disabled {
   color: var(--muted);
   font-style: italic;
 }
+
+/* Compose → Deploy form (agent-deployment ADR, slice 2). */
+.compose-deploy {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+.compose-deploy-head {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+.compose-deploy label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.compose-input {
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+}

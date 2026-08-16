@@ -90,6 +90,31 @@
                 </div>
               </form>
               <div id="compose-preview" class="compose-preview"></div>
+              <form id="compose-deploy-form" class="compose-deploy" autocomplete="off" hidden>
+                <div class="compose-deploy-head">Deploy to ECS</div>
+                <label
+                  >Namespace
+                  <input id="compose-ns" class="compose-input" type="text" value="default" spellcheck="false" />
+                </label>
+                <label
+                  >Agent name
+                  <input id="compose-name" class="compose-input" type="text" placeholder="e.g. orca" spellcheck="false" />
+                </label>
+                <label
+                  >Image tag
+                  <input id="compose-image" class="compose-input" type="text" placeholder="(bundle default)" spellcheck="false" />
+                </label>
+                <div class="compose-actions">
+                  <button type="submit" id="compose-deploy-btn">Deploy</button>
+                  <span class="compose-status" id="compose-deploy-status"></span>
+                </div>
+                <p class="config-hint">
+                  Pushes the composed bundle to the agent's S3 artifacts prefix and
+                  redeploys its ECS service at this image tag, reusing the stored
+                  manifest's networking/resources. The agent must already have been
+                  created.
+                </p>
+              </form>
             </div>
           </div>
           <p class="config-hint">

@@ -152,6 +152,22 @@ export function initComposeTab(): void {
 
   const parseLibrary = (): Library => JSON.parse(text.value) as Library;
 
+  // Deploy form (revealed after a successful preview so the operator deploys
+  // exactly what they just previewed).
+  const deployForm = document.getElementById("compose-deploy-form") as HTMLFormElement | null;
+  const nsInput = document.getElementById("compose-ns") as HTMLInputElement | null;
+  const nameInput = document.getElementById("compose-name") as HTMLInputElement | null;
+  const imageInput = document.getElementById("compose-image") as HTMLInputElement | null;
+  const deployBtn = document.getElementById("compose-deploy-btn") as HTMLButtonElement | null;
+  const deployStatusEl = document.getElementById("compose-deploy-status");
+
+  const setDeployStatus = (msg: string, cls = ""): void => {
+    if (deployStatusEl) {
+      deployStatusEl.textContent = msg;
+      deployStatusEl.className = cls ? `compose-status ${cls}` : "compose-status";
+    }
+  };
+
   invoke<Library>("compose_library_get")
     .then((lib) => {
       text.value = JSON.stringify(lib, null, 2);
@@ -203,9 +219,58 @@ export function initComposeTab(): void {
       const preview = await invoke<BundlePreview>("compose_preview", { library: lib, template, overlay });
       if (out) out.innerHTML = renderPreviewHtml(preview);
       setStatus(`composed — ${preview.files.length} files`, "ok");
+      // Reveal the deploy form and prefill sensible defaults from the preview.
+      if (deployForm) deployForm.hidden = false;
+      if (nameInput && !nameInput.value) nameInput.value = overlay ?? template;
+      if (imageInput) imageInput.placeholder = preview.image_tag;
+      setDeployStatus("");
     } catch (e) {
       if (out) out.innerHTML = "";
+      if (deployForm) deployForm.hidden = true;
       setStatus(`compose failed: ${errText(e)}`, "err");
+    }
+  });
+
+  deployForm?.addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    let lib: Library;
+    try {
+      lib = parseLibrary();
+    } catch (e) {
+      setDeployStatus(`invalid JSON: ${errText(e)}`, "err");
+      return;
+    }
+    const template = tmplSel.value;
+    const name = nameInput?.value.trim() ?? "";
+    if (!template) {
+      setDeployStatus("preview a template first", "err");
+      return;
+    }
+    if (!name) {
+      setDeployStatus("agent name is required", "err");
+      return;
+    }
+    const overlay = ovlSel.value || null;
+    const namespace = nsInput?.value.trim() || "default";
+    const image = imageInput?.value.trim() || null;
+    if (deployBtn) deployBtn.disabled = true;
+    setDeployStatus("deploying…");
+    try {
+      const res = await invoke<{
+        action?: string;
+        objects?: number;
+        image?: string;
+        digest?: string;
+      }>("deploy_provision", { library: lib, template, overlay, name, namespace, image });
+      const action = res.action ? res.action.toLowerCase() : "applied";
+      setDeployStatus(
+        `${action} ${namespace}/${name} @ ${res.image ?? image ?? "?"} — ${res.objects ?? 0} files pushed`,
+        "ok",
+      );
+    } catch (e) {
+      setDeployStatus(`deploy failed: ${errText(e)}`, "err");
+    } finally {
+      if (deployBtn) deployBtn.disabled = false;
     }
   });
 }
