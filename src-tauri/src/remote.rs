@@ -767,13 +767,18 @@ async fn run_once<R: Runtime>(
                                     st.status = "connected".to_string();
                                 }
                                 emit_status(app, agent, "connected");
-                                // Only the management binding publishes `oab` tools; an
-                                // agent console runs chat-only (least privilege).
+                                // Only the management binding declares the `oab` server; an
+                                // agent console runs chat-only (least privilege). Wording:
+                                // this is Studio *declaring* the server on session/new — the
+                                // tools appear only once the agent connects back to it over
+                                // the reverse-MCP tunnel (see the Inbound::Connect /
+                                // tools/list logs below). "declared", not "published", so the
+                                // log doesn't read as "the agent has them".
                                 let tools = if management {
                                     if resume_attempted {
-                                        " — oab tools republished"
+                                        " — oab server re-declared (awaiting agent connect)"
                                     } else {
-                                        " — oab tools published"
+                                        " — oab server declared (awaiting agent connect)"
                                     }
                                 } else {
                                     ""
@@ -815,6 +820,15 @@ async fn run_once<R: Runtime>(
                 // or a streamed chat chunk.
                 match acp::parse_inbound(&frame) {
                     Inbound::Connect { id, .. } => {
+                        // The agent (via the gateway) opened the reverse-MCP tunnel to
+                        // Studio's declared `oab` server — the proof the declaration was
+                        // consumed. If this never logs after "oab server declared", the
+                        // gateway/agent runtime isn't tunnelling the reverse direction
+                        // (upstream), which is why the agent sees no oab tools.
+                        let _ = app.emit(
+                            "app-log",
+                            json!({ "level": "info", "msg": format!("remote: {agent} reverse-MCP — agent connected to the oab server") }),
+                        );
                         if let Err(e) = send(&mut write, &acp::connect_reply(id, conn_id)).await {
                             outcome = Err(e);
                             break 'conn;
@@ -829,8 +843,32 @@ async fn run_once<R: Runtime>(
                         // its own id, so out-of-order completion is fine for MCP.
                         let client = client.clone();
                         let reply_tx = reply_tx.clone();
+                        let app = app.clone();
+                        let agent = agent.to_string();
                         tauri::async_runtime::spawn(async move {
                             if let Some(reply) = handle_inner(&client, id, &method, params).await {
+                                // Observability: surface the reverse-MCP call the agent made
+                                // against the oab server. `tools/list` is the definitive
+                                // "the agent pulled N oab tools" signal — its absence (with
+                                // no Connect either) means the declaration was never consumed
+                                // upstream, not that Studio failed to serve.
+                                if method == "tools/list" {
+                                    let n = reply
+                                        .get("result")
+                                        .and_then(|r| r.get("tools"))
+                                        .and_then(Value::as_array)
+                                        .map(|a| a.len());
+                                    let msg = match n {
+                                        Some(n) => format!("remote: {agent} reverse-MCP tools/list — served {n} oab tool(s)"),
+                                        None => format!("remote: {agent} reverse-MCP tools/list — served (unexpected shape)"),
+                                    };
+                                    let _ = app.emit("app-log", json!({ "level": "info", "msg": msg }));
+                                } else if method == "tools/call" {
+                                    let _ = app.emit(
+                                        "app-log",
+                                        json!({ "level": "info", "msg": format!("remote: {agent} reverse-MCP tools/call") }),
+                                    );
+                                }
                                 let _ = reply_tx.send(reply);
                             }
                         });
