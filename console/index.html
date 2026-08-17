@@ -46,6 +46,35 @@
           </div>
         </form>
       </section>
+      <section id="agents" class="agents-wrap">
+        <div class="agents-head">
+          <span class="agents-label">agent consoles</span>
+          <span class="agents-sub">select an agent to open its console — chat + read-only config</span>
+        </div>
+        <div id="agent-list" class="agent-list"></div>
+        <div id="agent-console" class="agent-console" hidden>
+          <div class="ac-head">
+            <span class="ac-title">agent console</span>
+            <span class="ac-spacer"></span>
+            <button class="ac-close" type="button" data-action="close-console">Close</button>
+          </div>
+          <div id="ac-config" class="ac-config"></div>
+          <div class="ac-chat chat-wrap">
+            <div class="chat-head">
+              <span class="chat-title">Chat</span>
+              <span class="chat-conn" id="ac-chat-conn">disconnected</span>
+            </div>
+            <div id="ac-chat-log" class="chat-log"></div>
+            <form id="ac-chat-form" class="chat-input">
+              <textarea id="ac-chat-text" class="chat-text" rows="2" placeholder="Message this agent…  (Enter to send · Shift+Enter for a newline)"></textarea>
+              <div class="chat-actions">
+                <button type="button" id="ac-chat-stop" class="chat-btn chat-stop" hidden>Stop</button>
+                <button type="submit" id="ac-chat-send" class="chat-btn chat-send">Send</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      </section>
       <section class="logs">
         <nav class="tabs" id="tabs">
           <button class="tab is-active" data-target="log">Activity</button>
