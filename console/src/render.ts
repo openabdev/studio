@@ -256,8 +256,10 @@ export function renderFleetConfig(
 
 // ---- Remote reverse-MCP connection panel (Part B) ---------------------------
 // The "activate the remote connection" surface: the /acp endpoint, live status,
-// an explicit Activate/Disconnect button, and Edit config (the same editor as
-// fleets.toml, over remote.toml).
+// an explicit Activate/Disconnect button, and Edit config. Since #69 the editor
+// opens the registry (`agents.toml`, the source of truth), not the deprecated
+// `remote.toml`, so the panel labels the registry path — passed in, since it
+// lives in a different view-model (`RegistryConfig`) than the connection view.
 
 const REMOTE_STATUS_CLASS: Record<string, string> = {
   connected: "rm-connected",
@@ -274,8 +276,13 @@ function remoteStatusBadge(status: string): string {
 
 // Pure: the remote-connection view -> the panel HTML. `null` renders an
 // unavailable state. The button is Disconnect while connected/connecting, else
-// Activate — disabled until a URL + token are configured.
-export function remoteHtml(view: RemoteConfig | null): string {
+// Activate — disabled until a URL + token are configured. `registryPath` is the
+// `agents.toml` path "Edit config" opens; omitted/empty ⇒ the path label is
+// hidden (better than labelling a file the button no longer edits).
+export function remoteHtml(
+  view: RemoteConfig | null,
+  registryPath?: string | null,
+): string {
   if (!view) {
     return `<div class="remote"><span class="muted">remote connection unavailable</span></div>`;
   }
@@ -286,8 +293,8 @@ export function remoteHtml(view: RemoteConfig | null): string {
   const target = view.configured
     ? `<code class="rm-url">${escapeHtml(view.url)}</code>`
     : `<span class="muted">not configured — set <code>url</code> + <code>token</code> in the config</span>`;
-  const path = view.path
-    ? `<span class="cfg-path" title="edit this file to configure the remote connection"><code>${escapeHtml(view.path)}</code></span>`
+  const path = registryPath
+    ? `<span class="cfg-path" title="Edit config opens this registry file (agents.toml)"><code>${escapeHtml(registryPath)}</code></span>`
     : "";
   return `<div class="remote">
       <div class="rm-head">
@@ -303,8 +310,12 @@ export function remoteHtml(view: RemoteConfig | null): string {
     </div>`;
 }
 
-export function renderRemote(el: HTMLElement, view: RemoteConfig | null): void {
-  el.innerHTML = remoteHtml(view);
+export function renderRemote(
+  el: HTMLElement,
+  view: RemoteConfig | null,
+  registryPath?: string | null,
+): void {
+  el.innerHTML = remoteHtml(view, registryPath);
 }
 
 // ---- Agent consoles (ADR agent-consoles, Parts B/C) --------------------------

@@ -330,6 +330,24 @@ describe("remoteHtml", () => {
     );
   });
 
+  it("labels the registry path (agents.toml) that Edit config opens, not remote.toml", () => {
+    const html = remoteHtml(
+      { ...FIXTURE_REMOTE_CONFIG, path: "~/.config/oab-studio/remote.toml" },
+      "~/.config/oab-studio/agents.toml",
+    );
+    expect(html).toContain("agents.toml");
+    expect(html).not.toContain("remote.toml");
+  });
+
+  it("omits the path label when no registry path is known (no mislabel)", () => {
+    const html = remoteHtml({
+      ...FIXTURE_REMOTE_CONFIG,
+      path: "~/.config/oab-studio/remote.toml",
+    });
+    expect(html).not.toContain("cfg-path");
+    expect(html).not.toContain("remote.toml");
+  });
+
   it("renders an unavailable state for null", () => {
     expect(remoteHtml(null)).toContain("remote connection unavailable");
   });

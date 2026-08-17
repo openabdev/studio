@@ -219,11 +219,22 @@ async function refreshRemote(): Promise<void> {
   if (!remoteEl) return;
   try {
     remoteConfig = await source.remoteConfig();
-    renderRemote(remoteEl, remoteConfig);
+    // The panel labels the file "Edit config" opens — the registry
+    // (`agents.toml`), not the deprecated `remote.toml`. Load it best-effort so a
+    // registry read error never blanks the connection panel; a later edit/save
+    // refreshes the cache.
+    if (!registryConfig) {
+      try {
+        registryConfig = await source.registryConfig();
+      } catch {
+        /* no path label until it loads — better than mislabelling remote.toml */
+      }
+    }
+    renderRemote(remoteEl, remoteConfig, registryConfig?.path);
   } catch (e) {
     note("error", `config: remote load failed — ${errText(e)}`);
     remoteConfig = null;
-    renderRemote(remoteEl, null);
+    renderRemote(remoteEl, null, registryConfig?.path);
   }
 }
 
@@ -655,7 +666,7 @@ async function bindRemoteStatus(): Promise<void> {
     // The legacy remote panel shows only the management connection's status.
     if (agent === managementName && remoteConfig) {
       remoteConfig = { ...remoteConfig, status };
-      if (remoteEl) renderRemote(remoteEl, remoteConfig);
+      if (remoteEl) renderRemote(remoteEl, remoteConfig, registryConfig?.path);
     }
     // Route the live state to the owning chat panel — it re-enables its input on
     // `connected` and, on a mid-turn drop, closes the open turn so it doesn't
