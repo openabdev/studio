@@ -2,6 +2,7 @@ import type {
   AgentEndpointView,
   Deployment,
   FleetConfig,
+  RegistryConfig,
   RemoteConfig,
   RuntimeContext,
 } from "./types";
@@ -50,6 +51,30 @@ cwd = "/"
   url: "wss://gateway.example/acp",
   configured: true,
   status: "disconnected",
+};
+
+// Stand-in registry file so the browser build's "Edit config" opens a realistic
+// `agents.toml` (one management entry + ordinary agent consoles). Mirrors
+// FIXTURE_AGENTS; unlike the panel views this is the raw file, so tokens appear.
+export const FIXTURE_REGISTRY_CONFIG: RegistryConfig = {
+  path: "~/.config/oab-studio/agents.toml",
+  text: `# OAB Studio — per-agent endpoint registry (agents.toml)
+# One entry per /acp endpoint. Rules: names unique; at most one management = true
+# (it backs the management console + the reverse-MCP grant).
+
+[[agent]]
+name = "orca"
+url = "wss://orca-acp.example/acp"
+token = "…"
+cwd = "/home/node"
+management = true
+
+[[agent]]
+name = "mira"
+url = "wss://mira-acp.example/acp"
+token = "…"
+cwd = "/home/node"
+`,
 };
 
 // Stand-in data so the console renders without a live core. Mirrors the shape

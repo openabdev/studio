@@ -84,6 +84,15 @@ export interface RemoteConfig {
   status: string;
 }
 
+// The per-agent endpoint registry file (`agents.toml`) as the editor sees it:
+// its path + raw text. Mirrors src-tauri's `registry_config` command. Unlike the
+// panel/selector views this carries the raw file, so it *does* include tokens —
+// it is editor-only and never fed into `RemoteConfig` / `AgentEndpointView`.
+export interface RegistryConfig {
+  path: string;
+  text: string;
+}
+
 // One entry of the per-agent endpoint registry — mirrors src-tauri's
 // `remote_agents` command (ADR agent-consoles, Parts B/C). It is the view an
 // agent-console selector renders: an identity (`name`), the dial target

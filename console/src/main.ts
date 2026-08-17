@@ -9,7 +9,12 @@ import {
   filterByMembers,
   deploymentKey,
 } from "./render";
-import type { Deployment, FleetConfig, RemoteConfig } from "./types";
+import type {
+  Deployment,
+  FleetConfig,
+  RegistryConfig,
+  RemoteConfig,
+} from "./types";
 import { createChatPanel, type ChatPanel } from "./chatPanel";
 import { initAgentConsole, type AgentConsole } from "./agentConsole";
 import { createPane, bindBackend, type Level } from "./log";
@@ -32,6 +37,9 @@ let activeCluster = DEFAULT_CLUSTER;
 let activeMembers: string[] = [];
 let fleetConfig: FleetConfig | null = null;
 let remoteConfig: RemoteConfig | null = null;
+// The registry file (`agents.toml`) as the editor sees it — loaded lazily the
+// first time "Edit config" opens it, and refreshed after a save.
+let registryConfig: RegistryConfig | null = null;
 let agentConsole: AgentConsole | null = null;
 
 const roster = document.getElementById("roster");
@@ -242,7 +250,9 @@ function selectFleet(name: string): void {
 // One CodeMirror TOML editor, shared by both config files (which one is set by
 // `editorTarget`). Kept imperative (CM owns real DOM) and separate from the
 // re-rendered panels, so a background refresh never wipes an open editor.
-type EditorTarget = "fleet" | "remote";
+// The remote panel's editor targets the registry (`agents.toml`) — the source of
+// truth since slice 1 — not the deprecated `remote.toml`.
+type EditorTarget = "fleet" | "registry";
 let editorView: EditorView | null = null;
 let editorTarget: EditorTarget = "fleet";
 
@@ -252,15 +262,32 @@ function showEditorError(msg: string | null): void {
   editorError.hidden = !msg;
 }
 
-function openEditor(target: EditorTarget): void {
+async function openEditor(target: EditorTarget): Promise<void> {
   if (!editorSection || !editorMount) return;
   editorTarget = target;
-  const isRemote = target === "remote";
-  const doc = (isRemote ? remoteConfig?.text : fleetConfig?.text) ?? "";
-  const path = (isRemote ? remoteConfig?.path : fleetConfig?.path) ?? "";
   showEditorError(null);
-  if (editorTitleEl)
-    editorTitleEl.textContent = isRemote ? "edit remote.toml" : "edit fleets.toml";
+  let doc = "";
+  let path = "";
+  let title = "edit fleets.toml";
+  if (target === "registry") {
+    // Load `agents.toml` lazily (and re-read on each open, so an external edit
+    // or a prior save shows up). Missing file → the backend seeds it from the
+    // adopted legacy `remote.toml`, so the first save migrates it.
+    try {
+      registryConfig = await source.registryConfig();
+    } catch (e) {
+      note("error", `config: agents.toml load failed — ${errText(e)}`);
+      return;
+    }
+    doc = registryConfig?.text ?? "";
+    path = registryConfig?.path ?? "";
+    title = "edit agents.toml";
+  } else {
+    doc = fleetConfig?.text ?? "";
+    path = fleetConfig?.path ?? "";
+    title = "edit fleets.toml";
+  }
+  if (editorTitleEl) editorTitleEl.textContent = title;
   if (editorPathEl) editorPathEl.textContent = path;
   editorView?.destroy();
   editorView = new EditorView({
@@ -288,11 +315,14 @@ async function saveEditor(): Promise<void> {
   showEditorError(null);
   try {
     // The backend validates the TOML and rejects (without writing) on error.
-    if (editorTarget === "remote") {
-      remoteConfig = await source.writeRemoteConfig(text);
-      if (remoteEl) renderRemote(remoteEl, remoteConfig);
-      note("info", "config: remote saved");
+    if (editorTarget === "registry") {
+      registryConfig = await source.writeRegistryConfig(text);
+      note("info", "config: agents.toml saved");
       closeEditor();
+      // The registry drives both the management panel (its management entry) and
+      // the agent-console selector — refresh both to reflect the edit.
+      void refreshRemote();
+      await agentConsole?.refresh();
     } else {
       fleetConfig = await source.writeFleetConfig(text);
       if (configEl) renderFleetConfig(configEl, fleetConfig, activeFleet);
@@ -317,7 +347,7 @@ if (configEl) {
   configEl.addEventListener("click", (ev) => {
     const target = ev.target as HTMLElement;
     if (target.closest('[data-action="edit-config"]')) {
-      openEditor("fleet");
+      void openEditor("fleet");
       return;
     }
     const btn = target.closest<HTMLElement>("[data-fleet]");
@@ -347,7 +377,8 @@ if (remoteEl) {
   remoteEl.addEventListener("click", (ev) => {
     const target = ev.target as HTMLElement;
     if (target.closest('[data-action="edit-remote-config"]')) {
-      openEditor("remote");
+      // Edit the registry (`agents.toml`), not the deprecated `remote.toml`.
+      void openEditor("registry");
     } else if (target.closest('[data-action="remote-connect"]')) {
       void remoteAction("connect");
     } else if (target.closest('[data-action="remote-disconnect"]')) {

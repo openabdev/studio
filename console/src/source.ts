@@ -2,6 +2,7 @@ import type {
   AgentEndpointView,
   Deployment,
   FleetConfig,
+  RegistryConfig,
   RemoteConfig,
   RuntimeContext,
 } from "./types";
@@ -9,6 +10,7 @@ import {
   FIXTURE_AGENTS,
   FIXTURE_DEPLOYMENTS,
   FIXTURE_FLEET_CONFIG,
+  FIXTURE_REGISTRY_CONFIG,
   FIXTURE_REMOTE_CONFIG,
   FIXTURE_RUNTIME_CONTEXT,
 } from "./fixtures";
@@ -32,10 +34,18 @@ export interface Source {
     namespace: string,
     cluster?: string,
   ): Promise<void>;
-  // The remote reverse-MCP connection (Part B): its config/status, the raw
-  // `remote.toml` for the editor, and the explicit activate/deactivate actions.
+  // The remote reverse-MCP connection (Part B): the management endpoint's parsed
+  // url + live status for the panel. The editor now edits the registry
+  // (`agents.toml`, below); `writeRemoteConfig` remains for the legacy
+  // `remote.toml` path but is no longer wired to a button.
   remoteConfig(): Promise<RemoteConfig>;
   writeRemoteConfig(text: string): Promise<RemoteConfig>;
+  // The per-agent endpoint registry (`agents.toml`) as raw text for the editor.
+  // `registryConfig` is seeded from the adopted legacy `remote.toml` when the
+  // file is absent (first save migrates); `writeRegistryConfig` validates the
+  // structure (unique names, ≤1 management) and rejects without writing on error.
+  registryConfig(): Promise<RegistryConfig>;
+  writeRegistryConfig(text: string): Promise<RegistryConfig>;
   // Dial / tear down a connection. `agent` names a registry endpoint (an agent
   // console); omitted ⇒ the management endpoint (legacy single-console path).
   remoteConnect(agent?: string): Promise<void>;
@@ -77,6 +87,14 @@ export class MockSource implements Source {
   }
   async writeRemoteConfig(text: string): Promise<RemoteConfig> {
     return { ...structuredClone(FIXTURE_REMOTE_CONFIG), text };
+  }
+  async registryConfig(): Promise<RegistryConfig> {
+    return structuredClone(FIXTURE_REGISTRY_CONFIG);
+  }
+  // Browser preview: no core, so "saving" echoes the text back — no persistence
+  // and no server-side structural validation.
+  async writeRegistryConfig(text: string): Promise<RegistryConfig> {
+    return { ...structuredClone(FIXTURE_REGISTRY_CONFIG), text };
   }
   // Browser preview: no core to dial, so activate/deactivate are no-ops.
   async remoteConnect(): Promise<void> {}
@@ -139,6 +157,12 @@ export class TauriSource implements Source {
   }
   async writeRemoteConfig(text: string): Promise<RemoteConfig> {
     return this.invoke()<RemoteConfig>("remote_config_write", { text });
+  }
+  async registryConfig(): Promise<RegistryConfig> {
+    return this.invoke()<RegistryConfig>("registry_config");
+  }
+  async writeRegistryConfig(text: string): Promise<RegistryConfig> {
+    return this.invoke()<RegistryConfig>("registry_config_write", { text });
   }
   async remoteConnect(agent?: string): Promise<void> {
     await this.invoke()<unknown>("remote_connect", { agent });
