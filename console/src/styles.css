@@ -686,8 +686,19 @@ button.act:disabled {
   border-radius: 10px 10px 2px 10px;
   padding: 6px 10px;
   max-width: 85%;
-  white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+/* Markdown inside the blue user bubble: code/links need their own contrast
+   (the shared .chat-md rules assume the dark agent bubble). */
+.chat-user .chat-md pre,
+.chat-user .chat-md :not(pre) > code {
+  background: rgba(0, 0, 0, 0.28);
+  border-color: rgba(255, 255, 255, 0.25);
+  color: #fff;
+}
+.chat-user .chat-md a {
+  color: #fff;
+  text-decoration: underline;
 }
 .chat-agent .chat-body {
   background: var(--bg);

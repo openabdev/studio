@@ -71,7 +71,18 @@ describe("transcript reducers", () => {
 });
 
 describe("turnHtml / transcriptHtml", () => {
-  it("escapes user text (never markdown, never raw HTML)", () => {
+  it("renders the user's own prompt as markdown", () => {
+    const html = turnHtml(
+      { id: 1, role: "user", text: "**hi** and `x`", streaming: false },
+      mdToHtml,
+    );
+    expect(html).toContain("chat-user");
+    expect(html).toContain("chat-md");
+    expect(html).toContain("<strong>hi</strong>");
+    expect(html).toContain("<code>x</code>");
+  });
+
+  it("still escapes raw HTML in user text (markdown-it html:false)", () => {
     const html = turnHtml(
       { id: 1, role: "user", text: "<b>hi</b> & bye", streaming: false },
       mdToHtml,
