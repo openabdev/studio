@@ -4,17 +4,25 @@ import {
   identityHtml,
   fleetConfigHtml,
   remoteHtml,
+  agentListHtml,
+  agentConsoleHeaderHtml,
   filterByMembers,
   serviceName,
   deploymentKey,
 } from "./render";
 import {
+  FIXTURE_AGENTS,
   FIXTURE_DEPLOYMENTS,
   FIXTURE_FLEET_CONFIG,
   FIXTURE_REMOTE_CONFIG,
   FIXTURE_RUNTIME_CONTEXT,
 } from "./fixtures";
-import { AGENT_STATES, type Deployment, type RuntimeContext } from "./types";
+import {
+  AGENT_STATES,
+  type AgentEndpointView,
+  type Deployment,
+  type RuntimeContext,
+} from "./types";
 
 function ctx(partial: Partial<RuntimeContext>): RuntimeContext {
   return { ...structuredClone(FIXTURE_RUNTIME_CONTEXT), ...partial };
@@ -363,5 +371,88 @@ describe("filterByMembers", () => {
 
   it("derives the ECS service name as oab-{namespace}-{name}", () => {
     expect(serviceName({ ...FIXTURE_DEPLOYMENTS[0] })).toBe("oab-prod-orca");
+  });
+});
+
+describe("agentListHtml", () => {
+  function ep(partial: Partial<AgentEndpointView>): AgentEndpointView {
+    return {
+      name: "x",
+      url: "wss://x.example/acp",
+      cwd: "/home/node",
+      management: false,
+      configured: true,
+      status: "disconnected",
+      ...partial,
+    };
+  }
+
+  it("renders an empty-state pointing at agents.toml when the registry is empty", () => {
+    const html = agentListHtml([], null);
+    expect(html).toContain("ag-empty");
+    expect(html).toContain("agents.toml");
+  });
+
+  it("makes an ordinary configured endpoint an openable button", () => {
+    const html = agentListHtml([ep({ name: "mira" })], null);
+    expect(html).toContain('data-agent="mira"');
+    expect(html).toContain("<button");
+    expect(html).not.toContain("disabled");
+  });
+
+  it("disables an unconfigured endpoint (no url+token to dial)", () => {
+    const html = agentListHtml([ep({ name: "falcon", configured: false, url: "" })], null);
+    expect(html).toContain('data-agent="falcon"');
+    expect(html).toContain("disabled");
+    expect(html).toContain("not configured");
+  });
+
+  it("shows the management endpoint but does not make it openable", () => {
+    const html = agentListHtml([ep({ name: "orca", management: true })], null);
+    // no data-agent hook → the delegated open handler can't fire for it
+    expect(html).not.toContain('data-agent="orca"');
+    expect(html).toContain("management");
+    expect(html).toContain("console above");
+  });
+
+  it("marks the currently open console as pressed", () => {
+    const html = agentListHtml([ep({ name: "mira" })], "mira");
+    expect(html).toContain('aria-pressed="true"');
+    expect(html).toContain("is-open");
+  });
+
+  it("renders every fixture endpoint", () => {
+    const html = agentListHtml(FIXTURE_AGENTS, null);
+    for (const a of FIXTURE_AGENTS) expect(html).toContain(a.name);
+  });
+
+  it("escapes endpoint names and urls", () => {
+    const html = agentListHtml(
+      [ep({ name: "a<b", url: "wss://x/?q=<script>" })],
+      null,
+    );
+    expect(html).not.toContain("<script>");
+    expect(html).toContain("a&lt;b");
+  });
+});
+
+describe("agentConsoleHeaderHtml", () => {
+  const orca = FIXTURE_AGENTS[0];
+
+  it("shows the endpoint's identity, dial target, and the passed live status", () => {
+    const html = agentConsoleHeaderHtml(orca, "connected");
+    expect(html).toContain(orca.name);
+    expect(html).toContain(orca.url);
+    expect(html).toContain(orca.cwd);
+    expect(html).toContain("rm-connected");
+  });
+
+  it("never leaks a token field (secrets don't cross the bridge)", () => {
+    const html = agentConsoleHeaderHtml(orca, "connected");
+    expect(html.toLowerCase()).not.toContain("token");
+  });
+
+  it("notes the read-only editor limitation until the fs/* wire lands", () => {
+    expect(agentConsoleHeaderHtml(orca, "disconnected")).toContain("Read-only");
   });
 });

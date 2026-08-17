@@ -1033,3 +1033,153 @@ button.act:disabled {
   color: var(--text);
   font: inherit;
 }
+
+/* ---- Agent consoles (ADR agent-consoles Parts B/C) ------------------------ */
+.agents-wrap {
+  margin: 0 0 12px;
+}
+.agents-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.agents-label {
+  font-weight: 600;
+  font-size: 13px;
+}
+.agents-sub {
+  font-size: 12px;
+  color: var(--muted);
+}
+.ag-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.ag-empty {
+  color: var(--muted);
+  font-size: 13px;
+  margin: 4px 0;
+}
+.ag-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  text-align: left;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  padding: 8px 10px;
+  cursor: pointer;
+}
+button.ag-row:hover {
+  border-color: var(--s-starting);
+}
+.ag-row.is-open {
+  border-color: var(--s-starting);
+  box-shadow: inset 0 0 0 1px var(--s-starting);
+}
+.ag-row:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.ag-row-mgmt {
+  cursor: default;
+  border-style: dashed;
+}
+.ag-name {
+  font-weight: 600;
+  white-space: nowrap;
+}
+.ag-url {
+  font-size: 12px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.ag-tag {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border-radius: 999px;
+  padding: 1px 7px;
+  white-space: nowrap;
+}
+.ag-mgmt {
+  background: var(--s-starting);
+  color: #fff;
+}
+.ag-hint {
+  font-size: 11px;
+  white-space: nowrap;
+}
+.agent-console {
+  margin-top: 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  padding: 10px 12px;
+}
+.ac-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.ac-title {
+  font-weight: 600;
+  font-size: 13px;
+}
+.ac-spacer {
+  flex: 1 1 auto;
+}
+.ac-close {
+  cursor: pointer;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  padding: 4px 12px;
+}
+.ac-close:hover {
+  border-color: var(--s-unhealthy);
+  color: var(--s-unhealthy);
+}
+.ac-config {
+  margin-bottom: 10px;
+}
+.ac-id {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+.ac-id .ac-name {
+  font-weight: 600;
+  font-size: 14px;
+}
+.ac-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+}
+.ac-fields .id-field {
+  font-size: 12px;
+}
+.ac-note {
+  font-size: 12px;
+  margin: 8px 0 0;
+}
+/* the agent console's chat region reuses .chat-wrap/.chat-* wholesale */
+.agent-console .chat-wrap {
+  margin: 0;
+}
