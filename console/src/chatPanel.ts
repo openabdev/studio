@@ -63,11 +63,11 @@ export interface ChatPanel {
   dispose(): void;
 }
 
-// Untrusted agent markdown → HTML: markdown-it escapes raw HTML and blocks
-// dangerous link protocols; DOMPurify is the second layer (ADR: markdown-it +
-// DOMPurify). Only the agent-markdown body takes this — user text and the
-// panel's own chrome are escaped/trusted in `chat.ts`.
-function renderAgentBody(text: string): string {
+// Markdown → HTML for a turn body: markdown-it (`html: false`) escapes raw HTML
+// and blocks dangerous link protocols; DOMPurify is the second layer (ADR:
+// markdown-it + DOMPurify). Both user prompts and finalized agent turns take
+// this (see `chat.ts`); only a still-streaming agent turn is raw.
+function renderMarkdownBody(text: string): string {
   return DOMPurify.sanitize(mdToHtml(text));
 }
 
@@ -97,7 +97,7 @@ export function createChatPanel(
   }
 
   function render(): void {
-    els.log.innerHTML = transcriptHtml(turns, renderAgentBody);
+    els.log.innerHTML = transcriptHtml(turns, renderMarkdownBody);
     els.log.scrollTop = els.log.scrollHeight; // keep the latest turn in view
   }
 

@@ -44,17 +44,19 @@ function escapeHtml(s: string): string {
     .replace(/"/g, "&quot;");
 }
 
-// A finalized agent turn's body is untrusted markdown → HTML. `main.ts` injects
+// A finalized turn's body is rendered markdown → HTML. `chatPanel.ts` injects
 // `(t) => DOMPurify.sanitize(mdToHtml(t))`; tests use the `mdToHtml` default so
-// they need no DOM. Only the agent-markdown path takes this — user text and the
-// panel's own chrome are always escaped/trusted, so they are never sanitized.
-export type RenderAgent = (text: string) => string;
+// they need no DOM. **Both** the operator's prompts and finalized agent turns
+// take this path — markdown-it (`html: false`) escapes any raw HTML and DOMPurify
+// is the second layer, so rendering the operator's own markdown is safe. Only a
+// still-streaming agent turn stays raw (partial markdown mustn't half-render).
+export type RenderMarkdown = (text: string) => string;
 
-export function turnHtml(turn: ChatTurn, renderAgent: RenderAgent): string {
+export function turnHtml(turn: ChatTurn, renderMd: RenderMarkdown): string {
   if (turn.role === "user") {
     return (
       `<div class="chat-turn chat-user">` +
-      `<div class="chat-body">${escapeHtml(turn.text)}</div>` +
+      `<div class="chat-body chat-md">${renderMd(turn.text)}</div>` +
       `</div>`
     );
   }
@@ -74,7 +76,7 @@ export function turnHtml(turn: ChatTurn, renderAgent: RenderAgent): string {
       : "";
   return (
     `<div class="chat-turn chat-agent" data-id="${turn.id}">` +
-    `<div class="chat-body chat-md">${renderAgent(turn.text)}</div>` +
+    `<div class="chat-body chat-md">${renderMd(turn.text)}</div>` +
     `<div class="chat-tools">` +
     `<button class="chat-copy" type="button" data-copy="${turn.id}">Copy</button>${reason}` +
     `</div>` +
@@ -82,16 +84,16 @@ export function turnHtml(turn: ChatTurn, renderAgent: RenderAgent): string {
   );
 }
 
-// The whole transcript. `renderAgent` defaults to `mdToHtml` so tests exercise the
-// real markdown path without a DOM; `main.ts` passes the sanitizing wrapper.
+// The whole transcript. `renderMd` defaults to `mdToHtml` so tests exercise the
+// real markdown path without a DOM; `chatPanel.ts` passes the sanitizing wrapper.
 export function transcriptHtml(
   turns: ChatTurn[],
-  renderAgent: RenderAgent = mdToHtml,
+  renderMd: RenderMarkdown = mdToHtml,
 ): string {
   if (turns.length === 0) {
     return `<p class="chat-empty">No messages yet — send a prompt to the connected agent.</p>`;
   }
-  return turns.map((t) => turnHtml(t, renderAgent)).join("");
+  return turns.map((t) => turnHtml(t, renderMd)).join("");
 }
 
 // ---- transcript reducers ----------------------------------------------------
