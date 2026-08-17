@@ -10,15 +10,8 @@ import {
   deploymentKey,
 } from "./render";
 import type { Deployment, FleetConfig, RemoteConfig } from "./types";
-import {
-  transcriptHtml,
-  mdToHtml,
-  appendUser,
-  appendChunk,
-  endTurn,
-  type ChatTurn,
-} from "./chat";
-import DOMPurify from "dompurify";
+import { createChatPanel, type ChatPanel } from "./chatPanel";
+import { initAgentConsole, type AgentConsole } from "./agentConsole";
 import { createPane, bindBackend, type Level } from "./log";
 import { EditorView, basicSetup } from "codemirror";
 import { EditorState } from "@codemirror/state";
@@ -39,6 +32,7 @@ let activeCluster = DEFAULT_CLUSTER;
 let activeMembers: string[] = [];
 let fleetConfig: FleetConfig | null = null;
 let remoteConfig: RemoteConfig | null = null;
+let agentConsole: AgentConsole | null = null;
 
 const roster = document.getElementById("roster");
 const identityEl = document.getElementById("identity");
@@ -362,187 +356,83 @@ if (remoteEl) {
   });
 }
 
-// ---- chat panel (Part C) -----------------------------------------------------
-// The backend serves ONE turn at a time over the live `/acp` session (Part B):
-// `agent_prompt` sends a turn, and the reply streams back as `agent-update`
-// events (`chunk` → `turn_end`). `turnActive` gates sends; a prompt typed
-// mid-turn is queued and `flushQueue` releases the next only once the current
-// turn ends (the katashiro turn model). This UI-level gate means two turns never
-// overlap — so the backend's in-flight guard is a safety net, not the norm.
-let chatTurns: ChatTurn[] = [];
-let turnActive = false;
-const promptQueue: string[] = [];
-let chatSeq = 0;
-let remoteConnected = false;
+// ---- chat panels (Part C, reusable primitive) --------------------------------
+// The chat panel is one component (`chatPanel.ts`) instantiated per endpoint. The
+// management console mounts one against the management binding; each agent
+// console mounts one against its agent (`agentConsole.ts`). This module owns the
+// single `agent-update` / `remote-status` subscription and routes each event to
+// the matching panel by endpoint name — the backend tags every event with the
+// agent it belongs to, so N panels share one listener.
+const chatPanels = new Map<string, ChatPanel>();
 
-// True in the browser build (no Tauri shell): there is no live agent, so we drive
-// a canned reply locally to keep the panel demonstrable.
+// True in the browser build (no Tauri shell): there is no live agent, so panels
+// drive a canned reply locally to stay demonstrable.
 function isMock(): boolean {
   return tauriInvoke() === undefined;
 }
 
-// Chat is usable once the remote connection is live (or always, in the mock).
-function chatReady(): boolean {
-  return isMock() || remoteConnected;
-}
+// The management console's chat panel + the endpoint name its events carry. The
+// panel is built at boot; its name is learned from the registry (the
+// `management: true` entry) so events tagged with that name route here. `agent:
+// undefined` ⇒ the legacy single-console commands (no `agent` arg).
+let managementPanel: ChatPanel | null = null;
+let managementName: string | null = null;
 
-// Untrusted agent markdown → HTML: markdown-it escapes raw HTML and blocks
-// dangerous link protocols; DOMPurify is the second layer (ADR: markdown-it +
-// DOMPurify). Only the agent-markdown body takes this — user text and the
-// panel's own chrome are escaped/trusted in `chat.ts`.
-function renderAgentBody(text: string): string {
-  return DOMPurify.sanitize(mdToHtml(text));
-}
-
-function renderChat(): void {
-  if (!chatLogEl) return;
-  chatLogEl.innerHTML = transcriptHtml(chatTurns, renderAgentBody);
-  chatLogEl.scrollTop = chatLogEl.scrollHeight; // keep the latest turn in view
-}
-
-function updateChatControls(): void {
-  const ready = chatReady();
-  if (chatSendEl) chatSendEl.disabled = !ready;
-  if (chatTextEl) chatTextEl.disabled = !ready;
-  if (chatStopEl) chatStopEl.hidden = !turnActive;
-  if (chatConnEl) {
-    const label = !ready
-      ? "activate the remote connection to chat"
-      : turnActive
-        ? "agent is responding…"
-        : "connected";
-    chatConnEl.textContent = label;
-    chatConnEl.classList.toggle("is-connected", ready && !turnActive);
-    chatConnEl.classList.toggle("is-error", false);
-  }
-}
-
-// Enqueue a prompt and try to release it. `flushQueue` is the single choke point
-// that enforces one-turn-at-a-time; typing mid-turn just grows the queue.
-function submitPrompt(text: string): void {
-  const trimmed = text.trim();
-  if (!trimmed) return;
-  promptQueue.push(trimmed);
-  void flushQueue();
-}
-
-async function flushQueue(): Promise<void> {
-  if (turnActive) return; // a turn is in flight — wait for its `turn_end`
-  const next = promptQueue.shift();
-  if (next === undefined) return;
-  turnActive = true;
-  chatSeq += 1;
-  chatTurns = appendUser(chatTurns, chatSeq, next);
-  renderChat();
-  updateChatControls();
-  try {
-    await source.agentPrompt(next);
-    if (isMock()) mockReply(next); // browser preview: synthesize the reply
-  } catch (e) {
-    // Send failed (not connected / socket just closed): don't leave the panel
-    // hanging on a spinner — close the turn with an error, surface it, release
-    // the queue so a later (connected) prompt can still go.
-    turnActive = false;
-    note("error", `chat: ${errText(e)}`);
-    chatSeq += 1;
-    chatTurns = endTurn(chatTurns, chatSeq, "error");
-    renderChat();
-    updateChatControls();
-    void flushQueue();
-  }
-}
-
-// A streamed `chunk`: open the agent turn on the first one (stable id for its
-// copy button), append thereafter.
-function onAgentChunk(text: string): void {
-  const last = chatTurns[chatTurns.length - 1];
-  const open = last?.role === "agent" && last.streaming;
-  const id = open ? (last as ChatTurn).id : (chatSeq += 1);
-  chatTurns = appendChunk(chatTurns, id, text);
-  renderChat();
-}
-
-// `turn_end`: finalize the open agent turn (markdown render), free the gate, and
-// release any queued prompt.
-function onAgentTurnEnd(stopReason: string): void {
-  chatSeq += 1;
-  chatTurns = endTurn(chatTurns, chatSeq, stopReason);
-  turnActive = false;
-  renderChat();
-  updateChatControls();
-  void flushQueue();
-}
-
-async function stopTurn(): Promise<void> {
-  if (!turnActive) return;
-  try {
-    await source.agentCancel();
-    note("info", "chat: cancel sent");
-  } catch (e) {
-    note("error", `chat: cancel failed — ${errText(e)}`);
-  }
-  // The backend still emits a `turn_end` (stopReason `cancelled`), which clears
-  // `turnActive` and flushes the queue — no local state change needed here.
-}
-
-// Browser preview only: stream a short canned markdown reply so the chunk →
-// turn_end → markdown path is visible without a live gateway.
-function mockReply(prompt: string): void {
-  const parts = [
-    `You said: **${prompt}**.\n\n`,
-    "Here's what the panel renders:\n\n",
-    "- streamed *chunks*\n- then final `markdown`\n\n",
-    "```\ncode stays monospaced\n```",
-  ];
-  let i = 0;
-  const step = (): void => {
-    if (i < parts.length) {
-      onAgentChunk(parts[i]);
-      i += 1;
-      window.setTimeout(step, 130);
-    } else {
-      onAgentTurnEnd("end_turn");
-    }
-  };
-  window.setTimeout(step, 150);
-}
-
-chatFormEl?.addEventListener("submit", (ev) => {
-  ev.preventDefault();
-  if (!chatTextEl) return;
-  submitPrompt(chatTextEl.value);
-  chatTextEl.value = "";
-});
-// Enter sends; Shift+Enter inserts a newline.
-chatTextEl?.addEventListener("keydown", (ev) => {
-  if (ev.key === "Enter" && !ev.shiftKey) {
-    ev.preventDefault();
-    chatFormEl?.requestSubmit();
-  }
-});
-chatStopEl?.addEventListener("click", () => void stopTurn());
-// Delegated copy: copy the raw turn text (not the rendered HTML).
-chatLogEl?.addEventListener("click", (ev) => {
-  const btn = (ev.target as HTMLElement).closest<HTMLButtonElement>(
-    "button.chat-copy",
-  );
-  if (!btn) return;
-  const turn = chatTurns.find((t) => t.id === Number(btn.dataset.copy));
-  if (!turn) return;
-  void navigator.clipboard?.writeText(turn.text).then(
-    () => {
-      btn.textContent = "Copied";
-      window.setTimeout(() => {
-        if (btn.isConnected) btn.textContent = "Copy";
-      }, 1500);
+function buildManagementPanel(): void {
+  if (
+    !chatLogEl ||
+    !chatFormEl ||
+    !chatTextEl ||
+    !chatSendEl ||
+    !chatStopEl ||
+    !chatConnEl
+  )
+    return;
+  managementPanel = createChatPanel(
+    {
+      log: chatLogEl,
+      form: chatFormEl,
+      text: chatTextEl,
+      send: chatSendEl,
+      stop: chatStopEl,
+      conn: chatConnEl,
     },
-    () => note("error", "chat: copy failed"),
+    { source, mock: isMock(), note },
   );
-});
+}
 
-// Subscribe to the backend's streamed chat updates (desktop only). `chunk` and
-// `turn_end` drive the transcript; the browser build has no bridge and uses the
-// mock reply path instead.
+// Key the management panel under its endpoint name (from the registry) so its
+// `agent-update` / `remote-status` events route to it. The legacy `remote.toml`
+// setup is adopted as a `management` entry named "management".
+async function registerManagementPanel(): Promise<void> {
+  if (!managementPanel) return;
+  try {
+    const agents = await source.remoteAgents();
+    managementName = agents.find((a) => a.management)?.name ?? "management";
+  } catch {
+    managementName = "management";
+  }
+  chatPanels.set(managementName, managementPanel);
+}
+
+// Route a backend event to the panel that owns the endpoint. Unknown names (a
+// console that was closed, or an agent with no open panel) are dropped.
+function routeChunk(agent: string, text: string): void {
+  chatPanels.get(agent)?.onChunk(text);
+}
+function routeTurnEnd(agent: string, stopReason: string): void {
+  chatPanels.get(agent)?.onTurnEnd(stopReason);
+}
+function routeStatus(agent: string, status: string): void {
+  chatPanels.get(agent)?.setConnected(status === "connected");
+  // Also reflect it on the agent console's read-only status badge (no-op when
+  // the event isn't for the currently open console).
+  agentConsole?.onStatus(agent, status);
+}
+
+// Subscribe to the backend's streamed chat updates (desktop only). Each event is
+// tagged with the `agent` endpoint it belongs to; route it to that panel. The
+// browser build has no bridge and drives the mock reply path per panel instead.
 async function bindAgentUpdates(): Promise<void> {
   const listen = (
     globalThis as {
@@ -557,14 +447,17 @@ async function bindAgentUpdates(): Promise<void> {
     }
   ).__TAURI__?.event?.listen;
   if (!listen) return;
-  await listen<{ kind?: string; text?: string; stopReason?: string }>(
-    "agent-update",
-    (e) => {
-      const p = e.payload;
-      if (p.kind === "chunk") onAgentChunk(p.text ?? "");
-      else if (p.kind === "turn_end") onAgentTurnEnd(p.stopReason ?? "end_turn");
-    },
-  );
+  await listen<{
+    agent?: string;
+    kind?: string;
+    text?: string;
+    stopReason?: string;
+  }>("agent-update", (e) => {
+    const p = e.payload;
+    const agent = p.agent ?? managementName ?? "management";
+    if (p.kind === "chunk") routeChunk(agent, p.text ?? "");
+    else if (p.kind === "turn_end") routeTurnEnd(agent, p.stopReason ?? "end_turn");
+  });
 }
 
 // ---- start / stop (ADR-2 write model: stop = scale→0, start = scale→1) -------
@@ -725,17 +618,18 @@ async function bindRemoteStatus(): Promise<void> {
   const listen = (globalThis as { __TAURI__?: EventGlobal }).__TAURI__?.event
     ?.listen;
   if (!listen) return;
-  await listen<{ status: string }>("remote-status", (e) => {
+  await listen<{ agent?: string; status: string }>("remote-status", (e) => {
     const status = e.payload?.status ?? "disconnected";
-    if (remoteConfig) {
+    const agent = e.payload?.agent ?? managementName ?? "management";
+    // The legacy remote panel shows only the management connection's status.
+    if (agent === managementName && remoteConfig) {
       remoteConfig = { ...remoteConfig, status };
       if (remoteEl) renderRemote(remoteEl, remoteConfig);
     }
-    remoteConnected = status === "connected";
-    // If the socket drops mid-turn, no `turn_end` will arrive — close the open
-    // turn so the panel doesn't hang on a spinner.
-    if (!remoteConnected && turnActive) onAgentTurnEnd(status);
-    updateChatControls();
+    // Route the live state to the owning chat panel — it re-enables its input on
+    // `connected` and, on a mid-turn drop, closes the open turn so it doesn't
+    // hang on a spinner (handled inside the panel's `setConnected`).
+    routeStatus(agent, status);
   });
 }
 
@@ -744,10 +638,21 @@ async function bindRemoteStatus(): Promise<void> {
 async function boot(): Promise<void> {
   note("info", `OAB Studio ${BUILD} (built ${__BUILD_TIME__})`);
   if (activity && mcp) await bindBackend(activity, mcp);
+  // Mount the management chat panel and learn its endpoint name before binding
+  // the event listeners, so status/chat events route to it from the first tick.
+  buildManagementPanel();
+  await registerManagementPanel();
   await bindRemoteStatus();
   await bindAgentUpdates();
-  renderChat();
-  updateChatControls();
+  // The agent-console shell: the endpoint selector + a per-agent console (dial +
+  // read-only config + chat) sharing the same event router (`chatPanels`).
+  agentConsole = initAgentConsole({
+    source,
+    mock: isMock(),
+    note,
+    panels: chatPanels,
+    managementName: () => managementName,
+  });
   if (clusterLabel) clusterLabel.textContent = activeCluster;
   note("info", `app: polling cluster "${activeCluster}" every ${POLL_MS / 1000}s`);
   setupUpdater();

@@ -1,9 +1,41 @@
 import type {
+  AgentEndpointView,
   Deployment,
   FleetConfig,
   RemoteConfig,
   RuntimeContext,
 } from "./types";
+
+// Stand-in endpoint registry so the browser build renders the agent-console
+// selector without a core. Mirrors src-tauri's `remote_agents`: one management
+// entry (backs the top-level console + reverse-MCP grant) plus ordinary agent
+// consoles. Tokens are never present — only whether each entry is configured.
+export const FIXTURE_AGENTS: AgentEndpointView[] = [
+  {
+    name: "orca",
+    url: "wss://orca-acp.example/acp",
+    cwd: "/home/node",
+    management: true,
+    configured: true,
+    status: "disconnected",
+  },
+  {
+    name: "mira",
+    url: "wss://mira-acp.example/acp",
+    cwd: "/home/node",
+    management: false,
+    configured: true,
+    status: "disconnected",
+  },
+  {
+    name: "falcon",
+    url: "",
+    cwd: "/home/node",
+    management: false,
+    configured: false,
+    status: "disconnected",
+  },
+];
 
 // Stand-in remote-connection view so the browser build renders the remote panel
 // without a core. A configured-but-disconnected example — the shape the panel

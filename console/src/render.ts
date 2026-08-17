@@ -1,4 +1,5 @@
 import type {
+  AgentEndpointView,
   AgentState,
   Deployment,
   FleetConfig,
@@ -303,4 +304,92 @@ export function remoteHtml(view: RemoteConfig | null): string {
 
 export function renderRemote(el: HTMLElement, view: RemoteConfig | null): void {
   el.innerHTML = remoteHtml(view);
+}
+
+// ---- Agent consoles (ADR agent-consoles, Parts B/C) --------------------------
+// The per-agent endpoint registry: a selector of every reachable agent + the
+// open console's read-only config header. The chat region is the reusable
+// `chatPanel` primitive (mounted imperatively in `agentConsole.ts`); the file
+// editor is a later slice, so config is read-only here.
+
+// A connection-status pill, reusing the remote panel's status classes so the two
+// surfaces read the same. `error: …` collapses to the error class.
+function endpointStatusBadge(status: string): string {
+  const s = status || "disconnected";
+  const key = s.startsWith("error") ? "error" : s;
+  const cls = REMOTE_STATUS_CLASS[key] ?? "rm-disconnected";
+  return `<span class="rm-status ${cls}">${escapeHtml(s)}</span>`;
+}
+
+// One selector row per endpoint. The management endpoint is shown but not
+// openable as an agent console — it has its own top-level console (with chat +
+// fleet control); a duplicate per-agent console for it is redundant. Ordinary
+// endpoints open on click (`data-agent`); an unconfigured one (no url+token) is
+// disabled. `openName` marks the currently open console.
+function agentRow(a: AgentEndpointView, openName: string | null): string {
+  const name = escapeHtml(a.name);
+  const url = a.url
+    ? `<code class="ag-url">${escapeHtml(a.url)}</code>`
+    : `<span class="muted">not configured</span>`;
+  const tags = a.management
+    ? `<span class="ag-tag ag-mgmt">management</span>`
+    : "";
+  if (a.management) {
+    return `<div class="ag-row ag-row-mgmt" aria-disabled="true">
+        <span class="ag-name">${name}</span>${tags}
+        ${url}
+        ${endpointStatusBadge(a.status)}
+        <span class="ag-hint muted">console above</span>
+      </div>`;
+  }
+  const open = a.name === openName;
+  const cls = open ? "ag-row is-open" : "ag-row";
+  const disabled = a.configured ? "" : " disabled";
+  return `<button class="${cls}" type="button" data-agent="${name}" aria-pressed="${open}"${disabled}>
+      <span class="ag-name">${name}</span>${tags}
+      ${url}
+      ${endpointStatusBadge(a.status)}
+    </button>`;
+}
+
+// Pure: the endpoint registry -> the selector HTML. An empty registry renders a
+// hint pointing at the config file (there is no in-app registry editor yet — a
+// later slice). `openName` is the console currently open (or `null`).
+export function agentListHtml(
+  agents: AgentEndpointView[],
+  openName: string | null,
+): string {
+  if (agents.length === 0) {
+    return `<p class="ag-empty">No agent endpoints configured — add <code>[[agent]]</code> entries to <code>agents.toml</code> to reach more agents.</p>`;
+  }
+  return `<div class="ag-list">${agents
+    .map((a) => agentRow(a, openName))
+    .join("")}</div>`;
+}
+
+export function renderAgentList(
+  el: HTMLElement,
+  agents: AgentEndpointView[],
+  openName: string | null,
+): void {
+  el.innerHTML = agentListHtml(agents, openName);
+}
+
+// Pure: the open console's read-only config header — identity + dial target +
+// live status. The bearer token is never here (secrets don't cross the bridge).
+// `status` is passed separately so a live `remote-status` update can refresh just
+// the badge without re-fetching the whole registry.
+export function agentConsoleHeaderHtml(
+  a: AgentEndpointView,
+  status: string,
+): string {
+  return `<div class="ac-id">
+      <span class="ac-name">${escapeHtml(a.name)}</span>
+      ${endpointStatusBadge(status)}
+    </div>
+    <div class="ac-fields">
+      ${field("url", a.url || "—")}
+      ${field("cwd", a.cwd || "—")}
+    </div>
+    <p class="ac-note muted">Read-only — the remote file editor (view / edit / apply the agent's files) arrives once the <code>fs/*</code> wire lands.</p>`;
 }

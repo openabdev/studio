@@ -84,6 +84,22 @@ export interface RemoteConfig {
   status: string;
 }
 
+// One entry of the per-agent endpoint registry — mirrors src-tauri's
+// `remote_agents` command (ADR agent-consoles, Parts B/C). It is the view an
+// agent-console selector renders: an identity (`name`), the dial target
+// (`url`/`cwd`), whether this entry backs the management console (`management`),
+// whether it has a usable url+token (`configured`), and the live per-endpoint
+// connection `status` (`disconnected` | `connecting` | `connected` | `error: …`).
+// The bearer `token` is deliberately absent — secrets never cross this bridge.
+export interface AgentEndpointView {
+  name: string;
+  url: string;
+  cwd: string;
+  management: boolean;
+  configured: boolean;
+  status: string;
+}
+
 // The effective runtime identity/context the control plane resolved for a
 // cluster — mirrors oab-mcp's `runtime_context` tool (ADR #19). `identity_matches`
 // is `null` when the binding declares no `expected_principal`.
