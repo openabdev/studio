@@ -3,6 +3,9 @@ import type {
   Deployment,
   FleetConfig,
   RegistryConfig,
+  FsCapability,
+  FsFile,
+  FsListing,
   RemoteConfig,
   RuntimeContext,
 } from "./types";
@@ -11,6 +14,9 @@ import {
   FIXTURE_DEPLOYMENTS,
   FIXTURE_FLEET_CONFIG,
   FIXTURE_REGISTRY_CONFIG,
+  FIXTURE_FS_CAPABILITY,
+  FIXTURE_FS_DIRS,
+  FIXTURE_FS_FILES,
   FIXTURE_REMOTE_CONFIG,
   FIXTURE_RUNTIME_CONTEXT,
 } from "./fixtures";
@@ -61,6 +67,16 @@ export interface Source {
   // resolve immediately.
   agentPrompt(text: string, agent?: string): Promise<void>;
   agentCancel(agent?: string): Promise<void>;
+  // The remote file editor's read path (Part D). fs is an MCP files server the
+  // target agent exposes, reached Studio-brokered via the `oab` reverse-MCP tool
+  // (not a bespoke `fs/*` method set on `/acp` — see the ADR's resolved OQ#1).
+  // `fsCapability` reports whether an endpoint serves fs at all (unsupported
+  // today → the browser shows a "pending the fs MCP files server" placeholder).
+  // `fsList`/`fsRead` browse/read the agent's files. `agent` names the registry
+  // endpoint.
+  fsCapability(agent?: string): Promise<FsCapability>;
+  fsList(path: string, agent?: string): Promise<FsListing>;
+  fsRead(path: string, agent?: string): Promise<FsFile>;
 }
 
 // Fixture-backed source for the standalone / browser build — no core required.
@@ -106,6 +122,21 @@ export class MockSource implements Source {
   // and drives a canned reply locally so the panel is still demonstrable.
   async agentPrompt(): Promise<void> {}
   async agentCancel(): Promise<void> {}
+  // Browser preview: a small fixture filesystem so the read-only file browser is
+  // demonstrable without a gateway.
+  async fsCapability(): Promise<FsCapability> {
+    return structuredClone(FIXTURE_FS_CAPABILITY);
+  }
+  async fsList(path: string): Promise<FsListing> {
+    const entries = FIXTURE_FS_DIRS[path];
+    if (!entries) throw new Error(`no such directory: ${path}`);
+    return { path, entries: structuredClone(entries) };
+  }
+  async fsRead(path: string): Promise<FsFile> {
+    const text = FIXTURE_FS_FILES[path];
+    if (text === undefined) throw new Error(`no such file: ${path}`);
+    return { path, text, truncated: false, size: text.length };
+  }
 }
 
 // Minimal shape of the Tauri global bridge (v2, `withGlobalTauri`). Accessed via
@@ -181,6 +212,22 @@ export class TauriSource implements Source {
   }
   async agentCancel(agent?: string): Promise<void> {
     await this.invoke()<unknown>("agent_cancel", { agent });
+  }
+  // No fs MCP files server on any endpoint yet (Part D): the server + the `oab`
+  // fs-relay tool are upstream (openab), the same bucket as token streaming /
+  // `tool_call`. So there are no fs Tauri commands this slice — the desktop
+  // build honestly reports the editor as unsupported and the browser shows the
+  // "pending the fs MCP files server" placeholder. The live capability probe +
+  // `fs_list`/`fs_read` commands (MCP-backed read, then write/apply) land in
+  // slice 4, when the fs MCP server + `oab` relay exist.
+  async fsCapability(): Promise<FsCapability> {
+    return { supported: false, roots: [], writable: false };
+  }
+  async fsList(): Promise<FsListing> {
+    throw new Error("remote file editor unavailable — pending the fs MCP files server");
+  }
+  async fsRead(): Promise<FsFile> {
+    throw new Error("remote file editor unavailable — pending the fs MCP files server");
   }
 }
 

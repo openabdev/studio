@@ -3,9 +3,47 @@ import type {
   Deployment,
   FleetConfig,
   RegistryConfig,
+  FsCapability,
+  FsEntry,
   RemoteConfig,
   RuntimeContext,
 } from "./types";
+
+// Stand-in remote filesystem so the browser build can demonstrate the read-only
+// file browser without a live gateway (the desktop build shows "pending the fs
+// MCP files server" because no real endpoint serves fs yet). A small tree under
+// an editable root, read-only.
+export const FIXTURE_FS_CAPABILITY: FsCapability = {
+  supported: true,
+  roots: ["/home/node"],
+  writable: false,
+};
+
+// Directory listings keyed by path (what `fsList` resolves).
+export const FIXTURE_FS_DIRS: Record<string, FsEntry[]> = {
+  "/home/node": [
+    { name: "agent_profiling", path: "/home/node/agent_profiling", kind: "dir" },
+    { name: "CLAUDE.md", path: "/home/node/CLAUDE.md", kind: "file", size: 812 },
+    { name: "notes.md", path: "/home/node/notes.md", kind: "file", size: 140 },
+  ],
+  "/home/node/agent_profiling": [
+    {
+      name: "identity.md",
+      path: "/home/node/agent_profiling/identity.md",
+      kind: "file",
+      size: 512,
+    },
+  ],
+};
+
+// File bodies keyed by path (what `fsRead` resolves).
+export const FIXTURE_FS_FILES: Record<string, string> = {
+  "/home/node/CLAUDE.md":
+    "# Orca\n\nECS-resident agent. This is a fixture rendering in the browser\nbuild's read-only file browser.\n",
+  "/home/node/notes.md": "- push early\n- state is ephemeral on Fargate Spot\n",
+  "/home/node/agent_profiling/identity.md":
+    "# Identity\n\n- **Name**: Orca\n- **Codename**: ecs-claude\n",
+};
 
 // Stand-in endpoint registry so the browser build renders the agent-console
 // selector without a core. Mirrors src-tauri's `remote_agents`: one management
