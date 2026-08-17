@@ -3,6 +3,7 @@ import type {
   AgentState,
   Deployment,
   FleetConfig,
+  FsListing,
   RemoteConfig,
   RuntimeContext,
 } from "./types";
@@ -391,5 +392,83 @@ export function agentConsoleHeaderHtml(
       ${field("url", a.url || "—")}
       ${field("cwd", a.cwd || "—")}
     </div>
-    <p class="ac-note muted">Read-only — the remote file editor (view / edit / apply the agent's files) arrives once the <code>fs/*</code> wire lands.</p>`;
+    <p class="ac-note muted">Read-only — the remote file editor (view / edit / apply the agent's files) arrives once the fs MCP files server lands.</p>`;
+}
+
+// ---- Remote file browser (ADR agent-consoles Part D, read path) --------------
+// A directory listing over the agent's filesystem: dirs first, then files, each
+// a click target the controller (`fileBrowser.ts`) navigates or opens. Pure so
+// the sort/labels/escaping are unit-testable without a DOM. The read-only viewer
+// (CodeMirror) is imperative in the controller. The fs MCP files server (+ `oab`
+// relay) is upstream and absent today, so on real endpoints this is gated behind
+// `fsUnavailableHtml`.
+
+const FS_ICON: Record<string, string> = {
+  dir: "📁",
+  file: "📄",
+  symlink: "🔗",
+  other: "•",
+};
+
+// Human-readable byte size for the file rows (kept tiny; no external dep).
+function fsSize(bytes: number | undefined): string {
+  if (bytes === undefined) return "";
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+export interface FsListOptions {
+  // The file currently open in the viewer (marked in the list).
+  selectedPath?: string | null;
+  // Show an "up one level" affordance (false at an editable root's top).
+  canGoUp?: boolean;
+}
+
+// Pure: a directory listing -> the browser HTML. Directories sort before files,
+// each alphabetically; the open file is marked. `data-fs-dir` / `data-fs-file` /
+// `data-fs-up` are the hooks the controller's delegated handler navigates by.
+export function fsListingHtml(
+  listing: FsListing,
+  opts: FsListOptions = {},
+): string {
+  const dirs = listing.entries
+    .filter((e) => e.kind === "dir")
+    .sort((a, b) => a.name.localeCompare(b.name));
+  const files = listing.entries
+    .filter((e) => e.kind !== "dir")
+    .sort((a, b) => a.name.localeCompare(b.name));
+  const up = opts.canGoUp
+    ? `<button class="fs-row fs-up" type="button" data-fs-up><span class="fs-ic">↰</span><span class="fs-name">..</span></button>`
+    : "";
+  const rowFor = (
+    e: FsListing["entries"][number],
+  ): string => {
+    const isDir = e.kind === "dir";
+    const attr = isDir
+      ? `data-fs-dir="${escapeHtml(e.path)}"`
+      : `data-fs-file="${escapeHtml(e.path)}"`;
+    const open = !isDir && e.path === opts.selectedPath ? " is-open" : "";
+    const size = isDir
+      ? ""
+      : `<span class="fs-size muted">${escapeHtml(fsSize(e.size))}</span>`;
+    return `<button class="fs-row${open}" type="button" ${attr}>
+        <span class="fs-ic">${FS_ICON[e.kind] ?? FS_ICON.other}</span>
+        <span class="fs-name">${escapeHtml(e.name)}</span>
+        ${size}
+      </button>`;
+  };
+  const body =
+    listing.entries.length === 0 && !opts.canGoUp
+      ? `<p class="fs-empty muted">empty directory</p>`
+      : up + dirs.map(rowFor).join("") + files.map(rowFor).join("");
+  return `<div class="fs-crumb"><code>${escapeHtml(listing.path)}</code></div>
+    <div class="fs-list">${body}</div>`;
+}
+
+// Pure: the placeholder shown when an endpoint has no fs capability (every
+// endpoint today) or a browse/read call fails. Keeps the read-only, honest
+// "pending the fs MCP files server" state in one place.
+export function fsUnavailableHtml(reason: string): string {
+  return `<p class="fs-unavailable muted">${escapeHtml(reason)}</p>`;
 }

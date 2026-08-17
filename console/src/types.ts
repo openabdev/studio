@@ -109,6 +109,47 @@ export interface AgentEndpointView {
   status: string;
 }
 
+// The remote file editor's read-path view-model (ADR agent-consoles Part D).
+// fs is an MCP files server the target agent exposes, reached Studio-brokered
+// via the `oab` reverse-MCP tool (ADR resolved OQ#1 — not a bespoke `fs/*` wire
+// on `/acp`). The server + relay are upstream (openab) and do not exist yet;
+// these are the shapes the UI is built against so it is ready when they land.
+// Tokens/secrets never appear here — this is filesystem content, gated at the
+// fs server's tool level by the agent's declared roots.
+export type FsKind = "file" | "dir" | "symlink" | "other";
+
+export interface FsEntry {
+  name: string;
+  path: string;
+  kind: FsKind;
+  size?: number;
+}
+
+// A directory listing result: a directory and its entries.
+export interface FsListing {
+  path: string;
+  entries: FsEntry[];
+}
+
+// A file-read result: a file's text. `truncated` marks a body the fs server
+// clipped (large/binary file); text-only by design.
+export interface FsFile {
+  path: string;
+  text: string;
+  truncated: boolean;
+  size?: number;
+}
+
+// Whether an endpoint supports the remote file editor, and within what bounds
+// (agent-declared editable `roots`; `writable` gates the slice-4 write path).
+// `supported: false` (every endpoint today) ⇒ the console shows read-only config
+// and the file browser stays a "pending the fs MCP files server" placeholder.
+export interface FsCapability {
+  supported: boolean;
+  roots: string[];
+  writable: boolean;
+}
+
 // The effective runtime identity/context the control plane resolved for a
 // cluster — mirrors oab-mcp's `runtime_context` tool (ADR #19). `identity_matches`
 // is `null` when the binding declares no `expected_principal`.
