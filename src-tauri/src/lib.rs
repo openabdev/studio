@@ -409,6 +409,31 @@ async fn remote_config_write(
     remote_view(&remote).await
 }
 
+/// The registry file (`agents.toml`) as `{ path, text }` for the editor. When the
+/// file is absent it is seeded with the adopted legacy `remote.toml`, so opening
+/// the editor migrates a single-endpoint setup into the multi-agent format on the
+/// first save (see [`remote::read_registry_text`]). Tokens live in the file, so
+/// this text is editor-only — it is never mixed into the panel/selector views,
+/// which stay token-free.
+#[tauri::command]
+async fn registry_config() -> Result<Value, String> {
+    let text = remote::read_registry_text()?;
+    let path = remote::registry_path()
+        .map(|p| p.display().to_string())
+        .unwrap_or_default();
+    Ok(json!({ "path": path, "text": text }))
+}
+
+/// Persist the edited registry (`agents.toml`), **validating structure before it
+/// writes** — parses, unique non-empty names, ≤1 `management` — so a bad edit
+/// never lands. Returns the refreshed `{ path, text }`; the caller re-reads the
+/// remote panel + agent selector to reflect the new registry.
+#[tauri::command]
+async fn registry_config_write(text: String) -> Result<Value, String> {
+    remote::write_registry_text(&text)?;
+    registry_config().await
+}
+
 /// Activate the remote connection (the explicit "Activate" button): dial `/acp`
 /// using the saved config and publish the `oab` tools to the attached agent. The
 /// core sidecar must be started first (it is what the tunnel relays to).
@@ -550,6 +575,8 @@ pub fn run() {
             remote_config,
             remote_agents,
             remote_config_write,
+            registry_config,
+            registry_config_write,
             remote_connect,
             remote_disconnect,
             agent_prompt,
