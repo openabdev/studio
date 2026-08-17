@@ -205,6 +205,43 @@ pub fn write_config_text(text: &str) -> Result<(), String> {
     std::fs::write(&p, text).map_err(|e| format!("write {}: {e}", p.display()))
 }
 
+/// Raw text for the **registry** editor (`agents.toml`). Prefer the file; when it
+/// is absent or empty, seed the editor with the *adopted* registry — the legacy
+/// `remote.toml` rendered as `agents.toml` — so opening the editor migrates an
+/// old single-endpoint setup into the new multi-agent format on first save.
+/// Nothing configured anywhere → empty ("not configured").
+pub fn read_registry_text() -> Result<String, String> {
+    let rp = registry_path()?;
+    match std::fs::read_to_string(&rp) {
+        Ok(s) if !s.trim().is_empty() => return Ok(s),
+        Ok(_) => {} // present but empty → seed from legacy below
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(format!("read {}: {e}", rp.display())),
+    }
+    let reg = load_registry()?;
+    if reg.agents.is_empty() {
+        Ok(String::new())
+    } else {
+        Ok(reg.to_toml())
+    }
+}
+
+/// Persist the edited registry, **validating structure first** so a bad edit
+/// never lands (mirroring the fleets.toml / remote.toml editors): it must parse,
+/// every `[[agent]]` needs a unique non-empty name, and at most one may carry
+/// `management = true`. Per-endpoint url/token completeness is deliberately *not*
+/// enforced here — a half-filled entry can be saved and is only checked at dial
+/// time, exactly as [`AgentRegistry::validate`] documents.
+pub fn write_registry_text(text: &str) -> Result<(), String> {
+    let reg = AgentRegistry::parse(text).map_err(|e| format!("invalid TOML: {e}"))?;
+    reg.validate().map_err(|e| format!("invalid agents.toml: {e}"))?;
+    let p = registry_path()?;
+    if let Some(dir) = p.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+    }
+    std::fs::write(&p, text).map_err(|e| format!("write {}: {e}", p.display()))
+}
+
 fn load_config() -> Result<RemoteConfig, String> {
     RemoteConfig::parse(&read_config_text()?).map_err(|e| format!("invalid remote.toml: {e}"))
 }
@@ -870,4 +907,54 @@ where
         .send(WsMessage::Text(text))
         .await
         .map_err(|e| format!("ws write: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // `write_registry_text` validates before it ever resolves a path or touches
+    // the filesystem, so the reject paths are safe to exercise in a unit test
+    // (a green run proves a bad edit never lands).
+    #[test]
+    fn write_registry_text_rejects_bad_toml() {
+        let err = write_registry_text("this is = not valid toml [[[").unwrap_err();
+        assert!(err.contains("invalid TOML"), "got: {err}");
+    }
+
+    #[test]
+    fn write_registry_text_rejects_two_managements() {
+        let toml = r#"
+[[agent]]
+name = "a"
+url = "wss://a/acp"
+token = "t"
+management = true
+
+[[agent]]
+name = "b"
+url = "wss://b/acp"
+token = "t"
+management = true
+"#;
+        let err = write_registry_text(toml).unwrap_err();
+        assert!(err.contains("management"), "got: {err}");
+    }
+
+    #[test]
+    fn write_registry_text_rejects_duplicate_names() {
+        let toml = r#"
+[[agent]]
+name = "dup"
+url = "wss://a/acp"
+token = "t"
+
+[[agent]]
+name = "dup"
+url = "wss://b/acp"
+token = "t"
+"#;
+        let err = write_registry_text(toml).unwrap_err();
+        assert!(err.contains("unique") || err.contains("duplicate"), "got: {err}");
+    }
 }
