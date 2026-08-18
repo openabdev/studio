@@ -21,6 +21,10 @@ export interface ChatTurn {
   text: string;
   streaming: boolean;
   stopReason?: string;
+  // A user turn typed while a prior turn is still in flight: shown immediately in
+  // a "queued" state so it isn't invisible until the queue drains. Cleared when
+  // its turn actually starts.
+  pending?: boolean;
 }
 
 // Markdown → HTML for a finalized agent turn. `html: false` escapes any raw HTML
@@ -54,9 +58,12 @@ export type RenderMarkdown = (text: string) => string;
 
 export function turnHtml(turn: ChatTurn, renderMd: RenderMarkdown): string {
   if (turn.role === "user") {
+    const cls = turn.pending ? "chat-turn chat-user chat-pending" : "chat-turn chat-user";
+    const queued = turn.pending ? `<div class="chat-queued">queued…</div>` : "";
     return (
-      `<div class="chat-turn chat-user">` +
+      `<div class="${cls}">` +
       `<div class="chat-body chat-md">${renderMd(turn.text)}</div>` +
+      queued +
       `</div>`
     );
   }
@@ -105,8 +112,15 @@ export function appendUser(
   turns: ChatTurn[],
   id: number,
   text: string,
+  pending = false,
 ): ChatTurn[] {
-  return [...turns, { id, role: "user", text, streaming: false }];
+  return [...turns, { id, role: "user", text, streaming: false, pending }];
+}
+
+// Clear the `pending` flag on the user turn `id` — its queued message is now the
+// active turn (being sent), so it renders as a normal sent message.
+export function settlePending(turns: ChatTurn[], id: number): ChatTurn[] {
+  return turns.map((t) => (t.id === id ? { ...t, pending: false } : t));
 }
 
 // Append a streamed `chunk`. If no agent turn is open yet (this is the turn's

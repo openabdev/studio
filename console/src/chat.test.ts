@@ -4,6 +4,7 @@ import {
   transcriptHtml,
   turnHtml,
   appendUser,
+  settlePending,
   appendChunk,
   endTurn,
   type ChatTurn,
@@ -38,6 +39,30 @@ describe("transcript reducers", () => {
     const turns = appendUser([], 1, "hello");
     expect(turns).toHaveLength(1);
     expect(turns[0]).toMatchObject({ role: "user", text: "hello", streaming: false });
+    expect(turns[0].pending).toBe(false);
+  });
+
+  it("appendUser can mark a turn pending; settlePending clears it by id", () => {
+    let turns = appendUser([], 7, "queued one", true);
+    expect(turns[0].pending).toBe(true);
+    turns = settlePending(turns, 7);
+    expect(turns[0].pending).toBe(false);
+  });
+
+  it("turnHtml renders a pending user turn with the queued marker", () => {
+    const html = turnHtml(
+      { id: 1, role: "user", text: "hi", streaming: false, pending: true },
+      mdToHtml,
+    );
+    expect(html).toContain("chat-pending");
+    expect(html).toContain("queued");
+    // a settled user turn has neither
+    const sent = turnHtml(
+      { id: 1, role: "user", text: "hi", streaming: false },
+      mdToHtml,
+    );
+    expect(sent).not.toContain("chat-pending");
+    expect(sent).not.toContain("chat-queued");
   });
 
   it("appendChunk opens an agent turn on the first chunk, appends after", () => {

@@ -18,6 +18,7 @@ import {
   transcriptHtml,
   mdToHtml,
   appendUser,
+  settlePending,
   appendChunk,
   endTurn,
   type ChatTurn,
@@ -79,7 +80,9 @@ export function createChatPanel(
   // Per-panel transcript state (was module-global in main.ts's single console).
   let turns: ChatTurn[] = [];
   let turnActive = false;
-  const queue: string[] = [];
+  // Each queued prompt carries the id of its (already-rendered) pending turn, so
+  // `flush` can settle that exact turn when it starts sending.
+  const queue: { id: number; text: string }[] = [];
   let seq = 0;
   let connected = false;
   // DOM listeners are scoped to this controller so `dispose()` removes them all
@@ -117,7 +120,13 @@ export function createChatPanel(
   function submit(text: string): void {
     const trimmed = text.trim();
     if (!trimmed) return;
-    queue.push(trimmed);
+    // Show the message immediately — as `pending` if a turn is in flight (so it
+    // sits visibly queued), else it is settled the instant `flush` runs.
+    seq += 1;
+    const id = seq;
+    turns = appendUser(turns, id, trimmed, turnActive);
+    queue.push({ id, text: trimmed });
+    render();
     void flush();
   }
 
@@ -126,13 +135,12 @@ export function createChatPanel(
     const next = queue.shift();
     if (next === undefined) return;
     turnActive = true;
-    seq += 1;
-    turns = appendUser(turns, seq, next);
+    turns = settlePending(turns, next.id); // now the active turn, no longer queued
     render();
     updateControls();
     try {
-      await opts.source.agentPrompt(next, opts.agent);
-      if (opts.mock) mockReply(next); // browser preview: synthesize the reply
+      await opts.source.agentPrompt(next.text, opts.agent);
+      if (opts.mock) mockReply(next.text); // browser preview: synthesize the reply
     } catch (e) {
       // Send failed (not connected / socket just closed): close the turn with an
       // error, surface it, release the queue so a later prompt can still go.
