@@ -596,13 +596,22 @@ interface UpdateInfo {
 }
 function setupUpdater(): void {
   const el = document.getElementById("update-btn") as HTMLButtonElement | null;
+  const dismissEl = document.getElementById("update-dismiss") as HTMLButtonElement | null;
   const invoke = tauriInvoke();
   if (!el || !invoke) return; // browser build — no updater
   el.hidden = false;
   let pending: UpdateInfo | null = null;
 
+  // Finding an update must not force installing it (you may want to keep working
+  // or wait for a later nightly). The install button + this dismiss share the
+  // pending state; dismiss clears it back to "Check for updates".
+  const setPending = (info: UpdateInfo | null): void => {
+    pending = info;
+    if (dismissEl) dismissEl.hidden = info === null;
+  };
+
   const reset = (): void => {
-    pending = null;
+    setPending(null);
     el.textContent = "Check for updates";
     el.classList.remove("has-update");
   };
@@ -613,10 +622,10 @@ function setupUpdater(): void {
     try {
       const info = await inv<UpdateInfo | null>("check_update");
       if (info) {
-        pending = info;
+        setPending(info);
         btn.textContent = `Update to v${info.version} ↻`;
         btn.classList.add("has-update");
-        note("info", `update: v${info.version} available (current v${info.current}) — click to install`);
+        note("info", `update: v${info.version} available (current v${info.current}) — click to install, or Later to keep this build`);
       } else {
         note("info", "update: already up to date");
         btn.textContent = "Up to date";
@@ -633,17 +642,24 @@ function setupUpdater(): void {
   async function install(btn: HTMLButtonElement, inv: Invoke): Promise<void> {
     btn.disabled = true;
     btn.textContent = "Installing…";
+    if (dismissEl) dismissEl.hidden = true;
     try {
       // On success the backend restarts the app, so this may never resolve.
       await inv("install_update");
     } catch (e) {
       btn.disabled = false;
       btn.textContent = pending ? `Update to v${pending.version} ↻` : "Check for updates";
+      if (dismissEl) dismissEl.hidden = pending === null;
       note("error", `update: install failed — ${errText(e)}`);
     }
   }
 
   el.addEventListener("click", () => void (pending ? install(el, invoke) : check(el, invoke)));
+  dismissEl?.addEventListener("click", () => {
+    const skipped = pending?.version;
+    reset();
+    if (skipped) note("info", `update: skipped v${skipped} — staying on the current build`);
+  });
 }
 
 // Live remote-connection status: the backend pushes `remote-status` events as the
