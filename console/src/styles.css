@@ -75,6 +75,13 @@ body {
   padding: 12px 18px;
   border-bottom: 1px solid var(--border);
   background: var(--panel);
+  /* Part E: "persistent chrome... spans every screen." Needs its own stacking
+     context + a z-index above the Debug drawer's (50) — the drawer is
+     `position: fixed; top: 0`, so without this it paints over the topbar's
+     right-side controls (cluster/poll status, theme/update buttons) instead of
+     sliding in below them. */
+  position: relative;
+  z-index: 60;
 }
 
 .brand {
@@ -238,6 +245,14 @@ body {
   padding: 12px 0 0;
   overflow: auto;
 }
+/* `display: flex` above and the `[hidden]` UA-stylesheet rule have equal
+   specificity — without this, the later (author) rule wins the cascade and
+   the drawer stays visible even with the `hidden` attribute set (found via a
+   Playwright check while self-reviewing: `#debug-drawer` rendered on top of
+   everything from first paint, before any `[⚙]` was ever clicked). */
+.debug-drawer[hidden] {
+  display: none;
+}
 .debug-head {
   display: flex;
   align-items: center;
@@ -253,12 +268,8 @@ body {
   flex: 1;
 }
 
-/* Two tabbed panes — the first display, so launch + core lifecycle and the raw
-   MCP interaction are one click apart and visible immediately. */
-.logs {
-  border-bottom: 1px solid var(--border);
-  background: var(--panel);
-}
+/* The tab strip — now only used inside the Debug drawer (`#debug-tabs`,
+   slice 6); the top-level `.logs` wrapper it used to live in is gone. */
 .tabs {
   display: flex;
   gap: 4px;
