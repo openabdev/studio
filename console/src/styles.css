@@ -174,6 +174,34 @@ body {
   flex-direction: column;
 }
 
+/* ---- Drill-down row: Fleets/Fleet-detail/Agent-console + persistent chat
+   (ADR #83 Part B, slice 4) — the two mockup columns. The chat pairs with
+   whichever depth is showing on the left; on a narrow viewport it drops below
+   instead of squeezing. ---- */
+.drilldown-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  margin: 0 0 16px;
+}
+.drilldown-main {
+  flex: 2 1 0;
+  min-width: 0;
+}
+.drilldown-row > .chat-wrap {
+  flex: 1 1 320px;
+  min-width: 280px;
+  margin: 0;
+}
+@media (max-width: 860px) {
+  .drilldown-row {
+    flex-direction: column;
+  }
+  .drilldown-row > .chat-wrap {
+    width: 100%;
+  }
+}
+
 /* Two tabbed panes — the first display, so launch + core lifecycle and the raw
    MCP interaction are one click apart and visible immediately. */
 .logs {
