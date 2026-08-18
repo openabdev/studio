@@ -57,13 +57,106 @@ The Compose flow (agent-deployment-templates.md: author library → preview → 
 
 The top bar (`brand` + build stamp `v${APP_VERSION} · ${BUILD_SHA}`, `cluster-label`/`poll-status`, `theme-btn`, `update-btn`/`update-dismiss`) is app-level chrome, not tied to any fleet/agent context. It stays exactly where it is — persistent, spanning every screen — and is out of scope for this ADR.
 
-## 7. Non-goals
+## 7. Mockups — one per screen level
+
+ASCII wireframes, walked through with Brett live. These pin down *placement*, not final visuals — colors/spacing/exact controls are implementation detail.
+
+### 7.1 Global chrome (persistent on every screen)
+
+```
+┌─ Studio ── OAB · v0.9.3-nightly-b6b6492 ── cluster: oab ── ● polling ── [🌓 System] ── [Check for updates] ─┐
+└───────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+```
+Unchanged from today's topbar (Part E) — `brand`+build stamp left, `cluster-label`/`poll-status` + `theme-btn` + `update-btn`/`update-dismiss` right. Spans every screen below.
+
+### 7.2 Fleets (top level)
+
+```
+┌─ Studio ── OAB · v0.9.3-nightly-b6b6492 ── [🌓 System] ── [Check for updates] ────────────────────────────┐
+├───────────────────────────────────────────┬────────────────────────────────────────────────────────────────┤
+│ Fleets                        [+ New fleet]│  Studio 主 chat (常駐 — management console)                   │
+│ ────────────────────────────────────────── │  ──────────────────────────────────────────                   │
+│  oab-prod-orca      ●2/2 running    [⚙]     │  你: 幫我查一下 orca fleet 現在的狀態                            │
+│  oab-prod-mira      ●1/1 running    [⚙]     │  Studio: oab-prod-orca 現在 2/2，都健康...                     │
+│  kiro-5952          ○0/1 idle       [⚙]     │                                                                │
+│                                              │  [                                        ] [Send]            │
+└───────────────────────────────────────────┴────────────────────────────────────────────────────────────────┘
+```
+- Left column = the drill-down entry point (fleet-grouping-and-connection-model.md's fleet list, promoted from sidebar to primary screen). Each row: fleet name, member count + aggregate health, a `[⚙]` that opens the **Debug drawer** scoped to that fleet's Activity/MCP/Config.
+- `[+ New fleet]` is the Part C deploy entry point — opens Compose with no fleet pre-selected (creating a new one).
+- Right column = the persistent management chat (Part B) — present here and on every screen below, unchanged in content.
+
+### 7.3 Fleet detail (members of one fleet)
+
+```
+┌─ Studio ── OAB · v0.9.3-nightly-b6b6492 ── [🌓 System] ── [Check for updates] ────────────────────────────┐
+├───────────────────────────────────────────┬────────────────────────────────────────────────────────────────┤
+│ ← Fleets  /  oab-prod-orca   [+ Add instance] [⚙]  │  Studio 主 chat (常駐)                                │
+│ ─────────────────────────────────────────────────  │  ──────────────────────────                          │
+│  agent-1   ● healthy   1 vCPU · 2 GB               │  你: ...                                              │
+│  agent-2   ● healthy   1 vCPU · 2 GB               │  Studio: ...                                          │
+│                                                     │                                                       │
+└───────────────────────────────────────────┴────────────────────────────────────────────────────────────────┘
+```
+- `← Fleets` = breadcrumb back to 7.2 (Open question 10.1 — breadcrumb vs back button; shown here as a breadcrumb for concreteness).
+- `[+ Add instance]` = Part C deploy entry point pre-scoped to *this* fleet (adds a member, vs 7.2's `[+ New fleet]`).
+- `[⚙]` here opens the Debug drawer scoped to this fleet specifically (narrower than the global one from 7.2, if that distinction survives implementation — see 9.2).
+- Selecting a member row drills into 7.4.
+
+### 7.4 Agent console (one member, selected)
+
+```
+┌─ Studio ── OAB · v0.9.3-nightly-b6b6492 ── [🌓 System] ── [Check for updates] ────────────────────────────┐
+├───────────────────┬─────────────────────────┬────────────────────────────────────────────────────────────┤
+│ ← oab-prod-orca /  │ agent-1 chat            │  Studio 主 chat (常駐)                                     │
+│   agent-1          │ ─────────────────────── │  ──────────────────────────                                │
+│ ─────────────────  │ 你: 幫我重啟              │  你: ...                                                   │
+│ Files               │ agent-1: 重啟中...        │  Studio: ...                                             │
+│  src/               │                          │                                                            │
+│  config.toml        │ [                ] [Send]│                                                           │
+│  agent_profiling/   │                          │                                                            │
+└───────────────────┴─────────────────────────┴────────────────────────────────────────────────────────────┘
+```
+Unchanged from agent-consoles.md Part C (files/config region + this agent's own chat) — this ADR only fixes *where* it sits (reached by drill-down from 7.3, not a tab) and confirms it renders **alongside**, not instead of, the persistent management chat on the far right. Three columns simultaneously visible: agent's files, agent's own chat, Studio's chat.
+
+### 7.5 Deploy (Compose) — opened from `[+ New fleet]` or `[+ Add instance]`
+
+```
+┌─ Deploy ── new instance in oab-prod-orca ──────────────── [Cancel] ┐
+│ Template ▾  golden-oab           Overlay ▾  orca-persona           │
+│ [Preview bundle]                                                   │
+│ ── composed bundle preview ──────────────────────────────────────  │
+│  image  ghcr.io/openabdev/openab:0.9.0-claude                      │
+│  digest sha256:ab12…                                               │
+│  files  config.toml, agent_profiling/identity.md, ...              │
+│ ── deploy ─────────────────────────────────────────────────────── │
+│ Name  agent-3          Namespace  default          [Deploy]        │
+└──────────────────────────────────────────────────────────────────┘
+```
+Same compose→preview→deploy sequence as today's Compose tab (agent-deployment-templates.md), unchanged internals — presented as an overlay/panel invoked from 7.2/7.3 instead of a permanent tab. When opened via `[+ Add instance]` from 7.3, `Namespace`/target fleet are pre-filled from context (Open question 10.3); via `[+ New fleet]` from 7.2 they're blank.
+
+### 7.6 Debug drawer — opened from any `[⚙]`
+
+```
+                                                          ┌─ Debug: oab-prod-orca ── [Close] ─┐
+                                                          │ [Activity] [MCP · oab-mcp] [Config]│
+                                                          │ ──────────────────────────────────  │
+                                                          │  INFO  dial ws://orca-acp...        │
+                                                          │  INFO  handshake ok                 │
+                                                          │  DEBUG keepalive ping sent           │
+                                                          │                                       │
+                                                          │              [INFO+ / DEBUG+]        │
+                                                          └───────────────────────────────────────┘
+```
+Slides over the right edge (shown here as an overlay; container shape is Open question 10.2). Internally it keeps today's three sub-views as a small tab strip *within* the drawer — `Activity`'s log-level toggle, `MCP`'s raw JSON-RPC transcript, `Config`'s cluster/profile/region form — none of that changes, only that they're no longer top-level.
+
+## 8. Non-goals
 
 - **openab-pty is not part of Studio.** Brett explicitly rejected folding pty/Connect's deploy flow into Studio (2026-08-18/19): Connect remains a separate product with its own UI. This ADR's Fleets/Deploy/Debug structure applies only to OAB (`OABService`/`OABFleet`) agents.
 - **No change to `oab-mcp`'s tool surface or the backend driver model.** This is purely the console's information architecture; `deploy_apply`/`scale`/`delete`/`provision` and the ECS/k8s driver seam are untouched.
 - **No multi-agent room / cross-agent relay** (carried over from agent-consoles.md's non-goals) — Fleet detail lists members; it does not add @mention or agent-to-agent routing.
 
-## 8. Consequences
+## 9. Consequences
 
 - ✅ Fixes the *class* of bug behind #82: navigation becomes a single router-like state (which fleet/agent is selected) instead of N independently-toggled `hidden` panes keyed by ad hoc ids.
 - ✅ Reuses everything already built: `RemoteState` is already keyed per-agent (agent-consoles.md §3), the compose→preview→deploy flow is unchanged, the chat primitive is unchanged — this ADR only changes *where* they're mounted and *when* they're visible.
@@ -71,7 +164,7 @@ The top bar (`brand` + build stamp `v${APP_VERSION} · ${BUILD_SHA}`, `cluster-l
 - ⚠️ Losing the tab strip means the Debug drawer's discoverability depends entirely on its one affordance being findable — worth a first pass with real users (n=1: Brett) before treating the drawer's shape as settled.
 - ⚠️ "Deploy as an action from Fleets" needs the entry points (`+ New fleet`, `+ Add instance`) to carry enough context (target fleet, whether it's a new fleet or a new member of an existing one) into the existing compose form — a small wiring change, not a redesign of Compose itself.
 
-## 9. Open questions
+## 10. Open questions
 
 1. **Back-navigation** — breadcrumb (`Fleets / orca-fleet / agent-1`) vs a plain back button? Affects whether drill-down state is representable as a URL/deep-link later.
 2. **Debug drawer shape** — a slide-over panel, a modal, or a persistent-but-collapsed rail? Not decided; the affordance and its contents (Activity/MCP/Config, unchanged) are decided, the container isn't.
