@@ -36,7 +36,7 @@
            alongside the Fleets/Fleet-detail/Agent-console drill-down, and stays
            visible at every depth — it is a conversation with the designated
            management agent, not with whichever fleet/agent is selected. -->
-      <div class="drilldown-row">
+      <div class="drilldown-row" id="drilldown-row">
         <div class="drilldown-main">
           <section id="config" class="config-wrap"></section>
           <section id="fleet-detail" class="fleet-detail-wrap" hidden>
@@ -98,6 +98,76 @@
           </form>
         </section>
       </div>
+      <!-- ADR #83 slice 5: `[+ New fleet]` (7.2) / `[+ Add instance]` (7.3)
+           land here — an action, not a standing tab (Part C). Both flows share
+           the same compose→preview→deploy engine; `[+ New fleet]` runs the
+           net-new fleet-identity step first (7.5.1), `[+ Add instance]` skips
+           straight to Compose, inheriting the fleet it was opened from
+           (7.5.2). Replaces `.drilldown-row` while open. -->
+      <section id="deploy-wrap" class="deploy-wrap" hidden>
+        <div class="deploy-head">
+          <span class="deploy-title" id="deploy-title">Deploy</span>
+          <span class="deploy-spacer"></span>
+          <button class="cfg-btn cfg-btn-ghost" id="deploy-cancel" type="button">Cancel</button>
+        </div>
+        <form id="deploy-identity-form" class="deploy-identity" autocomplete="off" hidden>
+          <label
+            >Fleet name
+            <input id="deploy-fleet-name" class="compose-input" type="text" placeholder="e.g. support-fleet" spellcheck="false" />
+          </label>
+          <label
+            >Region
+            <input id="deploy-region" class="compose-input" type="text" placeholder="e.g. ap-east-2" spellcheck="false" />
+          </label>
+          <label
+            >Credential profile
+            <input id="deploy-profile" class="compose-input" type="text" placeholder="e.g. oab-fleet" spellcheck="false" />
+          </label>
+          <label
+            >Principal (optional)
+            <input id="deploy-principal" class="compose-input" type="text" placeholder="arn:aws:iam::…" spellcheck="false" />
+          </label>
+          <div class="compose-actions">
+            <button type="submit">Next: first instance &rarr;</button>
+            <span class="compose-status" id="deploy-identity-status"></span>
+          </div>
+        </form>
+        <div id="deploy-compose" class="deploy-compose" hidden>
+          <div class="deploy-compose-head" id="deploy-compose-heading">Compose</div>
+          <form id="deploy-form" class="compose-form" autocomplete="off">
+            <label
+              >Template
+              <select id="deploy-template" class="compose-select"></select>
+            </label>
+            <label
+              >Overlay
+              <select id="deploy-overlay" class="compose-select">
+                <option value="">— none (bare template) —</option>
+              </select>
+            </label>
+            <div class="compose-actions">
+              <button type="submit" id="deploy-preview-btn">Preview bundle</button>
+              <span class="compose-status" id="deploy-status"></span>
+            </div>
+          </form>
+          <div id="deploy-preview" class="compose-preview"></div>
+          <form id="deploy-deploy-form" class="compose-deploy" autocomplete="off" hidden>
+            <div class="compose-deploy-head">Deploy to ECS</div>
+            <label
+              >Agent name
+              <input id="deploy-name" class="compose-input" type="text" placeholder="e.g. agent-3" spellcheck="false" />
+            </label>
+            <label
+              >Image tag
+              <input id="deploy-image" class="compose-input" type="text" placeholder="(bundle default)" spellcheck="false" />
+            </label>
+            <div class="compose-actions">
+              <button type="submit" id="deploy-deploy-btn">Deploy</button>
+              <span class="compose-status" id="deploy-deploy-status"></span>
+            </div>
+          </form>
+        </div>
+      </section>
       <section id="config-editor" class="cfg-editor-wrap" hidden>
         <div class="cfg-editor-head">
           <span class="cfg-label" id="cfg-editor-title">edit fleets.toml</span>

@@ -543,6 +543,9 @@ button.act:disabled {
   gap: 10px;
   margin-bottom: 8px;
 }
+.cfg-head-spacer {
+  flex: 1;
+}
 .cfg-label {
   color: var(--muted);
   text-transform: uppercase;
@@ -1250,6 +1253,52 @@ button.act:disabled {
   background: var(--bg);
   color: var(--text);
   font: inherit;
+}
+
+/* ---- Deploy action panel (ADR #83 slice 5: `[+ New fleet]` / `[+ Add
+   instance]`) — replaces .drilldown-row while open. ---------------------- */
+.deploy-wrap {
+  margin: 0 0 12px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+}
+.deploy-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.deploy-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+.deploy-spacer {
+  flex: 1;
+}
+.deploy-identity {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: 420px;
+}
+.deploy-identity label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.deploy-compose-head {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 10px;
+}
+.deploy-compose {
+  max-width: 480px;
 }
 
 /* ---- Agent consoles (ADR agent-consoles Parts B/C; ADR #83 slice 3: reached

@@ -18,6 +18,7 @@ import type {
 } from "./types";
 import { createChatPanel, type ChatPanel } from "./chatPanel";
 import { initAgentConsole, type AgentConsole } from "./agentConsole";
+import { initDeployPanel, type DeployPanelHandle, type DeployedInfo } from "./deploy";
 import { createPane, bindBackend, type Level } from "./log";
 import { initThemeToggle } from "./theme";
 import { EditorView, basicSetup } from "codemirror";
@@ -326,6 +327,33 @@ function deselectFleet(): void {
   void tick();
 }
 
+// After a deploy panel run succeeds (deploy_provision + fleets.toml write both
+// landed — `deploy.ts` guarantees that ordering): re-read fleets.toml, then
+// either land on the new fleet's detail screen (7.5.1 step 4) or, if we're
+// already looking at the fleet an instance was just added to, just refresh its
+// member filter + roster in place (7.5.2 step 4).
+async function handleDeployed(info: DeployedInfo): Promise<void> {
+  note("info", `deploy: ${info.service} @ ${info.image} provisioned, fleets.toml updated (${info.fleetName})`);
+  try {
+    fleetConfig = await source.fleetConfig();
+  } catch (e) {
+    note("error", `config: fleet reload failed — ${errText(e)}`);
+  }
+  if (activeFleet === info.fleetName) {
+    const fleet = fleetConfig?.fleets.find((f) => f.name === info.fleetName);
+    if (fleet) activeMembers = fleet.members;
+    if (configEl) renderFleetConfig(configEl, fleetConfig, activeFleet);
+    void tick();
+  } else {
+    selectFleet(info.fleetName);
+  }
+}
+
+const deployPanel: DeployPanelHandle | null = initDeployPanel({
+  source,
+  onDeployed: handleDeployed,
+});
+
 // Fleet detail shows either the members roster or the open Agent console, never
 // both (Part A: "the only navigation model," no tab-peer surfaces) — mirror
 // `#agent-console`'s own `hidden` state (owned by `agentConsole.ts`, untouched)
@@ -447,17 +475,28 @@ if (configEl) {
       void openEditor("fleet");
       return;
     }
+    if (target.closest('[data-action="new-fleet"]')) {
+      deployPanel?.open({ kind: "new-fleet" });
+      return;
+    }
     const btn = target.closest<HTMLElement>("[data-fleet]");
     if (btn?.dataset.fleet) selectFleet(btn.dataset.fleet);
   });
 }
 
-// The Fleet detail header: only "← Fleets" is wired this slice — `+ Add
-// instance` / `⚙` render disabled (slices 5/6 wire them).
+// The Fleet detail header: "← Fleets" backs out; "+ Add instance" opens the
+// deploy panel scoped to the active fleet (7.5.2). `⚙` still renders disabled
+// (slice 6 wires the Debug drawer).
 if (fleetDetailEl) {
   fleetDetailEl.addEventListener("click", (ev) => {
     const target = ev.target as HTMLElement;
-    if (target.closest('[data-action="back-to-fleets"]')) deselectFleet();
+    if (target.closest('[data-action="back-to-fleets"]')) {
+      deselectFleet();
+      return;
+    }
+    if (target.closest('[data-action="add-instance"]') && activeFleet) {
+      deployPanel?.open({ kind: "add-instance", fleetName: activeFleet });
+    }
   });
 }
 
