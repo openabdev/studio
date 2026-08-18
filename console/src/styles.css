@@ -133,6 +133,22 @@ body {
   background: var(--s-starting);
   border-color: var(--s-starting);
 }
+/* Skip an available update and keep the current build (shown only while an
+   update is pending) — so finding a nightly doesn't force installing it. */
+.update-dismiss {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  padding: 3px 6px;
+  cursor: pointer;
+  text-decoration: underline;
+}
+.update-dismiss:hover {
+  color: var(--text);
+}
 
 /* Appearance toggle — cycles System / Light / Dark. Mirrors the update button;
    fixed min-width so the label swap doesn't shift the toolbar. */
