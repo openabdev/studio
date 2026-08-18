@@ -675,11 +675,12 @@ async fn run_once<R: Runtime>(
                     outcome = Err(format!("ws keepalive ping: {e}"));
                     break 'conn;
                 }
-                // Surface each keepalive in the Activity pane so the operator can
-                // see the tunnel being kept warm between prompts.
+                // Keepalive fires every ~45s — surface it at DEBUG so the Activity
+                // pane isn't dominated by it. The operator can switch the pane to
+                // DEBUG+ to see the tunnel being kept warm between prompts.
                 let _ = app.emit(
                     "app-log",
-                    json!({ "level": "info", "msg": "remote: keepalive ping sent" }),
+                    json!({ "level": "debug", "msg": "remote: keepalive ping sent" }),
                 );
             }
 

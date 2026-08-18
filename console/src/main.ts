@@ -97,6 +97,34 @@ function flag(target: string): void {
 const activity = logEl ? createPane(logEl, () => flag("log")) : null;
 const mcp = mcpEl ? createPane(mcpEl, () => flag("mcpio")) : null;
 
+// Activity verbosity: INFO+ (default) hides DEBUG lines (e.g. keepalives) via the
+// `min-info` class; DEBUG+ shows everything. Persisted so the choice sticks.
+(function setupLogLevel(): void {
+  const btn = document.getElementById("log-level");
+  if (!btn || !logEl) return;
+  const KEY = "oab-studio.logdebug";
+  let showDebug = false;
+  try {
+    showDebug = localStorage.getItem(KEY) === "1";
+  } catch {
+    /* storage unavailable — default to INFO+ */
+  }
+  const apply = (): void => {
+    logEl.classList.toggle("min-info", !showDebug);
+    btn.textContent = showDebug ? "DEBUG+" : "INFO+";
+  };
+  apply();
+  btn.addEventListener("click", () => {
+    showDebug = !showDebug;
+    try {
+      localStorage.setItem(KEY, showDebug ? "1" : "0");
+    } catch {
+      /* storage unavailable — the choice still applies this session */
+    }
+    apply();
+  });
+})();
+
 // Build stamp (injected by vite) — shown under the brand and logged on launch,
 // so it's obvious which commit this build is.
 const BUILD = `v${__APP_VERSION__} · ${__BUILD_SHA__}`;

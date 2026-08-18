@@ -244,6 +244,36 @@ body {
 .lv-error .lm {
   color: var(--s-unhealthy);
 }
+/* DEBUG lines (e.g. keepalives): dimmed, and hidden while the Activity pane is
+   in INFO+ mode (the default). Toggle via the tabs-bar level button. */
+.lv-debug {
+  opacity: 0.6;
+}
+.log.min-info .lv-debug {
+  display: none;
+}
+
+/* Right-aligned Activity verbosity toggle in the tabs bar. */
+.tabs-spacer {
+  flex: 1 1 auto;
+}
+.tab-filter {
+  align-self: center;
+  appearance: none;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  margin-bottom: 4px;
+}
+.tab-filter:hover {
+  color: var(--text);
+  border-color: var(--s-starting);
+}
 
 /* MCP interaction pane — → out (request), ← in (response). */
 .mcpio .lm {

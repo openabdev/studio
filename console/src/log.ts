@@ -5,7 +5,7 @@
 //      `oab-mcp` sidecar, so the raw interaction with the core is visible.
 // In the browser build there is no core, so only the Activity pane says so.
 
-export type Level = "info" | "warn" | "error";
+export type Level = "debug" | "info" | "warn" | "error";
 
 const MAX_LINES = 500;
 const MAX_MSG = 4000;
