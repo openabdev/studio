@@ -285,6 +285,15 @@ describe("fleetConfigHtml", () => {
     );
   });
 
+  it("always offers the + New fleet deploy action (ADR #83 slice 5, 7.2)", () => {
+    expect(fleetConfigHtml(FIXTURE_FLEET_CONFIG, "orca")).toContain(
+      'data-action="new-fleet"',
+    );
+    expect(
+      fleetConfigHtml({ path: null, default_cluster: "oab", fleets: [], text: "" }, null),
+    ).toContain('data-action="new-fleet"');
+  });
+
   it("renders an unavailable state for null", () => {
     expect(fleetConfigHtml(null, null)).toContain("fleet config unavailable");
   });
@@ -305,9 +314,10 @@ describe("fleetDetailHeaderHtml", () => {
     expect(html).toContain("oab-prod-orca");
   });
 
-  it("renders the deploy and debug-drawer entry points disabled (slice 2 scope)", () => {
+  it("wires + Add instance (slice 5) but leaves the Debug drawer disabled (slice 6 scope)", () => {
     const html = fleetDetailHeaderHtml("oab-prod-orca");
-    expect(html).toContain('data-action="add-instance" disabled');
+    expect(html).toContain('data-action="add-instance"');
+    expect(html).not.toContain('data-action="add-instance" disabled');
     expect(html).toContain('data-action="fleet-debug" disabled');
   });
 

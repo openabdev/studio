@@ -247,6 +247,8 @@ export function fleetConfigHtml(
       <div class="cfg-head">
         <h2 class="cfg-title">Fleets</h2>
         ${path}
+        <span class="cfg-head-spacer"></span>
+        <button class="cfg-btn" type="button" data-action="new-fleet">+ New fleet</button>
         <button class="cfg-edit" type="button" data-action="edit-config">Edit config</button>
       </div>
       <p class="cfg-subtitle">Select a fleet to manage.</p>
@@ -265,15 +267,16 @@ export function renderFleetConfig(
 // ---- Fleet detail screen header (ADR #83 slice 2) -----------------------------
 // The breadcrumb + action row shown above the roster once a fleet is selected —
 // "← Fleets" returns to the Fleets screen (Part A's drill-down). `[+ Add
-// instance]` and `[⚙]` are the slice 5/6 entry points (deploy, Debug drawer);
-// stubbed disabled here per the ADR's slice-2 scope ("No wiring yet").
+// instance]` is the slice 5 entry point (7.5.2: deploy into this fleet, no new
+// fleet-identity step). `[⚙]` is the slice 6 Debug-drawer entry point —
+// stubbed disabled here, still out of scope.
 export function fleetDetailHeaderHtml(fleetName: string): string {
   return `<div class="fd-head">
       <button class="fd-back" type="button" data-action="back-to-fleets">&larr; Fleets</button>
       <span class="fd-sep">/</span>
       <span class="fd-name">${escapeHtml(fleetName)}</span>
       <span class="fd-spacer"></span>
-      <button class="fd-btn" type="button" data-action="add-instance" disabled title="coming soon">+ Add instance</button>
+      <button class="fd-btn" type="button" data-action="add-instance">+ Add instance</button>
       <button class="fd-btn fd-gear" type="button" data-action="fleet-debug" disabled title="coming soon">⚙</button>
     </div>`;
 }
