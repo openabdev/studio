@@ -38,7 +38,7 @@ export function initConfigTab(hooks: ConfigHooks = {}): void {
   const profile = document.getElementById("cfg-profile") as HTMLInputElement | null;
   const region = document.getElementById("cfg-region") as HTMLInputElement | null;
   const cluster = document.getElementById("cfg-cluster") as HTMLInputElement | null;
-  const save = document.getElementById("cfg-save") as HTMLButtonElement | null;
+  const save = document.getElementById("debug-cfg-save") as HTMLButtonElement | null;
   const status = document.getElementById("cfg-status");
   if (!form || !profile || !region || !cluster) return;
 
