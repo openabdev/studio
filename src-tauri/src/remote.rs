@@ -627,6 +627,13 @@ async fn run_once<R: Runtime>(
                         }
                     }
                     OutMsg::Cancel => {
+                        // Record the operator action so the Activity log distinguishes an
+                        // operator Stop from a gateway-side cancel or an error drop (the
+                        // turn's `turn_end` carries stopReason `cancelled` regardless).
+                        let _ = app.emit(
+                            "app-log",
+                            json!({ "level": "info", "msg": format!("remote: {agent} turn cancelled by operator") }),
+                        );
                         if let Some(frame) = session.cancel() {
                             if let Err(e) = send(&mut write, &frame).await {
                                 outcome = Err(e);
@@ -846,34 +853,88 @@ async fn run_once<R: Runtime>(
                         let app = app.clone();
                         let agent = agent.to_string();
                         tauri::async_runtime::spawn(async move {
+                            // Capture the tool name before `params` is moved into the relay.
+                            let tool = if method == "tools/call" {
+                                params
+                                    .get("name")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("?")
+                                    .to_string()
+                            } else {
+                                String::new()
+                            };
                             if let Some(reply) = handle_inner(&client, id, &method, params).await {
-                                // Observability: surface the reverse-MCP call the agent made
-                                // against the oab server. `tools/list` is the definitive
-                                // "the agent pulled N oab tools" signal — its absence (with
-                                // no Connect either) means the declaration was never consumed
-                                // upstream, not that Studio failed to serve.
-                                if method == "tools/list" {
-                                    let n = reply
-                                        .get("result")
-                                        .and_then(|r| r.get("tools"))
-                                        .and_then(Value::as_array)
-                                        .map(|a| a.len());
-                                    let msg = match n {
-                                        Some(n) => format!("remote: {agent} reverse-MCP tools/list — served {n} oab tool(s)"),
-                                        None => format!("remote: {agent} reverse-MCP tools/list — served (unexpected shape)"),
-                                    };
-                                    let _ = app.emit("app-log", json!({ "level": "info", "msg": msg }));
-                                } else if method == "tools/call" {
-                                    let _ = app.emit(
-                                        "app-log",
-                                        json!({ "level": "info", "msg": format!("remote: {agent} reverse-MCP tools/call") }),
-                                    );
+                                // Observability: surface each reverse-MCP call the agent made
+                                // against the oab server, and its outcome. `tools/list` is the
+                                // definitive "the agent pulled N oab tools" signal; a failing
+                                // `tools/call` is the usual troubleshooting case. Absence of any
+                                // of these (with no Connect either) means the declaration was
+                                // never consumed upstream, not that Studio failed to serve.
+                                let err = reply
+                                    .get("error")
+                                    .and_then(|e| e.get("message"))
+                                    .and_then(Value::as_str);
+                                let (level, msg): (&str, String) = match method.as_str() {
+                                    "tools/list" => match (
+                                        err,
+                                        reply
+                                            .get("result")
+                                            .and_then(|r| r.get("tools"))
+                                            .and_then(Value::as_array),
+                                    ) {
+                                        (Some(e), _) => ("error", format!(
+                                            "remote: {agent} reverse-MCP tools/list failed — {e}"
+                                        )),
+                                        (None, Some(list)) => ("info", format!(
+                                            "remote: {agent} reverse-MCP tools/list — served {} oab tool(s)",
+                                            list.len()
+                                        )),
+                                        (None, None) => ("warn", format!(
+                                            "remote: {agent} reverse-MCP tools/list — served (unexpected shape)"
+                                        )),
+                                    },
+                                    "tools/call" => {
+                                        if let Some(e) = err {
+                                            ("error", format!(
+                                                "remote: {agent} reverse-MCP tools/call {tool} failed — {e}"
+                                            ))
+                                        } else if reply
+                                            .get("result")
+                                            .and_then(|r| r.get("isError"))
+                                            .and_then(Value::as_bool)
+                                            .unwrap_or(false)
+                                        {
+                                            ("warn", format!(
+                                                "remote: {agent} reverse-MCP tools/call {tool} → tool reported an error"
+                                            ))
+                                        } else {
+                                            ("info", format!(
+                                                "remote: {agent} reverse-MCP tools/call {tool} → ok"
+                                            ))
+                                        }
+                                    }
+                                    // The reverse-MCP inner handshake — Connect already proves the
+                                    // agent engaged, so don't add noise for it.
+                                    "initialize" => ("", String::new()),
+                                    other => ("warn", format!(
+                                        "remote: {agent} reverse-MCP: unsupported method {other} (replied -32601)"
+                                    )),
+                                };
+                                if !level.is_empty() {
+                                    let _ = app.emit("app-log", json!({ "level": level, "msg": msg }));
                                 }
                                 let _ = reply_tx.send(reply);
                             }
                         });
                     }
                     Inbound::Disconnect { id, .. } => {
+                        // The agent tore down the reverse-MCP tunnel to the oab server —
+                        // its oab tools go away until it reconnects. Symmetric with the
+                        // Connect log; explains a "tools vanished" without an error.
+                        let _ = app.emit(
+                            "app-log",
+                            json!({ "level": "info", "msg": format!("remote: {agent} reverse-MCP — agent disconnected from the oab server") }),
+                        );
                         if let Err(e) = send(&mut write, &acp::disconnect_reply(id)).await {
                             outcome = Err(e);
                             break 'conn;
