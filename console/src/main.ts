@@ -45,7 +45,7 @@ let agentConsole: AgentConsole | null = null;
 
 const roster = document.getElementById("roster");
 const identityEl = document.getElementById("identity");
-const configEl = document.getElementById("config");
+const configEl = document.getElementById("fleet-config");
 const remoteEl = document.getElementById("remote");
 const editorSection = document.getElementById("config-editor");
 const editorMount = document.getElementById("cfg-editor-mount");
