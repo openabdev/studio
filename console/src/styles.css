@@ -480,15 +480,16 @@ button.act:disabled {
   color: var(--ok);
 }
 
-/* ---- Fleet config panel (ADR #19: the "declare" side) ---- */
+/* ---- Fleets screen (ADR #19: the "declare" side; ADR #83: promoted from a
+   sidebar panel to the console's top-level screen — Slice 1) ---- */
 .config-wrap {
-  margin: 0 0 12px;
+  margin: 0 0 16px;
 }
 .config {
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--panel);
-  padding: 10px 12px;
+  padding: 14px 16px;
   font-size: 13px;
 }
 .cfg-head {
@@ -502,6 +503,17 @@ button.act:disabled {
   text-transform: uppercase;
   font-size: 11px;
   letter-spacing: 0.04em;
+}
+.cfg-title {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text);
+}
+.cfg-subtitle {
+  margin: 0 0 10px;
+  color: var(--muted);
+  font-size: 12px;
 }
 .cfg-path {
   color: var(--muted);

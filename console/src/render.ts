@@ -238,10 +238,11 @@ export function fleetConfigHtml(
     : `<p class="cfg-empty">No fleets configured — add <code>[fleet.&lt;name&gt;]</code> entries to the config file above. Managing <code>${escapeHtml(cfg.default_cluster)}</code> via the default credential chain.</p>`;
   return `<div class="config">
       <div class="cfg-head">
-        <span class="cfg-label">fleets</span>
+        <h2 class="cfg-title">Fleets</h2>
         ${path}
         <button class="cfg-edit" type="button" data-action="edit-config">Edit config</button>
       </div>
+      <p class="cfg-subtitle">Select a fleet to manage.</p>
       ${body}
     </div>`;
 }
