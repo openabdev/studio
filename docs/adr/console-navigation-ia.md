@@ -33,7 +33,7 @@ Fleets (top level)  →  Fleet detail (members)  →  Agent console
 ```
 
 - **Fleets** — the list from fleet-grouping-and-connection-model.md: fleets by name, not by cluster. Selecting one is the "switch" step already specced there.
-- **Fleet detail** — that fleet's member agents (a fleet may be size-1 — a single agent — per [[openab-fleet-instance-unified]]) with health/status, plus the entry points for Part C (deploy) actions scoped to this fleet.
+- **Fleet detail** — that fleet's member agents (a fleet may be size-1 — a single agent — per fleet-grouping-and-connection-model.md's `members = ["oab-prod-orca"]` single-member example) with health/status, plus the entry points for Part C (deploy) actions scoped to this fleet.
 - **Agent console** — unchanged from agent-consoles.md Part C: files/config region + this agent's own chat, reached by selecting a member.
 
 This is the **only** navigation model for the main content area. There is no separate top-level tab strip for it.
@@ -64,7 +64,7 @@ ASCII wireframes, walked through with Brett live. These pin down *placement*, no
 ### 7.1 Global chrome (persistent on every screen)
 
 ```
-┌─ Studio ── OAB · v0.9.3-nightly-b6b6492 ── cluster: oab ── ● polling ── [🌓 System] ── [Check for updates] ─┐
+┌─ Studio ── OAB · v0.1.0-nightly.202608190125 · b6b6492 ── cluster: oab ── ● polling ── [🌓 System] ── [Check for updates] ─┐
 └───────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 Unchanged from today's topbar (Part E) — `brand`+build stamp left, `cluster-label`/`poll-status` + `theme-btn` + `update-btn`/`update-dismiss` right. Spans every screen below.
@@ -72,13 +72,13 @@ Unchanged from today's topbar (Part E) — `brand`+build stamp left, `cluster-la
 ### 7.2 Fleets (top level)
 
 ```
-┌─ Studio ── OAB · v0.9.3-nightly-b6b6492 ── [🌓 System] ── [Check for updates] ────────────────────────────┐
+┌─ Studio ── OAB · v0.1.0-nightly.202608190125 · b6b6492 ── [🌓 System] ── [Check for updates] ────────────────────────────┐
 ├───────────────────────────────────────────┬────────────────────────────────────────────────────────────────┤
 │ Fleets                        [+ New fleet]│  Studio 主 chat (常駐 — management console)                   │
 │ ────────────────────────────────────────── │  ──────────────────────────────────────────                   │
 │  oab-prod-orca      ●2/2 running    [⚙]     │  你: 幫我查一下 orca fleet 現在的狀態                            │
 │  oab-prod-mira      ●1/1 running    [⚙]     │  Studio: oab-prod-orca 現在 2/2，都健康...                     │
-│  kiro-5952          ○0/1 idle       [⚙]     │                                                                │
+│  support-bot        ○0/1 idle       [⚙]     │                                                                │
 │                                              │  [                                        ] [Send]            │
 └───────────────────────────────────────────┴────────────────────────────────────────────────────────────────┘
 ```
@@ -89,7 +89,7 @@ Unchanged from today's topbar (Part E) — `brand`+build stamp left, `cluster-la
 ### 7.3 Fleet detail (members of one fleet)
 
 ```
-┌─ Studio ── OAB · v0.9.3-nightly-b6b6492 ── [🌓 System] ── [Check for updates] ────────────────────────────┐
+┌─ Studio ── OAB · v0.1.0-nightly.202608190125 · b6b6492 ── [🌓 System] ── [Check for updates] ────────────────────────────┐
 ├───────────────────────────────────────────┬────────────────────────────────────────────────────────────────┤
 │ ← Fleets  /  oab-prod-orca   [+ Add instance] [⚙]  │  Studio 主 chat (常駐)                                │
 │ ─────────────────────────────────────────────────  │  ──────────────────────────                          │
@@ -100,13 +100,13 @@ Unchanged from today's topbar (Part E) — `brand`+build stamp left, `cluster-la
 ```
 - `← Fleets` = breadcrumb back to 7.2 (Open question 10.1 — breadcrumb vs back button; shown here as a breadcrumb for concreteness).
 - `[+ Add instance]` = Part C deploy entry point pre-scoped to *this* fleet (adds a member, vs 7.2's `[+ New fleet]`).
-- `[⚙]` here opens the Debug drawer scoped to this fleet specifically (narrower than the global one from 7.2, if that distinction survives implementation — see 9.2).
+- `[⚙]` here opens the Debug drawer scoped to this fleet specifically (narrower than the global one from 7.2, if that distinction survives implementation — see 10.2).
 - Selecting a member row drills into 7.4.
 
 ### 7.4 Agent console (one member, selected)
 
 ```
-┌─ Studio ── OAB · v0.9.3-nightly-b6b6492 ── [🌓 System] ── [Check for updates] ────────────────────────────┐
+┌─ Studio ── OAB · v0.1.0-nightly.202608190125 · b6b6492 ── [🌓 System] ── [Check for updates] ────────────────────────────┐
 ├───────────────────┬─────────────────────────┬────────────────────────────────────────────────────────────┤
 │ ← oab-prod-orca /  │ agent-1 chat            │  Studio 主 chat (常駐)                                     │
 │   agent-1          │ ─────────────────────── │  ──────────────────────────                                │
@@ -128,27 +128,29 @@ Both `[+ New fleet]` (7.2) and `[+ Add instance]` (7.3) end at the **same** comp
 #### 7.5.1 `[+ New fleet]` — from the Fleets screen (7.2), no existing `[fleet.*]` block
 
 ```
-Step 1 — fleet identity                          Step 2 — first instance (Compose, shared engine)
-┌─ New fleet ──────────────────[Cancel]┐          ┌─ kiro-lab — first instance ──────[Back]┐
-│ Fleet name  [ kiro-lab         ]     │          │ Template ▾ golden-oab  Overlay ▾ kiro   │
-│ Region      [ ap-east-2       ▾]     │  ──▶     │ [Preview bundle]                        │
-│ Credential  [ oab-fleet (profile) ▾] │          │  image/digest/files preview…            │
-│           [Next: first instance →]   │          │ Name [ kiro-lab-1 ]         [Deploy]     │
-└───────────────────────────────────────┘          └──────────────────────────────────────────┘
-                                                              │ Deploy
-                                                              ▼
-                                            1. deploy_provision → ECS registers task-def + service "kiro-lab-1"
-                                            2. Studio appends a new block to the in-memory fleets.toml text:
-                                                 [fleet.kiro-lab]
-                                                 members = ["kiro-lab-1"]
-                                                 region  = "ap-east-2"
-                                                 profile = "oab-fleet"
-                                            3. fleet_config_write(text) → persists + hot-reloads
-                                            4. lands on Fleet detail (7.3) for kiro-lab,
-                                               kiro-lab-1 shown in a transient "provisioning" state
-                                               (reuses the existing scale-guard pending-map machinery)
+Step 1 — fleet identity                       Step 2 — first instance (Compose, shared engine)
+┌─ New fleet ───────────────[Cancel]┐          ┌─ support-fleet — first instance ────[Back]┐
+│ Fleet name  [ support-fleet     ] │          │ Template ▾ golden-oab                     │
+│ Region      [ ap-east-2        ▾] │  ──▶     │ Overlay  ▾ support-persona                │
+│ Credential  [ oab-fleet (profile)▾]│          │ [Preview bundle]                          │
+│ Principal   [ arn:aws:iam::…    ] │          │  image/digest/files preview…              │
+│         [Next: first instance →]  │          │ Name [ support-bot-1 ]        [Deploy]    │
+└─────────────────────────────────────┘          └───────────────────────────────────────────┘
+                                                            │ Deploy
+                                                            ▼
+                                     1. deploy_provision → ECS registers task-def + service "support-bot-1"
+                                     2. Studio appends a new block to the in-memory fleets.toml text:
+                                          [fleet.support-fleet]
+                                          members = ["support-bot-1"]
+                                          region  = "ap-east-2"
+                                          profile = "oab-fleet"
+                                          expected_principal = "arn:aws:iam::…"
+                                     3. fleet_config_write(text) → persists + hot-reloads
+                                     4. lands on Fleet detail (7.3) for support-fleet,
+                                        support-bot-1 shown in a transient "provisioning" state
+                                        (reuses the existing scale-guard pending-map machinery)
 ```
-Step 1 is **net-new UI** — nothing today collects region/profile/`expected_principal` for a fleet that doesn't exist yet. Step 2 is the existing Compose form, unchanged, just seeded with no fleet context. If step 2 fails (deploy error), step 1's fleet identity is **not** written — `fleet_config_write` only fires after a successful `deploy_provision`, so a failed first instance never leaves an empty orphan fleet in `fleets.toml`.
+Step 1 is **net-new UI** — nothing today collects region/profile/`expected_principal` for a fleet that doesn't exist yet; the `Principal` field is optional (per `fleet-grouping-and-connection-model.md`'s schema, `expected_principal` isn't required). Step 2 is the existing Compose form, unchanged, just seeded with no fleet context. If step 2 fails (deploy error), step 1's fleet identity is **not** written — `fleet_config_write` only fires after a successful `deploy_provision`, so a failed first instance never leaves an empty orphan fleet in `fleets.toml`.
 
 #### 7.5.2 `[+ Add instance]` — from an existing Fleet detail (7.3), `[fleet.<name>]` already exists
 
@@ -203,7 +205,7 @@ Slides over the right edge (shown here as an overlay; container shape is Open qu
 
 ## 10. Open questions
 
-1. **Back-navigation** — breadcrumb (`Fleets / orca-fleet / agent-1`) vs a plain back button? Affects whether drill-down state is representable as a URL/deep-link later.
+1. **Back-navigation** — breadcrumb (`Fleets / oab-prod-orca / agent-1`) vs a plain back button? Affects whether drill-down state is representable as a URL/deep-link later.
 2. **Debug drawer shape** — a slide-over panel, a modal, or a persistent-but-collapsed rail? Not decided; the affordance and its contents (Activity/MCP/Config, unchanged) are decided, the container isn't.
 3. ~~**"+ New fleet" vs "+ Add instance"** — one deploy entry point or two?~~ **Resolved by 7.5.1/7.5.2: two distinct flows**, sharing the same compose→preview→deploy engine — they differ in the fleet-identity step (7.5.1 has one, 7.5.2 doesn't) and in how `fleets.toml` is edited (new block vs appended member), not in the deploy mechanics.
 4. **Fleets-list empty state** — first-run UX (no fleets configured yet) isn't addressed here; likely folds into the "+ New fleet" affordance being the obvious first action.
