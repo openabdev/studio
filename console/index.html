@@ -5,6 +5,18 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>OAB Studio — Console</title>
     <link rel="stylesheet" href="/src/styles.css" />
+    <!-- Apply the saved appearance before first paint (no flash). "system" /
+         unset leaves data-theme off so prefers-color-scheme wins. -->
+    <script>
+      (function () {
+        try {
+          var t = localStorage.getItem("oab-studio.theme");
+          if (t === "light" || t === "dark") {
+            document.documentElement.setAttribute("data-theme", t);
+          }
+        } catch (e) {}
+      })();
+    </script>
   </head>
   <body>
     <header class="topbar">
@@ -14,6 +26,7 @@
       <div class="meta">
         <span class="cluster" id="cluster-label"></span>
         <span class="status" id="poll-status"></span>
+        <button class="theme-btn" id="theme-btn" type="button" title="Appearance — click to cycle System / Light / Dark">System</button>
         <button class="update-btn" id="update-btn" hidden>Check for updates</button>
       </div>
     </header>

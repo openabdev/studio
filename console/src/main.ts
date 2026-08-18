@@ -18,6 +18,7 @@ import type {
 import { createChatPanel, type ChatPanel } from "./chatPanel";
 import { initAgentConsole, type AgentConsole } from "./agentConsole";
 import { createPane, bindBackend, type Level } from "./log";
+import { initThemeToggle } from "./theme";
 import { EditorView, basicSetup } from "codemirror";
 import { EditorState } from "@codemirror/state";
 import { StreamLanguage } from "@codemirror/language";
@@ -697,6 +698,10 @@ async function boot(): Promise<void> {
   });
   if (clusterLabel) clusterLabel.textContent = activeCluster;
   note("info", `app: polling cluster "${activeCluster}" every ${POLL_MS / 1000}s`);
+  // Appearance toggle (System / Light / Dark) — an override on top of the OS
+  // prefers-color-scheme default.
+  const themeBtn = document.getElementById("theme-btn");
+  if (themeBtn) initThemeToggle(themeBtn as HTMLButtonElement);
   setupUpdater();
   await startCore();
   // Config tab: pin the oab-mcp target (cluster/profile/region → hermetic env);
