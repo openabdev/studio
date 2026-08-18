@@ -272,13 +272,21 @@ async function refreshRemote(): Promise<void> {
 
 // The console's top-level drill-down (ADR #83 Part A): Fleets ↔ Fleet detail.
 // `activeFleet === null` shows the Fleets screen (the `#config` list); a
-// selected fleet shows Fleet detail (breadcrumb header + the members roster)
-// instead. This is screen 7.2 vs 7.3 — slice 2's scope; the further drill into
-// an Agent console (7.4) is slice 3.
+// selected fleet shows Fleet detail (breadcrumb header + the members roster,
+// with each member drilling further into its Agent console — slice 3) instead.
 function updateScreen(): void {
   if (configEl) configEl.hidden = activeFleet !== null;
   if (fleetDetailEl) fleetDetailEl.hidden = activeFleet === null;
   if (activeFleet && fdHeaderEl) renderFleetDetailHeader(fdHeaderEl, activeFleet);
+}
+
+// Leaving the fleet (back to Fleets, or switching to another one) also leaves
+// any open Agent console — reuses the console's own wired Close button (see
+// `openAgentForRow`'s note on why: `agentConsole.ts` stays untouched).
+function closeOpenAgentConsole(): void {
+  document
+    .querySelector<HTMLButtonElement>('#agent-console [data-action="close-console"]')
+    ?.click();
 }
 
 // Switch the active fleet by identity (name): re-point every read at its cluster
@@ -290,6 +298,7 @@ function selectFleet(name: string): void {
   if (!name || name === activeFleet) return;
   const fleet = fleetConfig?.fleets.find((f) => f.name === name);
   if (!fleet) return;
+  closeOpenAgentConsole();
   activeFleet = name;
   activeCluster = fleet.cluster;
   activeMembers = fleet.members;
@@ -305,6 +314,7 @@ function selectFleet(name: string): void {
 // unfiltered roster (whole default cluster) until another fleet is picked.
 function deselectFleet(): void {
   if (!activeFleet) return;
+  closeOpenAgentConsole();
   activeFleet = null;
   activeCluster = DEFAULT_CLUSTER;
   activeMembers = [];
@@ -315,6 +325,23 @@ function deselectFleet(): void {
   void refreshIdentity();
   void tick();
 }
+
+// Fleet detail shows either the members roster or the open Agent console, never
+// both (Part A: "the only navigation model," no tab-peer surfaces) — mirror
+// `#agent-console`'s own `hidden` state (owned by `agentConsole.ts`, untouched)
+// onto the roster rather than adding a second source of truth for what's open.
+(function watchAgentConsoleVisibility(): void {
+  const consoleEl = document.getElementById("agent-console");
+  if (!consoleEl || !roster) return;
+  const sync = (): void => {
+    roster.hidden = !consoleEl.hidden;
+  };
+  new MutationObserver(sync).observe(consoleEl, {
+    attributes: true,
+    attributeFilter: ["hidden"],
+  });
+  sync();
+})();
 
 // ---- TOML editor (fleets.toml + remote.toml) ---------------------------------
 // One CodeMirror TOML editor, shared by both config files (which one is set by
@@ -604,6 +631,31 @@ async function scale(
   }
 }
 
+// Drill into a roster row's Agent console (ADR #83 slice 3: mockup 7.4). The
+// agent-console shell (`agentConsole.ts`) is untouched — its selector
+// (`#agent-list`, now hidden via CSS in favor of this roster-row entry point)
+// already opens-on-click for a `[data-agent]` button, so reuse that exact,
+// already-tested path via a synthetic click rather than duplicating the
+// open/dial/teardown logic here. Tries the service-name form first, then the
+// short name — the same precedence `filterByMembers` uses for fleet members.
+function openAgentForRow(svc: string, alt: string): void {
+  const btn =
+    document.querySelector<HTMLButtonElement>(
+      `#agent-list [data-agent="${CSS.escape(svc)}"]`,
+    ) ??
+    document.querySelector<HTMLButtonElement>(
+      `#agent-list [data-agent="${CSS.escape(alt)}"]`,
+    );
+  if (btn) {
+    btn.click();
+  } else {
+    note(
+      "info",
+      `agents: no agent console registered for "${svc}" — add it to agents.toml to open one`,
+    );
+  }
+}
+
 // One delegated listener on the roster. Start executes on click; Stop is
 // disruptive (kills the running instance, though reversible), so it arms on the
 // first click and only executes on a confirming second click within 3s — a
@@ -611,7 +663,14 @@ async function scale(
 // roster and would reset an armed button on its own; the 3s timer is tighter.
 if (roster) {
   roster.addEventListener("click", (ev) => {
-    const btn = (ev.target as HTMLElement).closest<HTMLButtonElement>("button.act");
+    const target = ev.target as HTMLElement;
+    const openBtn = target.closest<HTMLButtonElement>("button.row-open");
+    if (openBtn) {
+      const { openAgent, openAgentAlt } = openBtn.dataset;
+      if (openAgent) openAgentForRow(openAgent, openAgentAlt ?? openAgent);
+      return;
+    }
+    const btn = target.closest<HTMLButtonElement>("button.act");
     if (!btn) return;
     const action = btn.dataset.action;
     const { name, namespace } = btn.dataset;
