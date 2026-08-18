@@ -15,8 +15,31 @@
   --s-stopped: #6b7280;
 }
 
+/* The dark palette. Applied when the operator forces dark
+   (`:root[data-theme="dark"]`) OR when the OS is dark and no explicit choice is
+   set (`:root:not([data-theme])`, below). `data-theme="light"` keeps the `:root`
+   defaults, so a forced-light choice wins over the OS. The `theme.ts` toggle and
+   the no-FOUC head script in index.html set `data-theme`. Keep the two dark
+   blocks in sync. */
+:root[data-theme="dark"] {
+  --bg: #0e1116;
+  --panel: #161b22;
+  --text: #e6edf3;
+  --muted: #8b949e;
+  --border: #21262d;
+  --ok: #3fb950;
+  --warn: #d29922;
+
+  --s-starting: #58a6ff;
+  --s-running: #3fb950;
+  --s-paused: #d29922;
+  --s-unhealthy: #f0883e;
+  --s-stopping: #db8f2a;
+  --s-stopped: #8b949e;
+}
+
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme]) {
     --bg: #0e1116;
     --panel: #161b22;
     --text: #e6edf3;
@@ -108,6 +131,25 @@ body {
 .update-btn.has-update {
   color: #fff;
   background: var(--s-starting);
+  border-color: var(--s-starting);
+}
+
+/* Appearance toggle — cycles System / Light / Dark. Mirrors the update button;
+   fixed min-width so the label swap doesn't shift the toolbar. */
+.theme-btn {
+  appearance: none;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  padding: 3px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  min-width: 62px;
+}
+.theme-btn:hover {
+  color: var(--text);
   border-color: var(--s-starting);
 }
 
