@@ -1018,10 +1018,20 @@ async fn handle_inner(
     match method {
         "notifications/initialized" => None,
         "initialize" => id.map(|i| {
+            // Echo the client's requested protocol version. Our initialize is a
+            // thin shim over the already-initialized oab-mcp sidecar, and
+            // tools/list·call are forwarded verbatim (version-agnostic), so a
+            // newer client (observed: 2025-06-18) must not see a downgrade to a
+            // pinned 2024-11-05 and then decline to enumerate tools. Fall back to
+            // a known version only when the client omits one.
+            let proto = params
+                .get("protocolVersion")
+                .and_then(Value::as_str)
+                .unwrap_or("2024-11-05");
             acp::message_reply(
                 i,
                 json!({
-                    "protocolVersion": "2024-11-05",
+                    "protocolVersion": proto,
                     "capabilities": { "tools": {} },
                     "serverInfo": { "name": "oab-studio", "version": env!("CARGO_PKG_VERSION") }
                 }),
