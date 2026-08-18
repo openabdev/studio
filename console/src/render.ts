@@ -255,6 +255,26 @@ export function renderFleetConfig(
   el.innerHTML = fleetConfigHtml(cfg, activeFleet);
 }
 
+// ---- Fleet detail screen header (ADR #83 slice 2) -----------------------------
+// The breadcrumb + action row shown above the roster once a fleet is selected —
+// "← Fleets" returns to the Fleets screen (Part A's drill-down). `[+ Add
+// instance]` and `[⚙]` are the slice 5/6 entry points (deploy, Debug drawer);
+// stubbed disabled here per the ADR's slice-2 scope ("No wiring yet").
+export function fleetDetailHeaderHtml(fleetName: string): string {
+  return `<div class="fd-head">
+      <button class="fd-back" type="button" data-action="back-to-fleets">&larr; Fleets</button>
+      <span class="fd-sep">/</span>
+      <span class="fd-name">${escapeHtml(fleetName)}</span>
+      <span class="fd-spacer"></span>
+      <button class="fd-btn" type="button" data-action="add-instance" disabled title="coming soon">+ Add instance</button>
+      <button class="fd-btn fd-gear" type="button" data-action="fleet-debug" disabled title="coming soon">⚙</button>
+    </div>`;
+}
+
+export function renderFleetDetailHeader(el: HTMLElement, fleetName: string): void {
+  el.innerHTML = fleetDetailHeaderHtml(fleetName);
+}
+
 // ---- Remote reverse-MCP connection panel (Part B) ---------------------------
 // The "activate the remote connection" surface: the /acp endpoint, live status,
 // an explicit Activate/Disconnect button, and Edit config. Since #69 the editor

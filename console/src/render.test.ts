@@ -3,6 +3,7 @@ import {
   rosterHtml,
   identityHtml,
   fleetConfigHtml,
+  fleetDetailHeaderHtml,
   remoteHtml,
   agentListHtml,
   agentConsoleHeaderHtml,
@@ -279,6 +280,26 @@ describe("fleetConfigHtml", () => {
     const cfg = structuredClone(FIXTURE_FLEET_CONFIG);
     cfg.fleets[0].name = "<x>";
     const html = fleetConfigHtml(cfg, "orca");
+    expect(html).toContain("&lt;x&gt;");
+    expect(html).not.toContain("<x>");
+  });
+});
+
+describe("fleetDetailHeaderHtml", () => {
+  it("renders the breadcrumb back to Fleets and the fleet name", () => {
+    const html = fleetDetailHeaderHtml("oab-prod-orca");
+    expect(html).toContain('data-action="back-to-fleets"');
+    expect(html).toContain("oab-prod-orca");
+  });
+
+  it("renders the deploy and debug-drawer entry points disabled (slice 2 scope)", () => {
+    const html = fleetDetailHeaderHtml("oab-prod-orca");
+    expect(html).toContain('data-action="add-instance" disabled');
+    expect(html).toContain('data-action="fleet-debug" disabled');
+  });
+
+  it("escapes the fleet name", () => {
+    const html = fleetDetailHeaderHtml("<x>");
     expect(html).toContain("&lt;x&gt;");
     expect(html).not.toContain("<x>");
   });
