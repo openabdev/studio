@@ -863,6 +863,29 @@ async fn run_once<R: Runtime>(
                             } else {
                                 String::new()
                             };
+                            // The client's requested MCP protocol version (initialize only),
+                            // captured before `params` moves so we can compare it to what we
+                            // answer — a mismatch is the suspected reason a connected agent
+                            // never reaches tools/list.
+                            let client_proto = if method == "initialize" {
+                                params
+                                    .get("protocolVersion")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("?")
+                                    .to_string()
+                            } else {
+                                String::new()
+                            };
+                            // `notifications/initialized` is a notification (no reply), so it
+                            // never reaches the match below — log it here. Seeing it means the
+                            // agent accepted our initialize and completed the handshake; its
+                            // absence right after an initialize points at a rejected handshake.
+                            if method == "notifications/initialized" {
+                                let _ = app.emit(
+                                    "app-log",
+                                    json!({ "level": "info", "msg": format!("remote: {agent} reverse-MCP — client sent initialized (handshake complete)") }),
+                                );
+                            }
                             if let Some(reply) = handle_inner(&client, id, &method, params).await {
                                 // Observability: surface each reverse-MCP call the agent made
                                 // against the oab server, and its outcome. `tools/list` is the
@@ -913,9 +936,28 @@ async fn run_once<R: Runtime>(
                                             ))
                                         }
                                     }
-                                    // The reverse-MCP inner handshake — Connect already proves the
-                                    // agent engaged, so don't add noise for it.
-                                    "initialize" => ("", String::new()),
+                                    // The reverse-MCP inner handshake. Log the negotiated
+                                    // protocol versions so a mismatch (the suspected cause of a
+                                    // connected agent never listing tools) is visible.
+                                    "initialize" => {
+                                        let server_proto = reply
+                                            .get("result")
+                                            .and_then(|r| r.get("protocolVersion"))
+                                            .and_then(Value::as_str)
+                                            .unwrap_or("?");
+                                        if client_proto != "?"
+                                            && server_proto != "?"
+                                            && client_proto != server_proto
+                                        {
+                                            ("warn", format!(
+                                                "remote: {agent} reverse-MCP initialize — PROTOCOL MISMATCH: client requested {client_proto}, server answered {server_proto}"
+                                            ))
+                                        } else {
+                                            ("info", format!(
+                                                "remote: {agent} reverse-MCP initialize — client requested {client_proto}, server answered {server_proto}"
+                                            ))
+                                        }
+                                    }
                                     other => ("warn", format!(
                                         "remote: {agent} reverse-MCP: unsupported method {other} (replied -32601)"
                                     )),
