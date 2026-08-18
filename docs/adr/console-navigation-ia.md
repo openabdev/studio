@@ -211,4 +211,17 @@ Slides over the right edge (shown here as an overlay; container shape is Open qu
 4. **Fleets-list empty state** — first-run UX (no fleets configured yet) isn't addressed here; likely folds into the "+ New fleet" affordance being the obvious first action.
 5. **`fleet_config_write` race safety** — read-modify-write on the whole file (see Consequences) has no CAS/version check today. Worth a guard (re-read + diff before write, or surfacing a conflict) before this ships multi-operator, but not blocking for the current single-operator (Brett) usage.
 
-This is a direction-alignment ADR — Parts A–E are the agreed shape; implementation lands in slices against `main.ts`/`render.ts`/`index.html`, each slice keeping `tsc`/vitest/`vite build` green per the existing console verification bar.
+## 11. Implementation slices
+
+Six slices, ordered by dependency (each ships independently, keeps `tsc`/vitest/`vite build` green, and gets its own visual pass — same bar as #80–83):
+
+1. **Fleets screen (7.2)** — promote today's sidebar fleet-config panel (`renderFleetConfig`, already does the switch) into the primary top-level screen. Lowest risk: the underlying fleet-switch logic (`activeFleet`/`activeCluster`/`activeMembers`) is unchanged, only its placement and the "click a row to drill in" affordance are new.
+2. **Fleet detail (7.3)** — split the flat, `activeMembers`-filtered roster into its own screen reached from slice 1, with the `← Fleets` breadcrumb and per-member health rows. No `[+ Add instance]`/`[⚙]` wiring yet (can render disabled/stubbed).
+3. **Agent console wiring (7.4)** — relocate the *existing* agent console (files/config + per-agent chat, agent-consoles.md Part C, already built) so it's reached by drill-down from slice 2 instead of a flat `agents-wrap` list. Internals untouched — this is a reachability change, not new surface.
+4. **Persistent management chat (Part B)** — confirm `chat-wrap` stays mounted, unchanged in content, across slices 1–3's drill-down; mostly layout/CSS, since the chat primitive and its connection are already always-on today (not tab-gated) — this slice formalizes placement, it doesn't add new plumbing.
+5. **Deploy actions (7.5.1 + 7.5.2)** — the heaviest slice: `[+ New fleet]`'s net-new fleet-identity step, `[+ Add instance]`'s shortcut into the existing Compose engine, and the `fleet_config_write` read-modify-write wiring for both. Could split further into **5a** (`+ Add instance` — no new UI, just context-passing into existing Compose) and **5b** (`+ New fleet` — the new identity-step form) if a smaller unit is wanted; 5a has no dependency on 5b.
+6. **Debug drawer (7.6)** — collapse `Activity`/`MCP`/`Config` from top-level tabs into the drawer component, wire the `[⚙]` affordances from slices 1–2. Independent of slice 5; can land before or after it.
+
+Slice 5 (or 5a/5b) is the only one with real new backend-adjacent logic (the `fleets.toml` read-modify-write); 1–4 and 6 are UI relocation/reachability changes over unchanged underlying mechanisms.
+
+This is a direction-alignment ADR — Parts A–E are the agreed shape; the slice order above is a recommendation, not a commitment — re-sequencing (e.g. shipping the Debug drawer before Fleet detail) doesn't break any dependency.
