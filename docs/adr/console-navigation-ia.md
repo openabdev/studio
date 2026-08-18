@@ -119,21 +119,57 @@ Unchanged from today's topbar (Part E) — `brand`+build stamp left, `cluster-la
 ```
 Unchanged from agent-consoles.md Part C (files/config region + this agent's own chat) — this ADR only fixes *where* it sits (reached by drill-down from 7.3, not a tab) and confirms it renders **alongside**, not instead of, the persistent management chat on the far right. Three columns simultaneously visible: agent's files, agent's own chat, Studio's chat.
 
-### 7.5 Deploy (Compose) — opened from `[+ New fleet]` or `[+ Add instance]`
+### 7.5 Deploy (Compose) — two distinct flows, one shared engine
+
+Both `[+ New fleet]` (7.2) and `[+ Add instance]` (7.3) end at the **same** compose→preview→deploy engine (agent-deployment-templates.md, unchanged) calling the **same** `deploy_provision` MCP tool. They differ in what happens *before* that (does a `[fleet.<name>]` block already exist?) and *after* it (how `fleets.toml` gets updated) — spelled out separately because that's exactly the part that's new.
+
+`fleets.toml` membership is **not** a live MCP mutation today — the only write primitive is `fleet_config_write`, which persists the **whole file** from raw TOML text ("overwrites the operator's fleets.toml", per `oab-mcp`'s tool description). So both flows below compute the new/edited TOML client-side and call `fleet_config_write` with the full updated text — there is no `fleet_config_add_member` tool to reach for.
+
+#### 7.5.1 `[+ New fleet]` — from the Fleets screen (7.2), no existing `[fleet.*]` block
 
 ```
-┌─ Deploy ── new instance in oab-prod-orca ──────────────── [Cancel] ┐
-│ Template ▾  golden-oab           Overlay ▾  orca-persona           │
-│ [Preview bundle]                                                   │
-│ ── composed bundle preview ──────────────────────────────────────  │
-│  image  ghcr.io/openabdev/openab:0.9.0-claude                      │
-│  digest sha256:ab12…                                               │
-│  files  config.toml, agent_profiling/identity.md, ...              │
-│ ── deploy ─────────────────────────────────────────────────────── │
-│ Name  agent-3          Namespace  default          [Deploy]        │
-└──────────────────────────────────────────────────────────────────┘
+Step 1 — fleet identity                          Step 2 — first instance (Compose, shared engine)
+┌─ New fleet ──────────────────[Cancel]┐          ┌─ kiro-lab — first instance ──────[Back]┐
+│ Fleet name  [ kiro-lab         ]     │          │ Template ▾ golden-oab  Overlay ▾ kiro   │
+│ Region      [ ap-east-2       ▾]     │  ──▶     │ [Preview bundle]                        │
+│ Credential  [ oab-fleet (profile) ▾] │          │  image/digest/files preview…            │
+│           [Next: first instance →]   │          │ Name [ kiro-lab-1 ]         [Deploy]     │
+└───────────────────────────────────────┘          └──────────────────────────────────────────┘
+                                                              │ Deploy
+                                                              ▼
+                                            1. deploy_provision → ECS registers task-def + service "kiro-lab-1"
+                                            2. Studio appends a new block to the in-memory fleets.toml text:
+                                                 [fleet.kiro-lab]
+                                                 members = ["kiro-lab-1"]
+                                                 region  = "ap-east-2"
+                                                 profile = "oab-fleet"
+                                            3. fleet_config_write(text) → persists + hot-reloads
+                                            4. lands on Fleet detail (7.3) for kiro-lab,
+                                               kiro-lab-1 shown in a transient "provisioning" state
+                                               (reuses the existing scale-guard pending-map machinery)
 ```
-Same compose→preview→deploy sequence as today's Compose tab (agent-deployment-templates.md), unchanged internals — presented as an overlay/panel invoked from 7.2/7.3 instead of a permanent tab. When opened via `[+ Add instance]` from 7.3, `Namespace`/target fleet are pre-filled from context (Open question 10.3); via `[+ New fleet]` from 7.2 they're blank.
+Step 1 is **net-new UI** — nothing today collects region/profile/`expected_principal` for a fleet that doesn't exist yet. Step 2 is the existing Compose form, unchanged, just seeded with no fleet context. If step 2 fails (deploy error), step 1's fleet identity is **not** written — `fleet_config_write` only fires after a successful `deploy_provision`, so a failed first instance never leaves an empty orphan fleet in `fleets.toml`.
+
+#### 7.5.2 `[+ Add instance]` — from an existing Fleet detail (7.3), `[fleet.<name>]` already exists
+
+```
+┌─ oab-prod-orca — add instance ────────[Cancel]┐
+│ Template ▾ golden-oab   Overlay ▾ orca-persona │
+│ [Preview bundle]                               │
+│  image/digest/files preview…                   │
+│ Name [ agent-3 ]                    [Deploy]   │
+└─────────────────────────────────────────────────┘
+        │ Deploy
+        ▼
+1. deploy_provision → ECS registers task-def + service "agent-3"
+2. Studio edits the existing [fleet.oab-prod-orca] block in-memory:
+     members = ["agent-1", "agent-2", "agent-3"]   # appended, region/profile untouched
+3. fleet_config_write(text) → persists + hot-reloads
+4. lands back on Fleet detail (7.3), now 3 members, agent-3 "provisioning"
+```
+No fleet-identity step — region/profile/`expected_principal` are inherited from the fleet the operator already drilled into, so this flow is strictly shorter than 7.5.1: it's the existing Compose form with no new UI in front of it.
+
+**Failure handling (both flows):** if `deploy_provision` fails, stop — no `fleet_config_write` call, `fleets.toml` is untouched, the operator sees the compose form's existing error surface (`deploy failed: …`, per today's `compose.ts`). `fleets.toml` is only ever mutated *after* a confirmed successful provision, never before or speculatively.
 
 ### 7.6 Debug drawer — opened from any `[⚙]`
 
@@ -163,12 +199,14 @@ Slides over the right edge (shown here as an overlay; container shape is Open qu
 - ⚠️ `main.ts`'s tab-switcher (`show(target)` toggling `hidden` by id) needs to become a small view-stack/router (current fleet id, current agent id, debug-drawer open/closed) — real refactor weight, concentrated in `main.ts`/`render.ts`, no backend change.
 - ⚠️ Losing the tab strip means the Debug drawer's discoverability depends entirely on its one affordance being findable — worth a first pass with real users (n=1: Brett) before treating the drawer's shape as settled.
 - ⚠️ "Deploy as an action from Fleets" needs the entry points (`+ New fleet`, `+ Add instance`) to carry enough context (target fleet, whether it's a new fleet or a new member of an existing one) into the existing compose form — a small wiring change, not a redesign of Compose itself.
+- ⚠️ **`fleets.toml` writes are whole-file overwrites** (`fleet_config_write` has no partial/append primitive) — both 7.5.1 and 7.5.2 read-modify-write the full text. Two deploys racing (two operators, or one operator double-clicking) can lose a concurrent edit; today's single-operator usage makes this low-risk but it's a real gap, not a hypothetical (see Open question 10.5).
 
 ## 10. Open questions
 
 1. **Back-navigation** — breadcrumb (`Fleets / orca-fleet / agent-1`) vs a plain back button? Affects whether drill-down state is representable as a URL/deep-link later.
 2. **Debug drawer shape** — a slide-over panel, a modal, or a persistent-but-collapsed rail? Not decided; the affordance and its contents (Activity/MCP/Config, unchanged) are decided, the container isn't.
-3. **"+ New fleet" vs "+ Add instance"** — one deploy entry point with a mode switch, or two distinct actions? Leaning toward one Compose flow with the target (new fleet vs existing fleet's member list) pre-filled from where it was invoked.
+3. ~~**"+ New fleet" vs "+ Add instance"** — one deploy entry point or two?~~ **Resolved by 7.5.1/7.5.2: two distinct flows**, sharing the same compose→preview→deploy engine — they differ in the fleet-identity step (7.5.1 has one, 7.5.2 doesn't) and in how `fleets.toml` is edited (new block vs appended member), not in the deploy mechanics.
 4. **Fleets-list empty state** — first-run UX (no fleets configured yet) isn't addressed here; likely folds into the "+ New fleet" affordance being the obvious first action.
+5. **`fleet_config_write` race safety** — read-modify-write on the whole file (see Consequences) has no CAS/version check today. Worth a guard (re-read + diff before write, or surfacing a conflict) before this ships multi-operator, but not blocking for the current single-operator (Brett) usage.
 
 This is a direction-alignment ADR — Parts A–E are the agreed shape; implementation lands in slices against `main.ts`/`render.ts`/`index.html`, each slice keeping `tsc`/vitest/`vite build` green per the existing console verification bar.
