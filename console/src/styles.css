@@ -598,6 +598,58 @@ button.act:disabled {
   border-color: var(--s-starting);
 }
 
+/* ---- Fleet detail screen (ADR #83 slice 2: 7.3) ---- */
+.fleet-detail-wrap {
+  margin: 0 0 16px;
+}
+.fd-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-bottom: none;
+  border-radius: 6px 6px 0 0;
+  background: var(--panel);
+}
+.fd-back,
+.fd-btn {
+  cursor: pointer;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg);
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  padding: 3px 10px;
+}
+.fd-back:hover {
+  color: var(--text);
+  border-color: var(--s-starting);
+}
+.fd-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.fd-gear {
+  padding: 3px 8px;
+}
+.fd-sep {
+  color: var(--muted);
+}
+.fd-name {
+  font-weight: 600;
+  font-size: 14px;
+}
+.fd-spacer {
+  flex: 1 1 auto;
+}
+.fleet-detail-wrap .roster-wrap {
+  border: 1px solid var(--border);
+  border-radius: 0 0 6px 6px;
+  background: var(--panel);
+}
+
 /* ---- fleets.toml editor (slice C) ---- */
 .cfg-editor-wrap {
   margin: 0 0 12px;

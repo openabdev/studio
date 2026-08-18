@@ -5,6 +5,7 @@ import {
   renderRoster,
   renderIdentity,
   renderFleetConfig,
+  renderFleetDetailHeader,
   renderRemote,
   filterByMembers,
   deploymentKey,
@@ -46,6 +47,8 @@ let agentConsole: AgentConsole | null = null;
 const roster = document.getElementById("roster");
 const identityEl = document.getElementById("identity");
 const configEl = document.getElementById("config");
+const fleetDetailEl = document.getElementById("fleet-detail");
+const fdHeaderEl = document.getElementById("fd-header");
 const remoteEl = document.getElementById("remote");
 const editorSection = document.getElementById("config-editor");
 const editorMount = document.getElementById("cfg-editor-mount");
@@ -267,6 +270,17 @@ async function refreshRemote(): Promise<void> {
   }
 }
 
+// The console's top-level drill-down (ADR #83 Part A): Fleets ↔ Fleet detail.
+// `activeFleet === null` shows the Fleets screen (the `#config` list); a
+// selected fleet shows Fleet detail (breadcrumb header + the members roster)
+// instead. This is screen 7.2 vs 7.3 — slice 2's scope; the further drill into
+// an Agent console (7.4) is slice 3.
+function updateScreen(): void {
+  if (configEl) configEl.hidden = activeFleet !== null;
+  if (fleetDetailEl) fleetDetailEl.hidden = activeFleet === null;
+  if (activeFleet && fdHeaderEl) renderFleetDetailHeader(fdHeaderEl, activeFleet);
+}
+
 // Switch the active fleet by identity (name): re-point every read at its cluster
 // (and thus its bound credential), filter the roster to its members, and refresh
 // immediately — so "switch fleet" == "switch managing account + roster" the ADR
@@ -282,6 +296,22 @@ function selectFleet(name: string): void {
   if (clusterLabel) clusterLabel.textContent = `${activeFleet} · ${activeCluster}`;
   note("info", `config: switched to fleet "${activeFleet}" (cluster "${activeCluster}")`);
   if (configEl) renderFleetConfig(configEl, fleetConfig, activeFleet);
+  updateScreen();
+  void refreshIdentity();
+  void tick();
+}
+
+// The Fleet detail screen's "← Fleets" breadcrumb: back to the Fleets list,
+// unfiltered roster (whole default cluster) until another fleet is picked.
+function deselectFleet(): void {
+  if (!activeFleet) return;
+  activeFleet = null;
+  activeCluster = DEFAULT_CLUSTER;
+  activeMembers = [];
+  if (clusterLabel) clusterLabel.textContent = activeCluster;
+  note("info", "config: back to Fleets");
+  if (configEl) renderFleetConfig(configEl, fleetConfig, activeFleet);
+  updateScreen();
   void refreshIdentity();
   void tick();
 }
@@ -392,6 +422,15 @@ if (configEl) {
     }
     const btn = target.closest<HTMLElement>("[data-fleet]");
     if (btn?.dataset.fleet) selectFleet(btn.dataset.fleet);
+  });
+}
+
+// The Fleet detail header: only "← Fleets" is wired this slice — `+ Add
+// instance` / `⚙` render disabled (slices 5/6 wire them).
+if (fleetDetailEl) {
+  fleetDetailEl.addEventListener("click", (ev) => {
+    const target = ev.target as HTMLElement;
+    if (target.closest('[data-action="back-to-fleets"]')) deselectFleet();
   });
 }
 
@@ -754,6 +793,7 @@ async function boot(): Promise<void> {
   // Compose tab: author the template/overlay/skills library + preview the
   // composed bundle (agent-deployment ADR, slice 1). Self-contained; no polling.
   initComposeTab();
+  updateScreen();
   void refreshConfig();
   void refreshIdentity();
   void refreshRemote();

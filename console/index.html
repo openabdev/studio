@@ -33,6 +33,10 @@
     </header>
     <main class="content">
       <section id="config" class="config-wrap"></section>
+      <section id="fleet-detail" class="fleet-detail-wrap" hidden>
+        <div id="fd-header"></div>
+        <section id="roster" class="roster-wrap"></section>
+      </section>
       <section id="config-editor" class="cfg-editor-wrap" hidden>
         <div class="cfg-editor-head">
           <span class="cfg-label" id="cfg-editor-title">edit fleets.toml</span>
@@ -226,7 +230,6 @@
           </form>
         </div>
       </section>
-      <section id="roster" class="roster-wrap"></section>
     </main>
     <script type="module" src="/src/main.ts"></script>
   </body>
