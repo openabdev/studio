@@ -915,11 +915,13 @@ async function boot(): Promise<void> {
   if (themeBtn) initThemeToggle(themeBtn as HTMLButtonElement);
   setupUpdater();
   await startCore();
-  // Config tab: pin the oab-mcp target (cluster/profile/region → hermetic env);
-  // on save the backend reloads the core, so refresh the roster after.
+  // Debug drawer's Config tab: pin the oab-mcp target (cluster/profile/region →
+  // hermetic env); on save the backend reloads the core, so refresh the roster
+  // after.
   initConfigTab({ onSaved: () => void tick() });
-  // Compose tab: author the template/overlay/skills library + preview the
-  // composed bundle (agent-deployment ADR, slice 1). Self-contained; no polling.
+  // Compose (no longer a tab — an always-visible section, slice 6): author the
+  // template/overlay/skills library + preview the composed bundle
+  // (agent-deployment ADR, slice 1). Self-contained; no polling.
   initComposeTab();
   updateScreen();
   void refreshConfig();
