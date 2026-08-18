@@ -202,6 +202,57 @@ body {
   }
 }
 
+/* Compose (agent-deployment ADR): always-visible now that it's the only thing
+   left in this position — Activity/MCP/Config moved into the Debug drawer
+   below (ADR #83 Part D / slice 6), so there's no longer a tab strip to
+   switch away from it. */
+.compose-standalone {
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+  padding: 10px 12px 0;
+}
+.compose-standalone-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+/* ---- Debug drawer (ADR #83 Part D / slice 6, 7.6) — Activity/MCP/Config,
+   collapsed off the top-level nav, opened by any `[⚙]`. Slides over the right
+   edge; container shape left as an overlay (ADR Open question 10.2 — not a
+   final answer, the simplest thing that satisfies "one affordance, from
+   anywhere"). ---- */
+.debug-drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(520px, 92vw);
+  background: var(--panel);
+  border-left: 1px solid var(--border);
+  box-shadow: -8px 0 24px rgba(0, 0, 0, 0.25);
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  padding: 12px 0 0;
+  overflow: auto;
+}
+.debug-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 12px 10px;
+}
+.debug-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+.debug-spacer {
+  flex: 1;
+}
+
 /* Two tabbed panes — the first display, so launch + core lifecycle and the raw
    MCP interaction are one click apart and visible immediately. */
 .logs {
@@ -573,8 +624,17 @@ button.act:disabled {
   grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
   gap: 8px;
 }
+.fleets-row {
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+}
+.fleets-row .fd-gear {
+  flex: 0 0 auto;
+}
 .cfg-fleet {
   display: flex;
+  flex: 1;
   flex-direction: column;
   gap: 2px;
   text-align: left;

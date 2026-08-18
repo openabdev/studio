@@ -211,18 +211,27 @@ function membersLine(f: FleetConfig["fleets"][number]): string {
   return `<span class="cfg-members">${chips}</span>`;
 }
 
+// The `[⚙]` sits beside, not inside, the switch button — a fleet row is two
+// independent click targets (select vs. debug), not one giant button, so
+// they're siblings under a `.fleets-row` wrapper rather than nested
+// `<button>`s (7.2: "a `[⚙]` that opens the Debug drawer scoped to that
+// fleet's Activity/MCP/Config", slice 6).
 function fleetButton(
   f: FleetConfig["fleets"][number],
   activeFleet: string | null,
 ): string {
   const active = f.name === activeFleet;
   const cls = active ? "cfg-fleet is-active" : "cfg-fleet";
-  return `<button class="${cls}" type="button" data-fleet="${escapeHtml(f.name)}" aria-pressed="${active}">
-      <span class="cfg-name">${escapeHtml(f.name || f.cluster)}</span>
-      <span class="cfg-cluster">${escapeHtml(f.cluster)}</span>
-      ${membersLine(f)}
-      <span class="cfg-cred">${credLine(f)}</span>
-    </button>`;
+  const name = escapeHtml(f.name);
+  return `<div class="fleets-row">
+      <button class="${cls}" type="button" data-fleet="${name}" aria-pressed="${active}">
+        <span class="cfg-name">${escapeHtml(f.name || f.cluster)}</span>
+        <span class="cfg-cluster">${escapeHtml(f.cluster)}</span>
+        ${membersLine(f)}
+        <span class="cfg-cred">${credLine(f)}</span>
+      </button>
+      <button class="fd-btn fd-gear" type="button" data-action="fleet-debug" data-fleet="${name}" title="Debug: ${name}">⚙</button>
+    </div>`;
 }
 
 // Pure: the fleet-binding config -> the config panel HTML. A fleet is a
@@ -268,8 +277,8 @@ export function renderFleetConfig(
 // The breadcrumb + action row shown above the roster once a fleet is selected —
 // "← Fleets" returns to the Fleets screen (Part A's drill-down). `[+ Add
 // instance]` is the slice 5 entry point (7.5.2: deploy into this fleet, no new
-// fleet-identity step). `[⚙]` is the slice 6 Debug-drawer entry point —
-// stubbed disabled here, still out of scope.
+// fleet-identity step). `[⚙]` is the slice 6 entry point — opens the Debug
+// drawer (Activity/MCP/Config) scoped to this fleet.
 export function fleetDetailHeaderHtml(fleetName: string): string {
   return `<div class="fd-head">
       <button class="fd-back" type="button" data-action="back-to-fleets">&larr; Fleets</button>
@@ -277,7 +286,7 @@ export function fleetDetailHeaderHtml(fleetName: string): string {
       <span class="fd-name">${escapeHtml(fleetName)}</span>
       <span class="fd-spacer"></span>
       <button class="fd-btn" type="button" data-action="add-instance">+ Add instance</button>
-      <button class="fd-btn fd-gear" type="button" data-action="fleet-debug" disabled title="coming soon">⚙</button>
+      <button class="fd-btn fd-gear" type="button" data-action="fleet-debug" title="Debug: ${escapeHtml(fleetName)}">⚙</button>
     </div>`;
 }
 

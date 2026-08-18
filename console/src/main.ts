@@ -70,17 +70,22 @@ const chatStopEl = document.getElementById("chat-stop") as HTMLButtonElement | n
 const chatConnEl = document.getElementById("chat-conn");
 const source = defaultSource();
 
-// Two tabs, one pane each: Activity (lifecycle + failures) and MCP (the raw
-// oab-mcp JSON-RPC interaction). `data-target` links a tab to its pane id.
-const tabs = Array.from(
-  document.querySelectorAll<HTMLButtonElement>("#tabs .tab"),
+// The Debug drawer (ADR #83 Part D / slice 6, 7.6): Activity/MCP/Config
+// collapsed off the top-level nav into one secondary panel, opened by any
+// `[⚙]`. Internally it keeps the same three-tab switch the top-level strip
+// used to have — `data-target` still links a tab to its pane id.
+const debugDrawer = document.getElementById("debug-drawer");
+const debugTitleEl = document.getElementById("debug-title");
+const debugTabs = Array.from(
+  document.querySelectorAll<HTMLButtonElement>("#debug-tabs .tab"),
 );
-let activeTarget = tabs.find((t) => t.classList.contains("is-active"))?.dataset
-  .target;
+let debugActiveTarget = debugTabs.find((t) =>
+  t.classList.contains("is-active"),
+)?.dataset.target;
 
-function show(target: string): void {
-  activeTarget = target;
-  for (const tab of tabs) {
+function showDebugTab(target: string): void {
+  debugActiveTarget = target;
+  for (const tab of debugTabs) {
     const on = tab.dataset.target === target;
     tab.classList.toggle("is-active", on);
     if (on) tab.classList.remove("has-new");
@@ -88,15 +93,31 @@ function show(target: string): void {
     if (pane) pane.hidden = !on;
   }
 }
-for (const tab of tabs) {
-  tab.addEventListener("click", () => show(tab.dataset.target ?? ""));
+for (const tab of debugTabs) {
+  tab.addEventListener("click", () => showDebugTab(tab.dataset.target ?? ""));
 }
 
-// Flag a tab when its (hidden) pane gets new lines, so nothing is missed.
+// Flag a debug tab when its (hidden) pane gets new lines, so nothing is missed
+// even while the drawer itself is closed.
 function flag(target: string): void {
-  if (target === activeTarget) return;
-  tabs.find((t) => t.dataset.target === target)?.classList.add("has-new");
+  if (target === debugActiveTarget && debugDrawer && !debugDrawer.hidden) return;
+  debugTabs.find((t) => t.dataset.target === target)?.classList.add("has-new");
 }
+
+function openDebugDrawer(scopeLabel: string): void {
+  if (!debugDrawer) return;
+  if (debugTitleEl) debugTitleEl.textContent = `Debug: ${scopeLabel}`;
+  debugDrawer.hidden = false;
+}
+
+function closeDebugDrawer(): void {
+  if (!debugDrawer) return;
+  debugDrawer.hidden = true;
+}
+
+document
+  .getElementById("debug-close")
+  ?.addEventListener("click", closeDebugDrawer);
 
 const activity = logEl ? createPane(logEl, () => flag("log")) : null;
 const mcp = mcpEl ? createPane(mcpEl, () => flag("mcpio")) : null;
@@ -479,14 +500,19 @@ if (configEl) {
       deployPanel?.open({ kind: "new-fleet" });
       return;
     }
+    const debugBtn = target.closest<HTMLElement>('[data-action="fleet-debug"]');
+    if (debugBtn) {
+      openDebugDrawer(debugBtn.dataset.fleet ?? "");
+      return;
+    }
     const btn = target.closest<HTMLElement>("[data-fleet]");
     if (btn?.dataset.fleet) selectFleet(btn.dataset.fleet);
   });
 }
 
 // The Fleet detail header: "← Fleets" backs out; "+ Add instance" opens the
-// deploy panel scoped to the active fleet (7.5.2). `⚙` still renders disabled
-// (slice 6 wires the Debug drawer).
+// deploy panel scoped to the active fleet (7.5.2); `⚙` opens the Debug drawer
+// scoped to the active fleet (slice 6, 7.6).
 if (fleetDetailEl) {
   fleetDetailEl.addEventListener("click", (ev) => {
     const target = ev.target as HTMLElement;
@@ -496,6 +522,10 @@ if (fleetDetailEl) {
     }
     if (target.closest('[data-action="add-instance"]') && activeFleet) {
       deployPanel?.open({ kind: "add-instance", fleetName: activeFleet });
+      return;
+    }
+    if (target.closest('[data-action="fleet-debug"]') && activeFleet) {
+      openDebugDrawer(activeFleet);
     }
   });
 }

@@ -294,6 +294,14 @@ describe("fleetConfigHtml", () => {
     ).toContain('data-action="new-fleet"');
   });
 
+  it("gives each fleet row its own Debug-drawer gear, scoped by fleet name (ADR #83 slice 6, 7.2)", () => {
+    const html = fleetConfigHtml(FIXTURE_FLEET_CONFIG, "orca");
+    const gears = html.match(/data-action="fleet-debug"/g) ?? [];
+    expect(gears.length).toBe(FIXTURE_FLEET_CONFIG.fleets.length);
+    expect(html).toContain('data-action="fleet-debug" data-fleet="orca"');
+    expect(html).toContain('data-action="fleet-debug" data-fleet="mira"');
+  });
+
   it("renders an unavailable state for null", () => {
     expect(fleetConfigHtml(null, null)).toContain("fleet config unavailable");
   });
@@ -314,11 +322,12 @@ describe("fleetDetailHeaderHtml", () => {
     expect(html).toContain("oab-prod-orca");
   });
 
-  it("wires + Add instance (slice 5) but leaves the Debug drawer disabled (slice 6 scope)", () => {
+  it("wires + Add instance (slice 5) and the Debug drawer gear (slice 6)", () => {
     const html = fleetDetailHeaderHtml("oab-prod-orca");
     expect(html).toContain('data-action="add-instance"');
     expect(html).not.toContain('data-action="add-instance" disabled');
-    expect(html).toContain('data-action="fleet-debug" disabled');
+    expect(html).toContain('data-action="fleet-debug"');
+    expect(html).not.toContain('data-action="fleet-debug" disabled');
   });
 
   it("escapes the fleet name", () => {

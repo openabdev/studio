@@ -181,18 +181,18 @@
       </section>
       <section id="identity" class="identity-wrap"></section>
       <section id="remote" class="remote-wrap"></section>
-      <section class="logs">
-        <nav class="tabs" id="tabs">
-          <button class="tab is-active" data-target="log">Activity</button>
-          <button class="tab" data-target="mcpio">MCP · oab-mcp</button>
-          <button class="tab" data-target="compose">Compose</button>
-          <button class="tab" data-target="config">Config</button>
-          <span class="tabs-spacer"></span>
-          <button class="tab-filter" id="log-level" type="button" title="Activity verbosity — INFO+ hides DEBUG (e.g. keepalives); click for DEBUG+">INFO+</button>
-        </nav>
-        <div id="log" class="log pane"></div>
-        <div id="mcpio" class="log pane mcpio" hidden></div>
-        <div id="compose" class="pane compose" hidden>
+      <!-- Compose (agent-deployment-templates.md: author library → preview →
+           deploy_provision) is the one surface Part C didn't fully relocate —
+           `[+ New fleet]`/`[+ Add instance]` (slice 5) reach the same engine as
+           an action, but where template/overlay *authoring* moves to once this
+           standing section goes away isn't decided in the ADR. Left in place;
+           flagged for the slice 7 self-review. Not part of the Debug drawer. -->
+      <section class="compose-standalone">
+        <div class="compose-standalone-head">
+          <span class="compose-label">Compose</span>
+          <span class="compose-lib-path">template ⊕ overlay authoring — golden bundle library</span>
+        </div>
+        <div id="compose" class="pane compose">
           <div class="compose-grid">
             <div class="compose-lib">
               <div class="compose-lib-head">
@@ -263,7 +263,27 @@
             provider drivers that land a bundle on a runtime are a later slice.
           </p>
         </div>
-        <div id="config" class="pane config" hidden>
+      </section>
+      <!-- ADR #83 Part D / slice 6 (7.6): Activity/MCP/Config collapse into a
+           single secondary Debug drawer, reachable via any `[⚙]` — no longer
+           peer-level tabs. Their internals are unchanged, only their standing
+           in the top-level navigation. Slides over the right edge. -->
+      <aside id="debug-drawer" class="debug-drawer" hidden>
+        <div class="debug-head">
+          <span class="debug-title" id="debug-title">Debug</span>
+          <span class="debug-spacer"></span>
+          <button class="cfg-btn cfg-btn-ghost" id="debug-close" type="button">Close</button>
+        </div>
+        <nav class="tabs" id="debug-tabs">
+          <button class="tab is-active" data-target="log">Activity</button>
+          <button class="tab" data-target="mcpio">MCP · oab-mcp</button>
+          <button class="tab" data-target="debug-config">Config</button>
+          <span class="tabs-spacer"></span>
+          <button class="tab-filter" id="log-level" type="button" title="Activity verbosity — INFO+ hides DEBUG (e.g. keepalives); click for DEBUG+">INFO+</button>
+        </nav>
+        <div id="log" class="log pane"></div>
+        <div id="mcpio" class="log pane mcpio" hidden></div>
+        <div id="debug-config" class="pane config" hidden>
           <form id="config-form" class="config-form" autocomplete="off">
             <label
               >Cluster
@@ -296,7 +316,7 @@
               />
             </label>
             <div class="config-actions">
-              <button type="submit" id="cfg-save">Save &amp; reload core</button>
+              <button type="submit" id="debug-cfg-save">Save &amp; reload core</button>
               <span class="config-status" id="cfg-status"></span>
             </div>
             <p class="config-hint">
@@ -307,7 +327,7 @@
             </p>
           </form>
         </div>
-      </section>
+      </aside>
     </main>
     <script type="module" src="/src/main.ts"></script>
   </body>
