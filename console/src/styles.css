@@ -746,6 +746,16 @@ button.act:disabled {
   max-width: 85%;
   overflow-wrap: anywhere;
 }
+/* A queued message (typed while a turn is in flight): dimmed with a "queued…"
+   label, so it's visible immediately instead of vanishing until the queue drains. */
+.chat-pending .chat-body {
+  opacity: 0.5;
+}
+.chat-queued {
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 2px;
+}
 /* Markdown inside the blue user bubble: code/links need their own contrast
    (the shared .chat-md rules assume the dark agent bubble). */
 .chat-user .chat-md pre,
