@@ -32,50 +32,72 @@
       </div>
     </header>
     <main class="content">
-      <section id="config" class="config-wrap"></section>
-      <section id="fleet-detail" class="fleet-detail-wrap" hidden>
-        <div id="fd-header"></div>
-        <section id="roster" class="roster-wrap"></section>
-        <section id="agents" class="agents-wrap">
-          <div class="agents-head">
-            <span class="agents-label">agent consoles</span>
-            <span class="agents-sub">select an agent to open its console — chat + read-only config</span>
-          </div>
-          <div id="agent-list" class="agent-list"></div>
-          <div id="agent-console" class="agent-console" hidden>
-            <div class="ac-head">
-              <span class="ac-title">agent console</span>
-              <span class="ac-spacer"></span>
-              <button class="ac-close" type="button" data-action="close-console">Close</button>
-            </div>
-            <div id="ac-config" class="ac-config"></div>
-            <div class="ac-files">
-              <div class="ac-files-head">
-                <span class="ac-files-label">Files</span>
-                <span id="ac-files-title" class="ac-files-title muted"></span>
+      <!-- ADR #83 Part B (slice 4): the management chat is mounted once,
+           alongside the Fleets/Fleet-detail/Agent-console drill-down, and stays
+           visible at every depth — it is a conversation with the designated
+           management agent, not with whichever fleet/agent is selected. -->
+      <div class="drilldown-row">
+        <div class="drilldown-main">
+          <section id="config" class="config-wrap"></section>
+          <section id="fleet-detail" class="fleet-detail-wrap" hidden>
+            <div id="fd-header"></div>
+            <section id="roster" class="roster-wrap"></section>
+            <section id="agents" class="agents-wrap">
+              <div class="agents-head">
+                <span class="agents-label">agent consoles</span>
+                <span class="agents-sub">select an agent to open its console — chat + read-only config</span>
               </div>
-              <div class="ac-files-body">
-                <div id="ac-files-list" class="ac-files-list"></div>
-                <div id="ac-files-viewer" class="ac-files-viewer"></div>
-              </div>
-            </div>
-            <div class="ac-chat chat-wrap">
-              <div class="chat-head">
-                <span class="chat-title">Chat</span>
-                <span class="chat-conn" id="ac-chat-conn">disconnected</span>
-              </div>
-              <div id="ac-chat-log" class="chat-log"></div>
-              <form id="ac-chat-form" class="chat-input">
-                <textarea id="ac-chat-text" class="chat-text" rows="2" placeholder="Message this agent…  (Enter to send · Shift+Enter for a newline)"></textarea>
-                <div class="chat-actions">
-                  <button type="button" id="ac-chat-stop" class="chat-btn chat-stop" hidden>Stop</button>
-                  <button type="submit" id="ac-chat-send" class="chat-btn chat-send">Send</button>
+              <div id="agent-list" class="agent-list"></div>
+              <div id="agent-console" class="agent-console" hidden>
+                <div class="ac-head">
+                  <span class="ac-title">agent console</span>
+                  <span class="ac-spacer"></span>
+                  <button class="ac-close" type="button" data-action="close-console">Close</button>
                 </div>
-              </form>
-            </div>
+                <div id="ac-config" class="ac-config"></div>
+                <div class="ac-files">
+                  <div class="ac-files-head">
+                    <span class="ac-files-label">Files</span>
+                    <span id="ac-files-title" class="ac-files-title muted"></span>
+                  </div>
+                  <div class="ac-files-body">
+                    <div id="ac-files-list" class="ac-files-list"></div>
+                    <div id="ac-files-viewer" class="ac-files-viewer"></div>
+                  </div>
+                </div>
+                <div class="ac-chat chat-wrap">
+                  <div class="chat-head">
+                    <span class="chat-title">Chat</span>
+                    <span class="chat-conn" id="ac-chat-conn">disconnected</span>
+                  </div>
+                  <div id="ac-chat-log" class="chat-log"></div>
+                  <form id="ac-chat-form" class="chat-input">
+                    <textarea id="ac-chat-text" class="chat-text" rows="2" placeholder="Message this agent…  (Enter to send · Shift+Enter for a newline)"></textarea>
+                    <div class="chat-actions">
+                      <button type="button" id="ac-chat-stop" class="chat-btn chat-stop" hidden>Stop</button>
+                      <button type="submit" id="ac-chat-send" class="chat-btn chat-send">Send</button>
+                    </div>
+                  </form>
+                </div>
+              </div>
+            </section>
+          </section>
+        </div>
+        <section id="chat" class="chat-wrap">
+          <div class="chat-head">
+            <span class="chat-title">Agent chat</span>
+            <span class="chat-conn" id="chat-conn">disconnected</span>
           </div>
+          <div id="chat-log" class="chat-log"></div>
+          <form id="chat-form" class="chat-input">
+            <textarea id="chat-text" class="chat-text" rows="2" placeholder="Message the agent…  (Enter to send · Shift+Enter for a newline)"></textarea>
+            <div class="chat-actions">
+              <button type="button" id="chat-stop" class="chat-btn chat-stop" hidden>Stop</button>
+              <button type="submit" id="chat-send" class="chat-btn chat-send">Send</button>
+            </div>
+          </form>
         </section>
-      </section>
+      </div>
       <section id="config-editor" class="cfg-editor-wrap" hidden>
         <div class="cfg-editor-head">
           <span class="cfg-label" id="cfg-editor-title">edit fleets.toml</span>
@@ -89,20 +111,6 @@
       </section>
       <section id="identity" class="identity-wrap"></section>
       <section id="remote" class="remote-wrap"></section>
-      <section id="chat" class="chat-wrap">
-        <div class="chat-head">
-          <span class="chat-title">Agent chat</span>
-          <span class="chat-conn" id="chat-conn">disconnected</span>
-        </div>
-        <div id="chat-log" class="chat-log"></div>
-        <form id="chat-form" class="chat-input">
-          <textarea id="chat-text" class="chat-text" rows="2" placeholder="Message the agent…  (Enter to send · Shift+Enter for a newline)"></textarea>
-          <div class="chat-actions">
-            <button type="button" id="chat-stop" class="chat-btn chat-stop" hidden>Stop</button>
-            <button type="submit" id="chat-send" class="chat-btn chat-send">Send</button>
-          </div>
-        </form>
-      </section>
       <section class="logs">
         <nav class="tabs" id="tabs">
           <button class="tab is-active" data-target="log">Activity</button>
