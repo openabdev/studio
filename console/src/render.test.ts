@@ -140,6 +140,19 @@ describe("rosterHtml", () => {
     expect(html).not.toContain("act-pending");
     expect(html).toContain('data-action="stop"');
   });
+
+  it("makes each row's name a button carrying both agent-lookup identities (ADR #83 slice 3)", () => {
+    const html = rosterHtml([dep({ name: "orca", namespace: "prod" })]);
+    expect(html).toContain('class="row-open"');
+    expect(html).toContain('data-open-agent="oab-prod-orca"');
+    expect(html).toContain('data-open-agent-alt="orca"');
+  });
+
+  it("escapes the row-open data attributes", () => {
+    const html = rosterHtml([dep({ name: '"x', namespace: "n" })]);
+    expect(html).toContain("&quot;x");
+    expect(html).not.toContain('data-open-agent-alt=""x"');
+  });
 });
 
 describe("deploymentKey", () => {

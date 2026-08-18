@@ -57,14 +57,21 @@ function actionButton(d: Deployment, pending: boolean): string {
   return `<button class="${cls}" type="button" data-action="${action}" data-name="${escapeHtml(d.name)}" data-namespace="${escapeHtml(d.namespace)}">${label}</button>`;
 }
 
+// The row's name cell is a button, not plain text — clicking a member drills
+// into its Agent console (ADR #83 slice 3: mockup 7.4), if one is registered.
+// `data-open-agent`/`data-open-agent-alt` carry both candidate identities
+// (service name and short name) the delegated handler tries against the
+// registry, same precedence as `filterByMembers`'s member match.
 function rowHtml(d: Deployment, pending: ReadonlySet<string>): string {
   const phases = d.instances.length
     ? d.instances.map((i) => badge(i.state)).join(" ")
     : `<span class="muted">—</span>`;
   const health = d.ready === d.desired ? "ok" : "warn";
   const name = escapeHtml(`${d.namespace}/${d.name}`);
+  const svc = escapeHtml(serviceName(d));
+  const shortName = escapeHtml(d.name);
   return `<tr>
-      <td class="name">${name}</td>
+      <td class="name"><button class="row-open" type="button" data-open-agent="${svc}" data-open-agent-alt="${shortName}" title="open agent console">${name}</button></td>
       <td class="counts ${health}">${d.ready}/${d.desired}<span class="muted"> · cur ${d.current}</span></td>
       <td class="phases">${phases}</td>
       <td class="actions">${actionButton(d, pending.has(deploymentKey(d)))}</td>

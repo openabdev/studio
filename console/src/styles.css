@@ -312,6 +312,23 @@ td.name {
   font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
+/* A roster row's name is a button (ADR #83 slice 3) — drills into that
+   member's Agent console. Reset button chrome so it still reads as a name. */
+button.row-open {
+  appearance: none;
+  cursor: pointer;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  padding: 0;
+}
+button.row-open:hover {
+  color: var(--s-starting);
+  text-decoration: underline;
+}
 td.counts {
   font-variant-numeric: tabular-nums;
 }
@@ -1207,15 +1224,20 @@ button.act:disabled {
   font: inherit;
 }
 
-/* ---- Agent consoles (ADR agent-consoles Parts B/C) ------------------------ */
+/* ---- Agent consoles (ADR agent-consoles Parts B/C; ADR #83 slice 3: reached
+   by drilling into a roster row instead) ------------------------------------ */
 .agents-wrap {
   margin: 0 0 12px;
 }
+/* The flat endpoint selector is superseded as a reachability path by roster
+   rows (`button.row-open`, main.ts's `openAgentForRow`) — kept in the DOM
+   (still rendered by `agentConsole.ts`, untouched) since that's the synthetic
+   click target the roster-row handler reuses; just not shown. */
 .agents-head {
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-  margin-bottom: 8px;
+  display: none;
+}
+#agent-list {
+  display: none;
 }
 .agents-label {
   font-weight: 600;
