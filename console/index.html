@@ -55,16 +55,6 @@
                   <button class="ac-close" type="button" data-action="close-console">Close</button>
                 </div>
                 <div id="ac-config" class="ac-config"></div>
-                <div class="ac-files">
-                  <div class="ac-files-head">
-                    <span class="ac-files-label">Files</span>
-                    <span id="ac-files-title" class="ac-files-title muted"></span>
-                  </div>
-                  <div class="ac-files-body">
-                    <div id="ac-files-list" class="ac-files-list"></div>
-                    <div id="ac-files-viewer" class="ac-files-viewer"></div>
-                  </div>
-                </div>
                 <div class="ac-chat chat-wrap">
                   <div class="chat-head">
                     <span class="chat-title">Chat</span>
@@ -190,7 +180,7 @@
            an action, but where template/overlay *authoring* moves to once this
            standing section goes away isn't decided in the ADR. Left in place;
            flagged for the slice 7 self-review. Not part of the Debug drawer. -->
-      <section class="compose-standalone">
+      <section id="compose-standalone" class="compose-standalone">
         <div class="compose-standalone-head">
           <span class="compose-label">Compose</span>
           <span class="compose-lib-path">template ⊕ overlay authoring — golden bundle library</span>

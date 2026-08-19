@@ -52,6 +52,7 @@ const configEl = document.getElementById("config");
 const fleetDetailEl = document.getElementById("fleet-detail");
 const fdHeaderEl = document.getElementById("fd-header");
 const remoteEl = document.getElementById("remote");
+const composeStandaloneEl = document.getElementById("compose-standalone");
 const editorSection = document.getElementById("config-editor");
 const editorMount = document.getElementById("cfg-editor-mount");
 const editorError = document.getElementById("cfg-editor-error");
@@ -297,9 +298,14 @@ async function refreshRemote(): Promise<void> {
 // `activeFleet === null` shows the Fleets screen (the `#config` list); a
 // selected fleet shows Fleet detail (breadcrumb header + the members roster,
 // with each member drilling further into its Agent console — slice 3) instead.
+// Remote (management-connection setup) and Compose (template/bundle authoring)
+// are Fleets-screen concerns — not relevant once drilled into a fleet/agent, so
+// they hide alongside it.
 function updateScreen(): void {
   if (configEl) configEl.hidden = activeFleet !== null;
   if (fleetDetailEl) fleetDetailEl.hidden = activeFleet === null;
+  if (remoteEl) remoteEl.hidden = activeFleet !== null;
+  if (composeStandaloneEl) composeStandaloneEl.hidden = activeFleet !== null;
   if (activeFleet && fdHeaderEl) renderFleetDetailHeader(fdHeaderEl, activeFleet);
 }
 
@@ -920,6 +926,20 @@ async function boot(): Promise<void> {
   const drilldownResizer = document.getElementById("drilldown-resizer");
   const drilldownSide = document.getElementById("drilldown-side");
   if (drilldownResizer && drilldownSide) initSplitPane(drilldownResizer, drilldownSide);
+  // The Debug drawer anchors below the topbar (`--topbar-h`, styles.css) so it
+  // slides in without hiding the topbar or the drawer's own header underneath
+  // it. Tracked live — the topbar's height isn't hard-coded.
+  const topbarEl = document.querySelector<HTMLElement>(".topbar");
+  if (topbarEl) {
+    const syncTopbarHeight = (): void => {
+      document.documentElement.style.setProperty(
+        "--topbar-h",
+        `${topbarEl.getBoundingClientRect().height}px`,
+      );
+    };
+    syncTopbarHeight();
+    new ResizeObserver(syncTopbarHeight).observe(topbarEl);
+  }
   setupUpdater();
   await startCore();
   // Debug drawer's Config tab: pin the oab-mcp target (cluster/profile/region →

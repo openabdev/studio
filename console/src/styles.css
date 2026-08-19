@@ -278,7 +278,12 @@ body {
    anywhere"). ---- */
 .debug-drawer {
   position: fixed;
-  top: 0;
+  /* Slides in *below* the topbar (it stays visible, per the z-index note
+     above) — `top: 0` put the drawer's own header (title + Close) underneath
+     the topbar's opaque background, hiding it and blocking its clicks.
+     `--topbar-h` is measured in main.ts (topbar height can vary with content/
+     zoom) and kept in sync via ResizeObserver. */
+  top: var(--topbar-h, 53px);
   right: 0;
   bottom: 0;
   width: min(520px, 92vw);
@@ -1106,8 +1111,7 @@ button.act:disabled {
 }
 .chat-text {
   flex: 1 1 auto;
-  resize: vertical;
-  min-height: 38px;
+  resize: none;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--bg);
@@ -1564,117 +1568,8 @@ button.ag-row:hover {
 .ac-fields .id-field {
   font-size: 12px;
 }
-.ac-note {
-  font-size: 12px;
-  margin: 8px 0 0;
-}
 /* the agent console's chat region reuses .chat-wrap/.chat-* wholesale */
 .agent-console .chat-wrap {
   margin: 0;
 }
 
-/* ---- Remote file browser (agent-consoles Part D, read path) --------------- */
-.ac-files {
-  margin: 0 0 12px;
-}
-.ac-files-head {
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-  margin-bottom: 6px;
-}
-.ac-files-label {
-  font-weight: 600;
-  font-size: 13px;
-}
-.ac-files-title {
-  font-size: 12px;
-  overflow-wrap: anywhere;
-  min-width: 0;
-}
-.ac-files-body {
-  display: grid;
-  grid-template-columns: minmax(160px, 240px) 1fr;
-  gap: 10px;
-  align-items: start;
-}
-.ac-files-list {
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--bg);
-  padding: 6px;
-  max-height: 320px;
-  overflow-y: auto;
-}
-.fs-crumb {
-  font-size: 11px;
-  color: var(--muted);
-  padding: 2px 4px 6px;
-  overflow-wrap: anywhere;
-}
-.fs-list {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-.fs-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  text-align: left;
-  border: 0;
-  border-radius: 5px;
-  background: transparent;
-  color: var(--text);
-  font: inherit;
-  font-size: 13px;
-  padding: 4px 6px;
-  cursor: pointer;
-}
-.fs-row:hover {
-  background: var(--panel);
-}
-.fs-row.is-open {
-  background: var(--s-starting);
-  color: #fff;
-}
-.fs-ic {
-  width: 1.2em;
-  text-align: center;
-  flex: 0 0 auto;
-}
-.fs-name {
-  flex: 1 1 auto;
-  overflow-wrap: anywhere;
-}
-.fs-size {
-  font-size: 11px;
-  flex: 0 0 auto;
-}
-.fs-row.is-open .fs-size {
-  color: rgba(255, 255, 255, 0.8);
-}
-.fs-empty,
-.fs-unavailable {
-  font-size: 12px;
-  margin: 6px 4px;
-}
-.ac-files-viewer {
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  overflow: hidden;
-  min-height: 120px;
-  max-height: 320px;
-}
-.ac-files-viewer .cm-editor {
-  max-height: 320px;
-  font-size: 12px;
-}
-.ac-files-viewer:empty::after {
-  content: "select a file to view";
-  display: block;
-  color: var(--muted);
-  font-size: 12px;
-  padding: 12px;
-}

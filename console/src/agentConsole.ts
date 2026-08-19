@@ -7,13 +7,12 @@
 // It stays out of the transcript/turn machinery — that is `chatPanel.ts`. Its
 // job is selection, the dial/teardown, the read-only config header, and
 // registering the mounted panel in the shared event-router map so `main.ts` can
-// route this agent's `agent-update` / `remote-status` events to it. The remote
-// file editor (view/edit/apply) is a later slice; config is read-only here.
+// route this agent's `agent-update` / `remote-status` events to it. Config is
+// read-only here.
 
 import type { Source } from "./source";
 import type { AgentEndpointView } from "./types";
 import { createChatPanel, type ChatPanel } from "./chatPanel";
-import { createFileBrowser, type FileBrowser } from "./fileBrowser";
 import { renderAgentList, agentConsoleHeaderHtml } from "./render";
 
 export interface AgentConsoleConfig {
@@ -47,9 +46,6 @@ export function initAgentConsole(cfg: AgentConsoleConfig): AgentConsole {
   const send = document.getElementById("ac-chat-send") as HTMLButtonElement | null;
   const stop = document.getElementById("ac-chat-stop") as HTMLButtonElement | null;
   const conn = document.getElementById("ac-chat-conn");
-  const fbList = document.getElementById("ac-files-list");
-  const fbViewer = document.getElementById("ac-files-viewer");
-  const fbTitle = document.getElementById("ac-files-title");
 
   const noop: AgentConsole = {
     refresh: async () => {},
@@ -61,7 +57,6 @@ export function initAgentConsole(cfg: AgentConsoleConfig): AgentConsole {
   let agents: AgentEndpointView[] = [];
   let openName: string | null = null;
   let panel: ChatPanel | null = null;
-  let fileBrowser: FileBrowser | null = null;
   const ac = new AbortController();
   const { signal } = ac;
 
@@ -103,8 +98,6 @@ export function initAgentConsole(cfg: AgentConsoleConfig): AgentConsole {
     openName = null;
     panel?.dispose();
     panel = null;
-    fileBrowser?.dispose();
-    fileBrowser = null;
     cfg.panels.delete(name);
     if (consoleEl) consoleEl.hidden = true;
     // Fire-and-forget teardown; a failed disconnect is logged, not fatal.
@@ -142,15 +135,6 @@ export function initAgentConsole(cfg: AgentConsoleConfig): AgentConsole {
         },
       );
       cfg.panels.set(name, panel);
-    }
-    // Mount the read-only file browser for this agent (Part D). It probes fs
-    // capability itself and shows a "pending the fs MCP files server" placeholder
-    // when the endpoint has no fs support — which is every real endpoint today.
-    if (fbList && fbViewer && fbTitle) {
-      fileBrowser = createFileBrowser(
-        { list: fbList, viewer: fbViewer, title: fbTitle },
-        { agent: name, source: cfg.source, note: cfg.note },
-      );
     }
     try {
       await cfg.source.remoteConnect(name);

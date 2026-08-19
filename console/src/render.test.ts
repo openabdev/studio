@@ -7,8 +7,6 @@ import {
   remoteHtml,
   agentListHtml,
   agentConsoleHeaderHtml,
-  fsListingHtml,
-  fsUnavailableHtml,
   filterByMembers,
   serviceName,
   deploymentKey,
@@ -24,7 +22,6 @@ import {
   AGENT_STATES,
   type AgentEndpointView,
   type Deployment,
-  type FsListing,
   type RuntimeContext,
 } from "./types";
 
@@ -524,76 +521,5 @@ describe("agentConsoleHeaderHtml", () => {
   it("never leaks a token field (secrets don't cross the bridge)", () => {
     const html = agentConsoleHeaderHtml(orca, "connected");
     expect(html.toLowerCase()).not.toContain("token");
-  });
-
-  it("notes the read-only editor limitation until the fs MCP files server lands", () => {
-    expect(agentConsoleHeaderHtml(orca, "disconnected")).toContain("Read-only");
-  });
-});
-
-describe("fsListingHtml", () => {
-  const listing: FsListing = {
-    path: "/home/node",
-    entries: [
-      { name: "notes.md", path: "/home/node/notes.md", kind: "file", size: 140 },
-      { name: "agent_profiling", path: "/home/node/agent_profiling", kind: "dir" },
-      { name: "CLAUDE.md", path: "/home/node/CLAUDE.md", kind: "file", size: 2048 },
-    ],
-  };
-
-  it("sorts directories before files, each alphabetically", () => {
-    const html = fsListingHtml(listing);
-    const iDir = html.indexOf("agent_profiling");
-    const iClaude = html.indexOf("CLAUDE.md");
-    const iNotes = html.indexOf("notes.md");
-    expect(iDir).toBeLessThan(iClaude); // dir before any file
-    expect(iClaude).toBeLessThan(iNotes); // files alphabetical
-  });
-
-  it("hooks dirs and files with the right navigation attributes", () => {
-    const html = fsListingHtml(listing);
-    expect(html).toContain('data-fs-dir="/home/node/agent_profiling"');
-    expect(html).toContain('data-fs-file="/home/node/CLAUDE.md"');
-  });
-
-  it("shows a human-readable size for files only", () => {
-    const html = fsListingHtml(listing);
-    expect(html).toContain("2.0 KB"); // CLAUDE.md
-    expect(html).toContain("140 B"); // notes.md
-  });
-
-  it("renders the breadcrumb path", () => {
-    expect(fsListingHtml(listing)).toContain("/home/node");
-  });
-
-  it("marks the open file", () => {
-    const html = fsListingHtml(listing, { selectedPath: "/home/node/CLAUDE.md" });
-    expect(html).toMatch(/is-open[^>]*data-fs-file="\/home\/node\/CLAUDE\.md"/);
-  });
-
-  it("shows an up affordance only when canGoUp", () => {
-    expect(fsListingHtml(listing, { canGoUp: true })).toContain("data-fs-up");
-    expect(fsListingHtml(listing, { canGoUp: false })).not.toContain("data-fs-up");
-  });
-
-  it("renders an empty-directory note when there are no entries and no up", () => {
-    expect(fsListingHtml({ path: "/x", entries: [] })).toContain("empty directory");
-  });
-
-  it("escapes entry names and paths", () => {
-    const html = fsListingHtml({
-      path: "/x",
-      entries: [{ name: "<script>", path: "/x/<script>", kind: "file" }],
-    });
-    expect(html).not.toContain("<script>");
-    expect(html).toContain("&lt;script&gt;");
-  });
-});
-
-describe("fsUnavailableHtml", () => {
-  it("renders the pending reason, escaped", () => {
-    const html = fsUnavailableHtml("pending the fs MCP files server");
-    expect(html).toContain("fs-unavailable");
-    expect(html).toContain("pending the fs MCP files server");
   });
 });
