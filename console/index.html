@@ -147,7 +147,16 @@
         </div>
         <div class="drilldown-resizer" id="drilldown-resizer" title="Drag to resize"></div>
         <div class="drilldown-side" id="drilldown-side">
-          <section id="identity" class="identity-wrap"></section>
+          <!-- Identity (who's managing this cluster) and Remote (the live ACP
+               connection that powers Agent chat below) read as one unit — both
+               are supporting status for the same persistent chat, just two
+               different failure modes (bad credentials vs. no connection) —
+               so they're visually one box (`.mgmt-combo`) though still two
+               independently-rendered/tested sections. -->
+          <div class="mgmt-combo">
+            <section id="identity" class="identity-wrap"></section>
+            <section id="remote" class="remote-wrap"></section>
+          </div>
           <section id="chat" class="chat-wrap">
             <div class="chat-head">
               <span class="chat-title">Agent chat</span>
@@ -175,7 +184,6 @@
         <div id="cfg-editor-mount" class="cfg-editor-mount"></div>
         <div class="cfg-editor-error" id="cfg-editor-error" hidden></div>
       </section>
-      <section id="remote" class="remote-wrap"></section>
       <!-- Compose (agent-deployment-templates.md: author library → preview →
            deploy_provision) is the one surface Part C didn't fully relocate —
            `[+ New fleet]`/`[+ Add instance]` (slice 5) reach the same engine as

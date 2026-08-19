@@ -298,13 +298,14 @@ async function refreshRemote(): Promise<void> {
 // `activeFleet === null` shows the Fleets screen (the `#config` list); a
 // selected fleet shows Fleet detail (breadcrumb header + the members roster,
 // with each member drilling further into its Agent console — slice 3) instead.
-// Remote (management-connection setup) and Compose (template/bundle authoring)
-// are Fleets-screen concerns — not relevant once drilled into a fleet/agent, so
-// they hide alongside it.
+// Compose (template/bundle authoring) is a Fleets-screen concern — not
+// relevant once drilled into a fleet/agent, so it hides alongside it. Remote
+// now lives in the persistent side column (`.mgmt-combo`, next to Identity) —
+// it stays visible at every depth, same as Identity and Agent chat, since
+// it's the connection status backing that same persistent chat.
 function updateScreen(): void {
   if (configEl) configEl.hidden = activeFleet !== null;
   if (fleetDetailEl) fleetDetailEl.hidden = activeFleet === null;
-  if (remoteEl) remoteEl.hidden = activeFleet !== null;
   if (composeStandaloneEl) composeStandaloneEl.hidden = activeFleet !== null;
   if (activeFleet && fdHeaderEl) renderFleetDetailHeader(fdHeaderEl, activeFleet);
 }
