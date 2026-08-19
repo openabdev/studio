@@ -454,13 +454,17 @@ td.name {
   font-variant-numeric: tabular-nums;
 }
 /* A roster row's name is a button (ADR #83 slice 3) — drills into that
-   member's Agent console. Reset button chrome so it still reads as a name. */
+   member's Agent console. Reset button chrome, but read as a link (not plain
+   text) at rest — a hover-only affordance meant the click target was
+   undiscoverable without first hovering it. */
 button.row-open {
   appearance: none;
   cursor: pointer;
   border: 0;
   background: transparent;
-  color: var(--text);
+  color: var(--s-starting);
+  text-decoration: underline;
+  text-underline-offset: 2px;
   font: inherit;
   font-weight: 600;
   font-variant-numeric: tabular-nums;

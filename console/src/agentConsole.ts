@@ -26,6 +26,13 @@ export interface AgentConsoleConfig {
   // The management endpoint's name (resolved async in `main.ts`) — read lazily so
   // the console never tries to re-key a name the management console owns.
   managementName: () => string | null;
+  // The persistent management connection's active dial target (`remote.toml`'s
+  // `url`, only while it's connecting/connected/erroring — `null` once fully
+  // disconnected). `agents.toml`'s own `management` flag and this url are two
+  // independent sources of truth; a roster entry can reach the exact same
+  // physical agent as the management connection without being flagged, so both
+  // checks are needed to avoid dialing a second ACP session against it.
+  managementUrl: () => string | null;
 }
 
 export interface AgentConsole {
@@ -69,7 +76,7 @@ export function initAgentConsole(cfg: AgentConsoleConfig): AgentConsole {
   }
 
   function renderList(): void {
-    if (listEl) renderAgentList(listEl, agents, openName);
+    if (listEl) renderAgentList(listEl, agents, openName, cfg.managementUrl());
   }
 
   function renderHeader(status: string): void {
@@ -111,12 +118,23 @@ export function initAgentConsole(cfg: AgentConsoleConfig): AgentConsole {
   // Open a console for a named endpoint: teardown any current one, mount a chat
   // panel bound to this agent, render its read-only config, and dial the
   // endpoint. The management endpoint is never opened here (it has its own
-  // console); unconfigured endpoints are not dialable.
+  // console) — by name (agents.toml's own flag) or by url (the same physical
+  // agent reached under an un-flagged roster entry, e.g. this very fleet's
+  // management agent also showing up as a plain roster member); unconfigured
+  // endpoints are not dialable.
   async function open(name: string): Promise<void> {
     if (name === openName) return;
-    if (name === cfg.managementName()) return; // has its own top-level console
+    if (name === cfg.managementName()) return;
     const a = find(name);
     if (!a || !a.configured) return;
+    const mgmtUrl = cfg.managementUrl();
+    if (mgmtUrl && a.url === mgmtUrl) {
+      cfg.note(
+        "info",
+        `agents: "${name}" is the management agent's own endpoint — use Agent chat above instead of a second console`,
+      );
+      return;
+    }
     close();
     openName = name;
     if (consoleEl) consoleEl.hidden = false;

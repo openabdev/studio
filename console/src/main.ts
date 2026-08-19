@@ -913,6 +913,8 @@ async function boot(): Promise<void> {
     note,
     panels: chatPanels,
     managementName: () => managementName,
+    managementUrl: () =>
+      remoteConfig && remoteConfig.status !== "disconnected" ? remoteConfig.url : null,
   });
   if (clusterLabel) clusterLabel.textContent = activeCluster;
   note("info", `app: polling cluster "${activeCluster}" every ${POLL_MS / 1000}s`);

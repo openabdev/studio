@@ -459,47 +459,63 @@ describe("agentListHtml", () => {
   }
 
   it("renders an empty-state pointing at agents.toml when the registry is empty", () => {
-    const html = agentListHtml([], null);
+    const html = agentListHtml([], null, null);
     expect(html).toContain("ag-empty");
     expect(html).toContain("agents.toml");
   });
 
   it("makes an ordinary configured endpoint an openable button", () => {
-    const html = agentListHtml([ep({ name: "mira" })], null);
+    const html = agentListHtml([ep({ name: "mira" })], null, null);
     expect(html).toContain('data-agent="mira"');
     expect(html).toContain("<button");
     expect(html).not.toContain("disabled");
   });
 
   it("disables an unconfigured endpoint (no url+token to dial)", () => {
-    const html = agentListHtml([ep({ name: "falcon", configured: false, url: "" })], null);
+    const html = agentListHtml(
+      [ep({ name: "falcon", configured: false, url: "" })],
+      null,
+      null,
+    );
     expect(html).toContain('data-agent="falcon"');
     expect(html).toContain("disabled");
     expect(html).toContain("not configured");
   });
 
   it("shows the management endpoint but does not make it openable", () => {
-    const html = agentListHtml([ep({ name: "orca", management: true })], null);
+    const html = agentListHtml([ep({ name: "orca", management: true })], null, null);
     // no data-agent hook → the delegated open handler can't fire for it
     expect(html).not.toContain('data-agent="orca"');
     expect(html).toContain("management");
     expect(html).toContain("console above");
   });
 
+  it("also treats an un-flagged endpoint as management when its url matches the active management connection", () => {
+    const html = agentListHtml(
+      [ep({ name: "orca", management: false, url: "wss://orca-acp.example/acp" })],
+      null,
+      "wss://orca-acp.example/acp",
+    );
+    expect(html).not.toContain('data-agent="orca"');
+    expect(html).toContain("management");
+    expect(html).toContain("console above");
+  });
+
   it("marks the currently open console as pressed", () => {
-    const html = agentListHtml([ep({ name: "mira" })], "mira");
+    const html = agentListHtml([ep({ name: "mira" })], "mira", null);
     expect(html).toContain('aria-pressed="true"');
     expect(html).toContain("is-open");
   });
 
   it("renders every fixture endpoint", () => {
-    const html = agentListHtml(FIXTURE_AGENTS, null);
+    const html = agentListHtml(FIXTURE_AGENTS, null, null);
     for (const a of FIXTURE_AGENTS) expect(html).toContain(a.name);
   });
 
   it("escapes endpoint names and urls", () => {
     const html = agentListHtml(
       [ep({ name: "a<b", url: "wss://x/?q=<script>" })],
+      null,
       null,
     );
     expect(html).not.toContain("<script>");

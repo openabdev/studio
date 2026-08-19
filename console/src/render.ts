@@ -374,18 +374,29 @@ function endpointStatusBadge(status: string): string {
 
 // One selector row per endpoint. The management endpoint is shown but not
 // openable as an agent console — it has its own top-level console (with chat +
-// fleet control); a duplicate per-agent console for it is redundant. Ordinary
-// endpoints open on click (`data-agent`); an unconfigured one (no url+token) is
-// disabled. `openName` marks the currently open console.
-function agentRow(a: AgentEndpointView, openName: string | null): string {
+// fleet control); a duplicate per-agent console for it is redundant and would
+// race two ACP sessions against the same physical agent. `agents.toml`'s own
+// `management: true` flag is one way an entry ends up "the management agent";
+// `managementUrl` (the active `remote.toml` dial target) catches the same
+// physical agent reached under an *un*flagged roster entry — same treatment
+// either way, so the row's disabled/hinted state doesn't lie about whether
+// clicking it does anything. Ordinary endpoints open on click (`data-agent`);
+// an unconfigured one (no url+token) is disabled. `openName` marks the
+// currently open console.
+function agentRow(
+  a: AgentEndpointView,
+  openName: string | null,
+  managementUrl: string | null,
+): string {
   const name = escapeHtml(a.name);
   const url = a.url
     ? `<code class="ag-url">${escapeHtml(a.url)}</code>`
     : `<span class="muted">not configured</span>`;
-  const tags = a.management
+  const isManagement = a.management || (!!managementUrl && a.url === managementUrl);
+  const tags = isManagement
     ? `<span class="ag-tag ag-mgmt">management</span>`
     : "";
-  if (a.management) {
+  if (isManagement) {
     return `<div class="ag-row ag-row-mgmt" aria-disabled="true">
         <span class="ag-name">${name}</span>${tags}
         ${url}
@@ -405,16 +416,18 @@ function agentRow(a: AgentEndpointView, openName: string | null): string {
 
 // Pure: the endpoint registry -> the selector HTML. An empty registry renders a
 // hint pointing at the config file (there is no in-app registry editor yet — a
-// later slice). `openName` is the console currently open (or `null`).
+// later slice). `openName` is the console currently open (or `null`);
+// `managementUrl` is the active `remote.toml` dial target (or `null`).
 export function agentListHtml(
   agents: AgentEndpointView[],
   openName: string | null,
+  managementUrl: string | null,
 ): string {
   if (agents.length === 0) {
     return `<p class="ag-empty">No agent endpoints configured — add <code>[[agent]]</code> entries to <code>agents.toml</code> to reach more agents.</p>`;
   }
   return `<div class="ag-list">${agents
-    .map((a) => agentRow(a, openName))
+    .map((a) => agentRow(a, openName, managementUrl))
     .join("")}</div>`;
 }
 
@@ -422,8 +435,9 @@ export function renderAgentList(
   el: HTMLElement,
   agents: AgentEndpointView[],
   openName: string | null,
+  managementUrl: string | null,
 ): void {
-  el.innerHTML = agentListHtml(agents, openName);
+  el.innerHTML = agentListHtml(agents, openName, managementUrl);
 }
 
 // Pure: the open console's read-only config header — identity + dial target +
