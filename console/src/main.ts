@@ -21,6 +21,7 @@ import { initAgentConsole, type AgentConsole } from "./agentConsole";
 import { initDeployPanel, type DeployPanelHandle, type DeployedInfo } from "./deploy";
 import { createPane, bindBackend, type Level } from "./log";
 import { initThemeToggle } from "./theme";
+import { initSplitPane } from "./splitPane";
 import { EditorView, basicSetup } from "codemirror";
 import { EditorState } from "@codemirror/state";
 import { StreamLanguage } from "@codemirror/language";
@@ -913,6 +914,12 @@ async function boot(): Promise<void> {
   // prefers-color-scheme default.
   const themeBtn = document.getElementById("theme-btn");
   if (themeBtn) initThemeToggle(themeBtn as HTMLButtonElement);
+  // Drag-resize between the drill-down column and the persistent Agent chat
+  // side (`.drilldown-side`) — widening the side is how the operator makes
+  // the chat panel bigger.
+  const drilldownResizer = document.getElementById("drilldown-resizer");
+  const drilldownSide = document.getElementById("drilldown-side");
+  if (drilldownResizer && drilldownSide) initSplitPane(drilldownResizer, drilldownSide);
   setupUpdater();
   await startCore();
   // Debug drawer's Config tab: pin the oab-mcp target (cluster/profile/region →

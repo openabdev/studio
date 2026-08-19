@@ -189,24 +189,69 @@ body {
 .drilldown-row {
   display: flex;
   align-items: flex-start;
-  gap: 16px;
+  gap: 0;
   margin: 0 0 16px;
 }
 .drilldown-main {
-  flex: 2 1 0;
+  flex: 1 1 0;
   min-width: 0;
 }
-.drilldown-row > .chat-wrap {
-  flex: 1 1 320px;
+/* Drag handle between the two columns — mousedown/move/up wiring lives in
+   main.ts (src/splitPane.ts owns the pure clamp/persist logic). Widening
+   .drilldown-side is how the operator makes the Agent chat panel bigger. */
+.drilldown-resizer {
+  flex: 0 0 auto;
+  align-self: stretch;
+  width: 13px;
+  margin: 0 -2px;
+  cursor: col-resize;
+  position: relative;
+  z-index: 1;
+}
+.drilldown-resizer::after {
+  content: "";
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  left: 50%;
+  width: 2px;
+  border-radius: 2px;
+  background: var(--border);
+  transform: translateX(-50%);
+}
+.drilldown-resizer:hover::after,
+.drilldown-resizer.is-dragging::after {
+  background: var(--s-starting);
+}
+.drilldown-side {
+  flex: 0 0 var(--drilldown-side-w, 420px);
   min-width: 280px;
+  max-width: 70vw;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.drilldown-side > .identity-wrap {
   margin: 0;
+}
+.drilldown-side > .chat-wrap {
+  margin: 0;
+}
+.drilldown-side > .chat-wrap .chat-log {
+  min-height: 240px;
+  max-height: 560px;
 }
 @media (max-width: 860px) {
   .drilldown-row {
     flex-direction: column;
   }
-  .drilldown-row > .chat-wrap {
+  .drilldown-resizer {
+    display: none;
+  }
+  .drilldown-side {
+    flex: 0 0 auto;
     width: 100%;
+    max-width: none;
   }
 }
 
