@@ -380,6 +380,12 @@ async function handleDeployed(info: DeployedInfo): Promise<void> {
 const deployPanel: DeployPanelHandle | null = initDeployPanel({
   source,
   onDeployed: handleDeployed,
+  // Deploy replaces whichever of #config/#fleet-detail is showing in the main
+  // column while open (Brett: it read as a stray extra panel when it instead
+  // rendered full-width below an unrelated-looking roster+chat row); closing
+  // it just re-runs the same screen logic used everywhere else `activeFleet`
+  // changes, rather than duplicating "which one was showing" here.
+  restoreScreen: updateScreen,
 });
 
 // Fleet detail shows either the members roster or the open Agent console, never

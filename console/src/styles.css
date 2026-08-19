@@ -192,6 +192,14 @@ body {
   gap: 0;
   margin: 0 0 16px;
 }
+/* Nothing toggles `hidden` on this element today (deploy.ts used to; it now
+   hides `#config`/`#fleet-detail` in place instead, see deploy.ts), but the
+   unconditional `display: flex` above would silently no-op it exactly like
+   `.debug-drawer`/`.deploy-identity` if that ever changes — cheap insurance
+   against the same bug recurring a third time. */
+.drilldown-row[hidden] {
+  display: none;
+}
 .drilldown-main {
   flex: 1 1 0;
   min-width: 0;
@@ -1408,6 +1416,13 @@ button.act:disabled {
   flex-direction: column;
   gap: 10px;
   max-width: 420px;
+}
+/* Same fix as `.debug-drawer[hidden]` above — an unconditional `display: flex`
+   and the `[hidden]` UA rule are equal specificity, and the later author rule
+   wins the cascade, so `identityForm.hidden = true` (deploy.ts) rendered
+   nothing without this. */
+.deploy-identity[hidden] {
+  display: none;
 }
 .deploy-identity label {
   display: flex;

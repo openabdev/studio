@@ -52,6 +52,9 @@ export interface DeployedInfo {
 export interface DeployPanelDeps {
   source: Source;
   onDeployed(info: DeployedInfo): void | Promise<void>;
+  // Re-run the #config/#fleet-detail visibility logic on close — main.ts owns
+  // which of the two `activeFleet` selects, this panel doesn't need to know.
+  restoreScreen(): void;
 }
 
 export interface DeployPanelHandle {
@@ -59,11 +62,15 @@ export interface DeployPanelHandle {
   close(): void;
 }
 
-// Wires the `#deploy-wrap` panel declared in index.html. `null` if the DOM
-// isn't present (mirrors the rest of the console's init* functions).
+// Wires the `#deploy-wrap` panel declared in index.html. It lives inside
+// `.drilldown-main` (a sibling of `#config`/`#fleet-detail`) so it takes over
+// just the main column while open — the persistent side column (identity +
+// Agent chat) stays put, same as every other depth of the drill-down. `null`
+// if the DOM isn't present (mirrors the rest of the console's init* functions).
 export function initDeployPanel(deps: DeployPanelDeps): DeployPanelHandle | null {
   const wrap = document.getElementById("deploy-wrap");
-  const drilldownRow = document.getElementById("drilldown-row");
+  const configEl = document.getElementById("config");
+  const fleetDetailEl = document.getElementById("fleet-detail");
   const titleEl = document.getElementById("deploy-title");
   const cancelBtn = document.getElementById("deploy-cancel") as HTMLButtonElement | null;
   const identityForm = document.getElementById("deploy-identity-form") as HTMLFormElement | null;
@@ -154,7 +161,8 @@ export function initDeployPanel(deps: DeployPanelDeps): DeployPanelHandle | null
       composeHeading.textContent =
         m.kind === "new-fleet" ? "Step 2 — first instance" : "Compose";
     }
-    if (drilldownRow) drilldownRow.hidden = true;
+    if (configEl) configEl.hidden = true;
+    if (fleetDetailEl) fleetDetailEl.hidden = true;
     wrap.hidden = false;
     void loadLibraryAndPickers();
   };
@@ -162,7 +170,7 @@ export function initDeployPanel(deps: DeployPanelDeps): DeployPanelHandle | null
   const close = (): void => {
     mode = null;
     wrap.hidden = true;
-    if (drilldownRow) drilldownRow.hidden = false;
+    deps.restoreScreen();
     reset();
   };
 
