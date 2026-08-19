@@ -179,6 +179,7 @@ body {
 .content {
   display: flex;
   flex-direction: column;
+  padding: 16px 18px;
 }
 
 /* ---- Drill-down row: Fleets/Fleet-detail/Agent-console + persistent chat
@@ -188,24 +189,77 @@ body {
 .drilldown-row {
   display: flex;
   align-items: flex-start;
-  gap: 16px;
+  gap: 0;
   margin: 0 0 16px;
 }
+/* Nothing toggles `hidden` on this element today (deploy.ts used to; it now
+   hides `#config`/`#fleet-detail` in place instead, see deploy.ts), but the
+   unconditional `display: flex` above would silently no-op it exactly like
+   `.debug-drawer`/`.deploy-identity` if that ever changes — cheap insurance
+   against the same bug recurring a third time. */
+.drilldown-row[hidden] {
+  display: none;
+}
 .drilldown-main {
-  flex: 2 1 0;
+  flex: 1 1 0;
   min-width: 0;
 }
-.drilldown-row > .chat-wrap {
-  flex: 1 1 320px;
+/* Drag handle between the two columns — mousedown/move/up wiring lives in
+   main.ts (src/splitPane.ts owns the pure clamp/persist logic). Widening
+   .drilldown-side is how the operator makes the Agent chat panel bigger. */
+.drilldown-resizer {
+  flex: 0 0 auto;
+  align-self: stretch;
+  width: 13px;
+  margin: 0 -2px;
+  cursor: col-resize;
+  position: relative;
+  z-index: 1;
+}
+.drilldown-resizer::after {
+  content: "";
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  left: 50%;
+  width: 2px;
+  border-radius: 2px;
+  background: var(--border);
+  transform: translateX(-50%);
+}
+.drilldown-resizer:hover::after,
+.drilldown-resizer.is-dragging::after {
+  background: var(--s-starting);
+}
+.drilldown-side {
+  flex: 0 0 var(--drilldown-side-w, 420px);
   min-width: 280px;
+  max-width: 70vw;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.drilldown-side > .identity-wrap {
   margin: 0;
+}
+.drilldown-side > .chat-wrap {
+  margin: 0;
+}
+.drilldown-side > .chat-wrap .chat-log {
+  min-height: 240px;
+  max-height: 560px;
 }
 @media (max-width: 860px) {
   .drilldown-row {
     flex-direction: column;
   }
-  .drilldown-row > .chat-wrap {
+  .drilldown-resizer {
+    display: none;
+  }
+  .drilldown-side {
+    flex: 0 0 auto;
     width: 100%;
+    max-width: none;
   }
 }
 
@@ -232,7 +286,12 @@ body {
    anywhere"). ---- */
 .debug-drawer {
   position: fixed;
-  top: 0;
+  /* Slides in *below* the topbar (it stays visible, per the z-index note
+     above) — `top: 0` put the drawer's own header (title + Close) underneath
+     the topbar's opaque background, hiding it and blocking its clicks.
+     `--topbar-h` is measured in main.ts (topbar height can vary with content/
+     zoom) and kept in sync via ResizeObserver. */
+  top: var(--topbar-h, 53px);
   right: 0;
   bottom: 0;
   width: min(520px, 92vw);
@@ -403,13 +462,17 @@ td.name {
   font-variant-numeric: tabular-nums;
 }
 /* A roster row's name is a button (ADR #83 slice 3) — drills into that
-   member's Agent console. Reset button chrome so it still reads as a name. */
+   member's Agent console. Reset button chrome, but read as a link (not plain
+   text) at rest — a hover-only affordance meant the click target was
+   undiscoverable without first hovering it. */
 button.row-open {
   appearance: none;
   cursor: pointer;
   border: 0;
   background: transparent;
-  color: var(--text);
+  color: var(--s-starting);
+  text-decoration: underline;
+  text-underline-offset: 2px;
   font: inherit;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
@@ -1060,8 +1123,7 @@ button.act:disabled {
 }
 .chat-text {
   flex: 1 1 auto;
-  resize: vertical;
-  min-height: 38px;
+  resize: none;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--bg);
@@ -1355,6 +1417,13 @@ button.act:disabled {
   gap: 10px;
   max-width: 420px;
 }
+/* Same fix as `.debug-drawer[hidden]` above — an unconditional `display: flex`
+   and the `[hidden]` UA rule are equal specificity, and the later author rule
+   wins the cascade, so `identityForm.hidden = true` (deploy.ts) rendered
+   nothing without this. */
+.deploy-identity[hidden] {
+  display: none;
+}
 .deploy-identity label {
   display: flex;
   flex-direction: column;
@@ -1518,117 +1587,8 @@ button.ag-row:hover {
 .ac-fields .id-field {
   font-size: 12px;
 }
-.ac-note {
-  font-size: 12px;
-  margin: 8px 0 0;
-}
 /* the agent console's chat region reuses .chat-wrap/.chat-* wholesale */
 .agent-console .chat-wrap {
   margin: 0;
 }
 
-/* ---- Remote file browser (agent-consoles Part D, read path) --------------- */
-.ac-files {
-  margin: 0 0 12px;
-}
-.ac-files-head {
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-  margin-bottom: 6px;
-}
-.ac-files-label {
-  font-weight: 600;
-  font-size: 13px;
-}
-.ac-files-title {
-  font-size: 12px;
-  overflow-wrap: anywhere;
-  min-width: 0;
-}
-.ac-files-body {
-  display: grid;
-  grid-template-columns: minmax(160px, 240px) 1fr;
-  gap: 10px;
-  align-items: start;
-}
-.ac-files-list {
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--bg);
-  padding: 6px;
-  max-height: 320px;
-  overflow-y: auto;
-}
-.fs-crumb {
-  font-size: 11px;
-  color: var(--muted);
-  padding: 2px 4px 6px;
-  overflow-wrap: anywhere;
-}
-.fs-list {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-.fs-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  text-align: left;
-  border: 0;
-  border-radius: 5px;
-  background: transparent;
-  color: var(--text);
-  font: inherit;
-  font-size: 13px;
-  padding: 4px 6px;
-  cursor: pointer;
-}
-.fs-row:hover {
-  background: var(--panel);
-}
-.fs-row.is-open {
-  background: var(--s-starting);
-  color: #fff;
-}
-.fs-ic {
-  width: 1.2em;
-  text-align: center;
-  flex: 0 0 auto;
-}
-.fs-name {
-  flex: 1 1 auto;
-  overflow-wrap: anywhere;
-}
-.fs-size {
-  font-size: 11px;
-  flex: 0 0 auto;
-}
-.fs-row.is-open .fs-size {
-  color: rgba(255, 255, 255, 0.8);
-}
-.fs-empty,
-.fs-unavailable {
-  font-size: 12px;
-  margin: 6px 4px;
-}
-.ac-files-viewer {
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  overflow: hidden;
-  min-height: 120px;
-  max-height: 320px;
-}
-.ac-files-viewer .cm-editor {
-  max-height: 320px;
-  font-size: 12px;
-}
-.ac-files-viewer:empty::after {
-  content: "select a file to view";
-  display: block;
-  color: var(--muted);
-  font-size: 12px;
-  padding: 12px;
-}

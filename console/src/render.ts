@@ -3,7 +3,6 @@ import type {
   AgentState,
   Deployment,
   FleetConfig,
-  FsListing,
   RemoteConfig,
   RuntimeContext,
 } from "./types";
@@ -375,18 +374,29 @@ function endpointStatusBadge(status: string): string {
 
 // One selector row per endpoint. The management endpoint is shown but not
 // openable as an agent console — it has its own top-level console (with chat +
-// fleet control); a duplicate per-agent console for it is redundant. Ordinary
-// endpoints open on click (`data-agent`); an unconfigured one (no url+token) is
-// disabled. `openName` marks the currently open console.
-function agentRow(a: AgentEndpointView, openName: string | null): string {
+// fleet control); a duplicate per-agent console for it is redundant and would
+// race two ACP sessions against the same physical agent. `agents.toml`'s own
+// `management: true` flag is one way an entry ends up "the management agent";
+// `managementUrl` (the active `remote.toml` dial target) catches the same
+// physical agent reached under an *un*flagged roster entry — same treatment
+// either way, so the row's disabled/hinted state doesn't lie about whether
+// clicking it does anything. Ordinary endpoints open on click (`data-agent`);
+// an unconfigured one (no url+token) is disabled. `openName` marks the
+// currently open console.
+function agentRow(
+  a: AgentEndpointView,
+  openName: string | null,
+  managementUrl: string | null,
+): string {
   const name = escapeHtml(a.name);
   const url = a.url
     ? `<code class="ag-url">${escapeHtml(a.url)}</code>`
     : `<span class="muted">not configured</span>`;
-  const tags = a.management
+  const isManagement = a.management || (!!managementUrl && a.url === managementUrl);
+  const tags = isManagement
     ? `<span class="ag-tag ag-mgmt">management</span>`
     : "";
-  if (a.management) {
+  if (isManagement) {
     return `<div class="ag-row ag-row-mgmt" aria-disabled="true">
         <span class="ag-name">${name}</span>${tags}
         ${url}
@@ -406,16 +416,18 @@ function agentRow(a: AgentEndpointView, openName: string | null): string {
 
 // Pure: the endpoint registry -> the selector HTML. An empty registry renders a
 // hint pointing at the config file (there is no in-app registry editor yet — a
-// later slice). `openName` is the console currently open (or `null`).
+// later slice). `openName` is the console currently open (or `null`);
+// `managementUrl` is the active `remote.toml` dial target (or `null`).
 export function agentListHtml(
   agents: AgentEndpointView[],
   openName: string | null,
+  managementUrl: string | null,
 ): string {
   if (agents.length === 0) {
     return `<p class="ag-empty">No agent endpoints configured — add <code>[[agent]]</code> entries to <code>agents.toml</code> to reach more agents.</p>`;
   }
   return `<div class="ag-list">${agents
-    .map((a) => agentRow(a, openName))
+    .map((a) => agentRow(a, openName, managementUrl))
     .join("")}</div>`;
 }
 
@@ -423,8 +435,9 @@ export function renderAgentList(
   el: HTMLElement,
   agents: AgentEndpointView[],
   openName: string | null,
+  managementUrl: string | null,
 ): void {
-  el.innerHTML = agentListHtml(agents, openName);
+  el.innerHTML = agentListHtml(agents, openName, managementUrl);
 }
 
 // Pure: the open console's read-only config header — identity + dial target +
@@ -442,84 +455,6 @@ export function agentConsoleHeaderHtml(
     <div class="ac-fields">
       ${field("url", a.url || "—")}
       ${field("cwd", a.cwd || "—")}
-    </div>
-    <p class="ac-note muted">Read-only — the remote file editor (view / edit / apply the agent's files) arrives once the fs MCP files server lands.</p>`;
+    </div>`;
 }
 
-// ---- Remote file browser (ADR agent-consoles Part D, read path) --------------
-// A directory listing over the agent's filesystem: dirs first, then files, each
-// a click target the controller (`fileBrowser.ts`) navigates or opens. Pure so
-// the sort/labels/escaping are unit-testable without a DOM. The read-only viewer
-// (CodeMirror) is imperative in the controller. The fs MCP files server (+ `oab`
-// relay) is upstream and absent today, so on real endpoints this is gated behind
-// `fsUnavailableHtml`.
-
-const FS_ICON: Record<string, string> = {
-  dir: "📁",
-  file: "📄",
-  symlink: "🔗",
-  other: "•",
-};
-
-// Human-readable byte size for the file rows (kept tiny; no external dep).
-function fsSize(bytes: number | undefined): string {
-  if (bytes === undefined) return "";
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-export interface FsListOptions {
-  // The file currently open in the viewer (marked in the list).
-  selectedPath?: string | null;
-  // Show an "up one level" affordance (false at an editable root's top).
-  canGoUp?: boolean;
-}
-
-// Pure: a directory listing -> the browser HTML. Directories sort before files,
-// each alphabetically; the open file is marked. `data-fs-dir` / `data-fs-file` /
-// `data-fs-up` are the hooks the controller's delegated handler navigates by.
-export function fsListingHtml(
-  listing: FsListing,
-  opts: FsListOptions = {},
-): string {
-  const dirs = listing.entries
-    .filter((e) => e.kind === "dir")
-    .sort((a, b) => a.name.localeCompare(b.name));
-  const files = listing.entries
-    .filter((e) => e.kind !== "dir")
-    .sort((a, b) => a.name.localeCompare(b.name));
-  const up = opts.canGoUp
-    ? `<button class="fs-row fs-up" type="button" data-fs-up><span class="fs-ic">↰</span><span class="fs-name">..</span></button>`
-    : "";
-  const rowFor = (
-    e: FsListing["entries"][number],
-  ): string => {
-    const isDir = e.kind === "dir";
-    const attr = isDir
-      ? `data-fs-dir="${escapeHtml(e.path)}"`
-      : `data-fs-file="${escapeHtml(e.path)}"`;
-    const open = !isDir && e.path === opts.selectedPath ? " is-open" : "";
-    const size = isDir
-      ? ""
-      : `<span class="fs-size muted">${escapeHtml(fsSize(e.size))}</span>`;
-    return `<button class="fs-row${open}" type="button" ${attr}>
-        <span class="fs-ic">${FS_ICON[e.kind] ?? FS_ICON.other}</span>
-        <span class="fs-name">${escapeHtml(e.name)}</span>
-        ${size}
-      </button>`;
-  };
-  const body =
-    listing.entries.length === 0 && !opts.canGoUp
-      ? `<p class="fs-empty muted">empty directory</p>`
-      : up + dirs.map(rowFor).join("") + files.map(rowFor).join("");
-  return `<div class="fs-crumb"><code>${escapeHtml(listing.path)}</code></div>
-    <div class="fs-list">${body}</div>`;
-}
-
-// Pure: the placeholder shown when an endpoint has no fs capability (every
-// endpoint today) or a browse/read call fails. Keeps the read-only, honest
-// "pending the fs MCP files server" state in one place.
-export function fsUnavailableHtml(reason: string): string {
-  return `<p class="fs-unavailable muted">${escapeHtml(reason)}</p>`;
-}
