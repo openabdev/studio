@@ -239,7 +239,18 @@ body {
   flex-direction: column;
   gap: 12px;
 }
-.drilldown-side > .identity-wrap {
+.drilldown-side > .mgmt-combo {
+  margin: 0;
+}
+/* Identity + Remote render as two independent sections (still separately
+   testable pure functions) but share one border/background so they read as
+   one status box — see the HTML comment above `.mgmt-combo`. */
+.mgmt-combo {
+  display: flex;
+  flex-direction: column;
+}
+.mgmt-combo .identity-wrap,
+.mgmt-combo .remote-wrap {
   margin: 0;
 }
 .drilldown-side > .chat-wrap {
@@ -572,7 +583,8 @@ button.act:disabled {
 .identity {
   border: 1px solid var(--border);
   border-left: 3px solid var(--s-running);
-  border-radius: 6px;
+  border-bottom: none;
+  border-radius: 6px 6px 0 0;
   background: var(--panel);
   padding: 10px 12px;
   font-size: 13px;
@@ -894,7 +906,7 @@ button.act:disabled {
 }
 .remote {
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 0 0 6px 6px;
   background: var(--panel);
   padding: 10px 12px;
   font-size: 13px;
