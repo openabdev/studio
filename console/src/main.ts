@@ -720,7 +720,11 @@ async function scale(
 // already-tested path via a synthetic click rather than duplicating the
 // open/dial/teardown logic here. Tries the service-name form first, then the
 // short name — the same precedence `filterByMembers` uses for fleet members.
-function openAgentForRow(svc: string, alt: string): void {
+// `source` is the roster row button that was clicked — every "can't open"
+// path flashes feedback on it, since `note()` alone only reaches the (closed)
+// Debug drawer's Activity tab and a click that does nothing there reads as
+// the roster row simply not working.
+function openAgentForRow(svc: string, alt: string, source: HTMLButtonElement): void {
   const btn =
     document.querySelector<HTMLButtonElement>(
       `#agent-list [data-agent="${CSS.escape(svc)}"]`,
@@ -728,14 +732,28 @@ function openAgentForRow(svc: string, alt: string): void {
     document.querySelector<HTMLButtonElement>(
       `#agent-list [data-agent="${CSS.escape(alt)}"]`,
     );
-  if (btn) {
+  if (btn && !btn.disabled) {
     btn.click();
-  } else {
-    note(
-      "info",
-      `agents: no agent console registered for "${svc}" — add it to agents.toml to open one`,
-    );
+    return;
   }
+  const reason = btn
+    ? "registered in agents.toml but not configured (no url/token)"
+    : "no matching agents.toml entry — or it's the management agent, whose console is already open above";
+  note("info", `agents: "${alt}" ${reason} — nothing opened`);
+  flashRowFeedback(source, btn ? "not configured" : "no console");
+}
+
+// Briefly relabel the clicked roster button so a click that can't open a
+// console still visibly does *something*, instead of looking identical to a
+// dead button.
+function flashRowFeedback(btn: HTMLButtonElement, label: string): void {
+  const original = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = label;
+  setTimeout(() => {
+    btn.textContent = original;
+    btn.disabled = false;
+  }, 1800);
 }
 
 // One delegated listener on the roster. Start executes on click; Stop is
@@ -749,7 +767,7 @@ if (roster) {
     const openBtn = target.closest<HTMLButtonElement>("button.row-open");
     if (openBtn) {
       const { openAgent, openAgentAlt } = openBtn.dataset;
-      if (openAgent) openAgentForRow(openAgent, openAgentAlt ?? openAgent);
+      if (openAgent) openAgentForRow(openAgent, openAgentAlt ?? openAgent, openBtn);
       return;
     }
     const btn = target.closest<HTMLButtonElement>("button.act");
