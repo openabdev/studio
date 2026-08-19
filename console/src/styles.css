@@ -179,6 +179,7 @@ body {
 .content {
   display: flex;
   flex-direction: column;
+  padding: 16px 18px;
 }
 
 /* ---- Drill-down row: Fleets/Fleet-detail/Agent-console + persistent chat
