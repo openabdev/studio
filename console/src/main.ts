@@ -400,6 +400,18 @@ function showEditorError(msg: string | null): void {
   editorError.hidden = !msg;
 }
 
+// Fill the editor down to the window's bottom edge (Brett: it capped at a
+// fixed height with a chunk of blank space below) instead of a flat number —
+// the space above it (the Fleets row's height) isn't constant, so this is
+// measured live rather than hard-coded. No-ops while the editor is closed;
+// wired to `resize` once at boot below since the window is resizable.
+function syncEditorHeight(): void {
+  if (!editorMount || !editorSection || editorSection.hidden) return;
+  const top = editorMount.getBoundingClientRect().top;
+  const h = Math.max(200, window.innerHeight - top - 16);
+  editorMount.style.setProperty("--cfg-editor-h", `${h}px`);
+}
+
 async function openEditor(target: EditorTarget): Promise<void> {
   if (!editorSection || !editorMount) return;
   editorTarget = target;
@@ -436,6 +448,7 @@ async function openEditor(target: EditorTarget): Promise<void> {
     }),
   });
   editorSection.hidden = false;
+  syncEditorHeight();
   editorView.focus();
 }
 
@@ -943,6 +956,9 @@ async function boot(): Promise<void> {
     syncTopbarHeight();
     new ResizeObserver(syncTopbarHeight).observe(topbarEl);
   }
+  // Keep the fleets.toml/agents.toml editor filling the window as it's
+  // resized (`syncEditorHeight` no-ops while closed).
+  window.addEventListener("resize", syncEditorHeight);
   setupUpdater();
   await startCore();
   // Debug drawer's Config tab: pin the oab-mcp target (cluster/profile/region →

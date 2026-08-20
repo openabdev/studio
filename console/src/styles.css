@@ -798,7 +798,12 @@ button.act:disabled {
   font-size: 13px;
 }
 .cfg-editor-mount .cm-editor {
-  max-height: 320px;
+  /* Fills down to the window's bottom edge instead of capping at a fixed
+     height with blank space below it — `--cfg-editor-h` is measured in
+     main.ts (`syncEditorHeight`), same live-measurement pattern as
+     `--topbar-h`, since the window is resizable and the space above the
+     editor (Fleets row height, etc.) isn't constant. */
+  height: var(--cfg-editor-h, 320px);
 }
 .cfg-editor-error {
   margin-top: 6px;
