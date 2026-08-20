@@ -209,7 +209,9 @@ body {
 }
 .drilldown-main {
   flex: 1 1 0;
-  min-width: 0;
+  /* A floor so dragging .drilldown-side toward MAX_WIDTH (splitPane.ts)
+     can't crush this column unreadable. */
+  min-width: 360px;
   display: flex;
   flex-direction: column;
 }
@@ -258,8 +260,10 @@ body {
 }
 .drilldown-side {
   flex: 0 0 var(--drilldown-side-w, 420px);
-  min-width: 280px;
-  max-width: 70vw;
+  /* Mirrors splitPane.ts's MIN_WIDTH/MAX_WIDTH — a vw-relative backstop for
+     window sizes those px bounds don't anticipate, not the primary limit. */
+  min-width: 220px;
+  max-width: 85vw;
   display: flex;
   flex-direction: column;
   gap: 12px;
