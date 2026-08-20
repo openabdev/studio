@@ -207,6 +207,16 @@ body {
 .drilldown-row[hidden] {
   display: none;
 }
+/* While the editor below is open, the row's height becomes a fixed,
+   user-draggable value (`#row-resizer`, `rowResize.ts`) instead of an
+   auto-fill floor — content that doesn't fit scrolls inside the row rather
+   than pushing the editor further down the page. `main.ts` toggles this
+   class in `openEditor`/`closeEditor`. */
+.drilldown-row.is-split {
+  height: var(--drilldown-row-h, auto);
+  min-height: 0;
+  overflow-y: auto;
+}
 .drilldown-main {
   flex: 1 1 0;
   /* A floor so dragging .drilldown-side toward MAX_WIDTH (splitPane.ts)
@@ -256,6 +266,32 @@ body {
 }
 .drilldown-resizer:hover::after,
 .drilldown-resizer.is-dragging::after {
+  background: var(--s-starting);
+}
+/* Drag handle between the row and the editor below — the vertical twin of
+   .drilldown-resizer above, wired by main.ts (src/rowResize.ts owns the
+   pure clamp/persist logic). Hidden by default; `openEditor`/`closeEditor`
+   (main.ts) show/hide it alongside the editor itself. */
+.row-resizer {
+  height: 13px;
+  margin: -2px 0;
+  cursor: row-resize;
+  position: relative;
+  z-index: 1;
+}
+.row-resizer::after {
+  content: "";
+  position: absolute;
+  left: 4px;
+  right: 4px;
+  top: 50%;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--border);
+  transform: translateY(-50%);
+}
+.row-resizer:hover::after,
+.row-resizer.is-dragging::after {
   background: var(--s-starting);
 }
 .drilldown-side {
