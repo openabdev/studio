@@ -188,9 +188,16 @@ body {
    instead of squeezing. ---- */
 .drilldown-row {
   display: flex;
-  align-items: flex-start;
+  /* Was flex-start — the Fleets column (short: just a card list) and the
+     Agent chat column (tall: min-height'd chat log) never matched height,
+     leaving Fleets looking stubby next to a lot of blank page below it
+     (Brett). `stretch` + a live-measured floor (`--drilldown-row-h`, same
+     pattern as `--topbar-h`/`--cfg-editor-h`) makes both columns match and
+     reach the window's bottom edge when their content is shorter than that. */
+  align-items: stretch;
   gap: 0;
   margin: 0 0 16px;
+  min-height: var(--drilldown-row-h, auto);
 }
 /* Nothing toggles `hidden` on this element today (deploy.ts used to; it now
    hides `#config`/`#fleet-detail` in place instead, see deploy.ts), but the
@@ -203,6 +210,24 @@ body {
 .drilldown-main {
   flex: 1 1 0;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+/* Whichever of #config/#fleet-detail/#deploy-wrap is showing (the others are
+   `[hidden]`) grows to fill the stretched column instead of sitting short at
+   the top. */
+.drilldown-main > * {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+/* Same equal-specificity trap as `.debug-drawer[hidden]`/`.deploy-identity
+   [hidden]` above — `.drilldown-main > *` and the UA `[hidden]` rule tie, and
+   the later author rule wins, so a hidden sibling would render as an empty
+   flex box instead of disappearing without this. */
+.drilldown-main > *[hidden] {
+  display: none;
 }
 /* Drag handle between the two columns — mousedown/move/up wiring lives in
    main.ts (src/splitPane.ts owns the pure clamp/persist logic). Widening
@@ -244,10 +269,21 @@ body {
 }
 .drilldown-side > .chat-wrap {
   margin: 0;
+  /* Absorbs whatever extra height `align-items: stretch` (above) gives the
+     column beyond #remote's + the chat log's own natural size — otherwise
+     that space is just blank flex-gap below the chat, not inside it. */
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
 .drilldown-side > .chat-wrap .chat-log {
+  flex: 1 1 auto;
   min-height: 240px;
-  max-height: 560px;
+  /* Cancels the base rule's 340px cap (still in effect for the agent
+     console's own embedded chat, which isn't in a stretched column) — the
+     row's own `min-height` is the real ceiling now. */
+  max-height: none;
 }
 @media (max-width: 860px) {
   .drilldown-row {
@@ -571,10 +607,10 @@ button.act:disabled {
 
 /* ---- Fleets screen (ADR #19: the "declare" side; ADR #83: promoted from a
    sidebar panel to the console's top-level screen — Slice 1) ---- */
-.config-wrap {
-  margin: 0 0 16px;
-}
 .config {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--panel);
@@ -798,7 +834,12 @@ button.act:disabled {
   font-size: 13px;
 }
 .cfg-editor-mount .cm-editor {
-  max-height: 320px;
+  /* Fills down to the window's bottom edge instead of capping at a fixed
+     height with blank space below it — `--cfg-editor-h` is measured in
+     main.ts (`syncEditorHeight`), same live-measurement pattern as
+     `--topbar-h`, since the window is resizable and the space above the
+     editor (Fleets row height, etc.) isn't constant. */
+  height: var(--cfg-editor-h, 320px);
 }
 .cfg-editor-error {
   margin-top: 6px;
@@ -1272,7 +1313,9 @@ button.act:disabled {
 }
 
 /* ---- Deploy action panel (ADR #83 slice 5: `[+ New fleet]` / `[+ Add
-   instance]`) — replaces .drilldown-row while open. ---------------------- */
+   instance]`) — replaces #config/#fleet-detail in `.drilldown-main` while
+   open (deploy.ts), so it inherits the fill-the-column treatment from
+   `.drilldown-main > *` above for free. ---------------------- */
 .deploy-wrap {
   margin: 0 0 12px;
   padding: 14px;
