@@ -20,6 +20,7 @@ import { initDeployPanel, type DeployPanelHandle, type DeployedInfo } from "./de
 import { createPane, bindBackend, type Level } from "./log";
 import { initThemeToggle } from "./theme";
 import { initSplitPane } from "./splitPane";
+import { initRowResize, applySavedRowHeight } from "./rowResize";
 import { EditorView, basicSetup } from "codemirror";
 import { EditorState } from "@codemirror/state";
 import { StreamLanguage } from "@codemirror/language";
@@ -49,6 +50,8 @@ const configEl = document.getElementById("config");
 const fleetDetailEl = document.getElementById("fleet-detail");
 const fdHeaderEl = document.getElementById("fd-header");
 const remoteEl = document.getElementById("remote");
+const drilldownRowEl = document.getElementById("drilldown-row");
+const rowResizerEl = document.getElementById("row-resizer");
 const editorSection = document.getElementById("config-editor");
 const editorMount = document.getElementById("cfg-editor-mount");
 const editorError = document.getElementById("cfg-editor-error");
@@ -400,6 +403,18 @@ function showEditorError(msg: string | null): void {
   editorError.hidden = !msg;
 }
 
+// Floors the row's height at the window's bottom edge — the default, "not
+// split" mode (`.drilldown-row` without `.is-split`). While the editor is
+// open, `openEditor`/`closeEditor` switch the row into a fixed, user-
+// draggable height instead (`rowResize.ts`'s `applySavedRowHeight`/
+// `initRowResize`) and this is what `closeEditor` restores on the way out.
+function syncDrilldownHeight(): void {
+  if (!drilldownRowEl) return;
+  const top = drilldownRowEl.getBoundingClientRect().top;
+  const h = Math.max(200, window.innerHeight - top - 16);
+  drilldownRowEl.style.setProperty("--drilldown-row-h", `${h}px`);
+}
+
 // Fill the editor down to the window's bottom edge (Brett: it capped at a
 // fixed height with a chunk of blank space below) instead of a flat number —
 // the space above it (the Fleets row's height) isn't constant, so this is
@@ -448,6 +463,14 @@ async function openEditor(target: EditorTarget): Promise<void> {
     }),
   });
   editorSection.hidden = false;
+  // The row switches from auto-fill into a fixed, draggable height once
+  // there's something below it to divide space against (Brett wanted the
+  // row's own height adjustable, not just the left/right split).
+  if (drilldownRowEl) {
+    drilldownRowEl.classList.add("is-split");
+    applySavedRowHeight(drilldownRowEl, syncEditorHeight);
+  }
+  if (rowResizerEl) rowResizerEl.hidden = false;
   syncEditorHeight();
   editorView.focus();
 }
@@ -456,6 +479,11 @@ function closeEditor(): void {
   editorView?.destroy();
   editorView = null;
   if (editorSection) editorSection.hidden = true;
+  if (rowResizerEl) rowResizerEl.hidden = true;
+  if (drilldownRowEl) {
+    drilldownRowEl.classList.remove("is-split");
+    syncDrilldownHeight();
+  }
   showEditorError(null);
 }
 
@@ -963,15 +991,15 @@ async function boot(): Promise<void> {
   // columns match it. `.drilldown-row`'s own top is fixed (topbar height +
   // `.content`'s padding, neither content-dependent), so this only needs
   // `resize`, not a ResizeObserver on the row itself.
-  const drilldownRowEl = document.getElementById("drilldown-row");
-  const syncDrilldownHeight = (): void => {
-    if (!drilldownRowEl) return;
-    const top = drilldownRowEl.getBoundingClientRect().top;
-    const h = Math.max(200, window.innerHeight - top - 16);
-    drilldownRowEl.style.setProperty("--drilldown-row-h", `${h}px`);
-  };
   syncDrilldownHeight();
   window.addEventListener("resize", syncDrilldownHeight);
+  // Drag-resize between the row and the editor, shown only while the editor
+  // is open (`openEditor`/`closeEditor` toggle `rowResizerEl.hidden` and the
+  // row's `is-split` mode) — Brett wanted the row's own height adjustable
+  // too, not just auto-filled.
+  if (rowResizerEl && drilldownRowEl) {
+    initRowResize(rowResizerEl, drilldownRowEl, syncEditorHeight);
+  }
   // Keep the fleets.toml/agents.toml editor filling the window as it's
   // resized (`syncEditorHeight` no-ops while closed).
   window.addEventListener("resize", syncEditorHeight);

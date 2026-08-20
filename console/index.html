@@ -164,6 +164,11 @@
           </section>
         </div>
       </div>
+      <!-- Drag-resize between the row above and the editor below (rowResize.ts)
+           — shown only while the editor is open; with nothing below the row
+           there's nothing to divide its height against, so it just
+           auto-fills the window instead. -->
+      <div class="row-resizer" id="row-resizer" title="Drag to resize" hidden></div>
       <section id="config-editor" class="cfg-editor-wrap" hidden>
         <div class="cfg-editor-head">
           <span class="cfg-label" id="cfg-editor-title">edit fleets.toml</span>

@@ -4,8 +4,11 @@
 // (same split as theme.ts/theme toggle).
 
 const STORAGE_KEY = "oab-studio.drilldown-side-width";
-export const MIN_WIDTH = 280;
-export const MAX_WIDTH = 900;
+// Brett: wanted more adjustment budget than 280–900 — widened both ends.
+// `.drilldown-main` gets its own 360px floor (styles.css) so the left column
+// can't get crushed unreadable when the side is dragged near MAX_WIDTH.
+export const MIN_WIDTH = 220;
+export const MAX_WIDTH = 1200;
 export const DEFAULT_WIDTH = 420;
 
 // Pure: clamp a candidate side-column width (px) into the allowed range.
