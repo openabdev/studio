@@ -956,6 +956,22 @@ async function boot(): Promise<void> {
     syncTopbarHeight();
     new ResizeObserver(syncTopbarHeight).observe(topbarEl);
   }
+  // The Fleets column and the Agent chat column used to size to their own
+  // content, so a short Fleets list ended up visibly shorter than the taller
+  // chat panel (Brett). `--drilldown-row-h` floors the row's height at the
+  // window's bottom edge; `align-items: stretch` (styles.css) then makes both
+  // columns match it. `.drilldown-row`'s own top is fixed (topbar height +
+  // `.content`'s padding, neither content-dependent), so this only needs
+  // `resize`, not a ResizeObserver on the row itself.
+  const drilldownRowEl = document.getElementById("drilldown-row");
+  const syncDrilldownHeight = (): void => {
+    if (!drilldownRowEl) return;
+    const top = drilldownRowEl.getBoundingClientRect().top;
+    const h = Math.max(200, window.innerHeight - top - 16);
+    drilldownRowEl.style.setProperty("--drilldown-row-h", `${h}px`);
+  };
+  syncDrilldownHeight();
+  window.addEventListener("resize", syncDrilldownHeight);
   // Keep the fleets.toml/agents.toml editor filling the window as it's
   // resized (`syncEditorHeight` no-ops while closed).
   window.addEventListener("resize", syncEditorHeight);
