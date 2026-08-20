@@ -1,9 +1,7 @@
 import { defaultSource } from "./source";
 import { initConfigTab } from "./config";
-import { initComposeTab } from "./compose";
 import {
   renderRoster,
-  renderIdentity,
   renderFleetConfig,
   renderFleetDetailHeader,
   renderRemote,
@@ -47,12 +45,10 @@ let registryConfig: RegistryConfig | null = null;
 let agentConsole: AgentConsole | null = null;
 
 const roster = document.getElementById("roster");
-const identityEl = document.getElementById("identity");
 const configEl = document.getElementById("config");
 const fleetDetailEl = document.getElementById("fleet-detail");
 const fdHeaderEl = document.getElementById("fd-header");
 const remoteEl = document.getElementById("remote");
-const composeStandaloneEl = document.getElementById("compose-standalone");
 const editorSection = document.getElementById("config-editor");
 const editorMount = document.getElementById("cfg-editor-mount");
 const editorError = document.getElementById("cfg-editor-error");
@@ -241,19 +237,6 @@ async function tick(): Promise<void> {
   }
 }
 
-// The effective managing identity for this cluster (ADR #19). Fetched once on
-// boot and refreshed when the roster recovers — it changes rarely, so it does
-// not need the 5s poll (and each call is a live STS lookup server-side).
-async function refreshIdentity(): Promise<void> {
-  if (!identityEl) return;
-  try {
-    renderIdentity(identityEl, await source.runtimeContext(activeCluster));
-  } catch (e) {
-    note("error", `identity: ${errText(e)}`);
-    renderIdentity(identityEl, null);
-  }
-}
-
 // The fleet-binding config panel (ADR #19 "declare"). Fetched once on boot; the
 // bindings are read at core startup, so they don't change under us at runtime.
 async function refreshConfig(): Promise<void> {
@@ -298,15 +281,12 @@ async function refreshRemote(): Promise<void> {
 // `activeFleet === null` shows the Fleets screen (the `#config` list); a
 // selected fleet shows Fleet detail (breadcrumb header + the members roster,
 // with each member drilling further into its Agent console — slice 3) instead.
-// Compose (template/bundle authoring) is a Fleets-screen concern — not
-// relevant once drilled into a fleet/agent, so it hides alongside it. Remote
-// now lives in the persistent side column (`.mgmt-combo`, next to Identity) —
-// it stays visible at every depth, same as Identity and Agent chat, since
-// it's the connection status backing that same persistent chat.
+// Remote lives in the persistent side column — it stays visible at every
+// depth, same as Agent chat, since it's the connection status backing that
+// same persistent chat.
 function updateScreen(): void {
   if (configEl) configEl.hidden = activeFleet !== null;
   if (fleetDetailEl) fleetDetailEl.hidden = activeFleet === null;
-  if (composeStandaloneEl) composeStandaloneEl.hidden = activeFleet !== null;
   if (activeFleet && fdHeaderEl) renderFleetDetailHeader(fdHeaderEl, activeFleet);
 }
 
@@ -336,7 +316,6 @@ function selectFleet(name: string): void {
   note("info", `config: switched to fleet "${activeFleet}" (cluster "${activeCluster}")`);
   if (configEl) renderFleetConfig(configEl, fleetConfig, activeFleet);
   updateScreen();
-  void refreshIdentity();
   void tick();
 }
 
@@ -352,7 +331,6 @@ function deselectFleet(): void {
   note("info", "config: back to Fleets");
   if (configEl) renderFleetConfig(configEl, fleetConfig, activeFleet);
   updateScreen();
-  void refreshIdentity();
   void tick();
 }
 
@@ -488,8 +466,6 @@ async function saveEditor(): Promise<void> {
       if (configEl) renderFleetConfig(configEl, fleetConfig, activeFleet);
       note("info", "config: fleet saved");
       closeEditor();
-      // A binding change may alter the active fleet's credential — re-observe.
-      void refreshIdentity();
     }
   } catch (e) {
     showEditorError(`save failed — ${errText(e)}`);
@@ -973,13 +949,8 @@ async function boot(): Promise<void> {
   // hermetic env); on save the backend reloads the core, so refresh the roster
   // after.
   initConfigTab({ onSaved: () => void tick() });
-  // Compose (no longer a tab — an always-visible section, slice 6): author the
-  // template/overlay/skills library + preview the composed bundle
-  // (agent-deployment ADR, slice 1). Self-contained; no polling.
-  initComposeTab();
   updateScreen();
   void refreshConfig();
-  void refreshIdentity();
   void refreshRemote();
   void tick();
   window.setInterval(() => void tick(), POLL_MS);

@@ -239,18 +239,7 @@ body {
   flex-direction: column;
   gap: 12px;
 }
-.drilldown-side > .mgmt-combo {
-  margin: 0;
-}
-/* Identity + Remote render as two independent sections (still separately
-   testable pure functions) but share one border/background so they read as
-   one status box — see the HTML comment above `.mgmt-combo`. */
-.mgmt-combo {
-  display: flex;
-  flex-direction: column;
-}
-.mgmt-combo .identity-wrap,
-.mgmt-combo .remote-wrap {
+.drilldown-side > .remote-wrap {
   margin: 0;
 }
 .drilldown-side > .chat-wrap {
@@ -274,21 +263,6 @@ body {
   }
 }
 
-/* Compose (agent-deployment ADR): always-visible now that it's the only thing
-   left in this position — Activity/MCP/Config moved into the Debug drawer
-   below (ADR #83 Part D / slice 6), so there's no longer a tab strip to
-   switch away from it. */
-.compose-standalone {
-  border-bottom: 1px solid var(--border);
-  background: var(--panel);
-  padding: 10px 12px 0;
-}
-.compose-standalone-head {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  margin-bottom: 4px;
-}
 
 /* ---- Debug drawer (ADR #83 Part D / slice 6, 7.6) — Activity/MCP/Config,
    collapsed off the top-level nav, opened by any `[⚙]`. Slides over the right
@@ -576,64 +550,9 @@ button.act:disabled {
   background: var(--s-stopped);
 }
 
-/* ---- Runtime identity / context panel (ADR #19) ---- */
-.identity-wrap {
-  margin: 0 0 12px;
-}
-.identity {
-  border: 1px solid var(--border);
-  border-left: 3px solid var(--s-running);
-  border-bottom: none;
-  border-radius: 6px 6px 0 0;
-  background: var(--panel);
-  padding: 10px 12px;
-  font-size: 13px;
-}
-.identity.mismatch {
-  border-left-color: var(--s-unhealthy);
-}
-.identity.ok {
-  border-left-color: var(--ok);
-}
-.id-head {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-bottom: 8px;
-}
-.id-label {
-  color: var(--muted);
-  text-transform: uppercase;
-  font-size: 11px;
-  letter-spacing: 0.04em;
-}
-.id-cluster {
-  font-weight: 600;
-}
-.id-as {
-  color: var(--muted);
-}
-.kind {
-  border-radius: 4px;
-  padding: 1px 6px;
-  font-size: 11px;
-  font-weight: 600;
-  border: 1px solid var(--border);
-}
-.kind.k-role {
-  color: var(--ok);
-}
-.kind.k-user {
-  color: var(--s-unhealthy);
-}
-.kind.k-unknown {
-  color: var(--muted);
-}
-.id-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  gap: 4px 16px;
-}
+/* `.id-field` is shared by the agent console's read-only config header
+   (`.ac-fields .id-field`, below) — the identity/runtime-context panel this
+   was originally built for (ADR #19) is gone. */
 .id-field {
   display: flex;
   gap: 6px;
@@ -648,18 +567,6 @@ button.act:disabled {
 .id-field code {
   font-size: 12px;
   overflow-wrap: anywhere;
-}
-.id-warn {
-  margin-top: 8px;
-  color: var(--s-unhealthy);
-  font-weight: 600;
-}
-.id-warn code {
-  font-weight: 400;
-}
-.id-ok {
-  margin-top: 8px;
-  color: var(--ok);
 }
 
 /* ---- Fleets screen (ADR #19: the "declare" side; ADR #83: promoted from a
@@ -906,7 +813,7 @@ button.act:disabled {
 }
 .remote {
   border: 1px solid var(--border);
-  border-radius: 0 0 6px 6px;
+  border-radius: 6px;
   background: var(--panel);
   padding: 10px 12px;
   font-size: 13px;
@@ -1237,49 +1144,13 @@ button.act:disabled {
   color: var(--muted);
 }
 
-/* Compose tab (agent-deployment ADR, slice 1): library editor + bundle preview. */
-.pane.compose {
-  padding: 16px;
-  overflow: auto;
-}
-.compose-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: 16px;
-}
-.compose-lib-head,
+/* Compose (agent-deployment ADR, slice 1): the deploy panel's bundle-preview
+   step (`deploy.ts`'s `#deploy-compose`) — the standalone authoring tab this
+   used to also style is gone, see compose.ts. */
 .compose-actions {
   display: flex;
   align-items: center;
   gap: 8px;
-}
-.compose-lib-head {
-  margin-bottom: 6px;
-}
-.compose-spacer {
-  flex: 1;
-}
-.compose-label {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text);
-}
-.compose-lib-path {
-  font-size: 11px;
-  color: var(--muted);
-}
-.compose-lib-text {
-  width: 100%;
-  min-height: 360px;
-  padding: 8px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--bg);
-  color: var(--text);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12px;
-  line-height: 1.5;
-  resize: vertical;
 }
 .compose-form {
   display: flex;
