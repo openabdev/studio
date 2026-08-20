@@ -1,12 +1,11 @@
-// Compose tab: author the template/overlay/skills library and preview the
-// composed `{path → bytes}` agent bundle (agent-deployment ADR, slice 1).
-//
-// The library is edited as one JSON document (same "edit the config text, save,
-// reload" idiom as fleets.toml / remote.toml) and the preview is rendered
-// read-only. Everything real runs through the backend: the library is persisted
-// by `compose_library_set`, and the preview is composed by `compose_preview`
-// (the pure Rust `studio-compose` seam) — so the browser build, which has no
-// backend, disables the panel rather than re-implementing compose in TS.
+// Compose: the template/overlay/skills library types + the composed
+// `{path → bytes}` bundle preview (agent-deployment ADR, slice 1). The
+// standalone authoring tab this module used to wire (`initComposeTab`) is
+// gone — `[+ New fleet]`/`[+ Add instance]` (`deploy.ts`) reach the same
+// compose→preview→deploy engine as an action instead, reusing the pure
+// helpers below. Everything real runs through the backend: the library is
+// persisted by `compose_library_set`, and the preview is composed by
+// `compose_preview` (the pure Rust `studio-compose` seam).
 //
 // These types mirror `studio_compose`'s serde shapes 1:1.
 
@@ -43,18 +42,6 @@ export interface BundlePreview {
   image_tag: string;
   digest: string;
   files: FilePreview[];
-}
-
-type Invoke = <T>(cmd: string, args?: Record<string, unknown>) => Promise<T>;
-
-function tauriInvoke(): Invoke | null {
-  const t = (globalThis as { __TAURI__?: { core?: { invoke?: Invoke } } }).__TAURI__;
-  return t?.core?.invoke ?? null;
-}
-
-// Tauri command rejections arrive as plain strings, not Error objects.
-function errText(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
 }
 
 function escapeHtml(s: string): string {
@@ -97,180 +84,4 @@ export function libraryNames(lib: Library): { templates: string[]; overlays: str
   const keys = (o: Record<string, unknown> | undefined): string[] =>
     o ? Object.keys(o).sort() : [];
   return { templates: keys(lib.templates), overlays: keys(lib.overlays) };
-}
-
-function fillOptions(sel: HTMLSelectElement, names: string[], keepNoneFirst: boolean): void {
-  const prev = sel.value;
-  const opts = keepNoneFirst ? ['<option value="">— none (bare template) —</option>'] : [];
-  for (const n of names) opts.push(`<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`);
-  sel.innerHTML = opts.join("");
-  // Preserve the operator's selection across a repopulate if it still exists.
-  if ([...sel.options].some((o) => o.value === prev)) sel.value = prev;
-}
-
-export function initComposeTab(): void {
-  const text = document.getElementById("compose-lib-text") as HTMLTextAreaElement | null;
-  const tmplSel = document.getElementById("compose-template") as HTMLSelectElement | null;
-  const ovlSel = document.getElementById("compose-overlay") as HTMLSelectElement | null;
-  const form = document.getElementById("compose-form") as HTMLFormElement | null;
-  const saveBtn = document.getElementById("compose-save") as HTMLButtonElement | null;
-  const out = document.getElementById("compose-preview");
-  const statusEl = document.getElementById("compose-status");
-  if (!text || !tmplSel || !ovlSel || !form) return;
-
-  const setStatus = (msg: string, cls = ""): void => {
-    if (statusEl) {
-      statusEl.textContent = msg;
-      statusEl.className = cls ? `compose-status ${cls}` : "compose-status";
-    }
-  };
-
-  const invoke = tauriInvoke();
-  if (!invoke) {
-    setStatus("browser build — compose unavailable");
-    text.disabled = true;
-    tmplSel.disabled = true;
-    ovlSel.disabled = true;
-    for (const b of form.querySelectorAll("button")) b.disabled = true;
-    if (saveBtn) saveBtn.disabled = true;
-    return;
-  }
-
-  // Best-effort: parse the editor text and refresh the pickers so newly authored
-  // templates/overlays are selectable before a save. Silent on parse error — the
-  // Preview/Save buttons surface it with a real message.
-  const syncPickers = (): void => {
-    try {
-      const lib = JSON.parse(text.value) as Library;
-      const { templates, overlays } = libraryNames(lib);
-      fillOptions(tmplSel, templates, false);
-      fillOptions(ovlSel, overlays, true);
-    } catch {
-      /* leave pickers as-is until the JSON is valid */
-    }
-  };
-
-  const parseLibrary = (): Library => JSON.parse(text.value) as Library;
-
-  // Deploy form (revealed after a successful preview so the operator deploys
-  // exactly what they just previewed).
-  const deployForm = document.getElementById("compose-deploy-form") as HTMLFormElement | null;
-  const nsInput = document.getElementById("compose-ns") as HTMLInputElement | null;
-  const nameInput = document.getElementById("compose-name") as HTMLInputElement | null;
-  const imageInput = document.getElementById("compose-image") as HTMLInputElement | null;
-  const deployBtn = document.getElementById("compose-deploy-btn") as HTMLButtonElement | null;
-  const deployStatusEl = document.getElementById("compose-deploy-status");
-
-  const setDeployStatus = (msg: string, cls = ""): void => {
-    if (deployStatusEl) {
-      deployStatusEl.textContent = msg;
-      deployStatusEl.className = cls ? `compose-status ${cls}` : "compose-status";
-    }
-  };
-
-  invoke<Library>("compose_library_get")
-    .then((lib) => {
-      text.value = JSON.stringify(lib, null, 2);
-      syncPickers();
-    })
-    .catch((e) => setStatus(`load failed: ${errText(e)}`, "err"));
-
-  text.addEventListener("input", syncPickers);
-
-  saveBtn?.addEventListener("click", async () => {
-    let lib: Library;
-    try {
-      lib = parseLibrary();
-    } catch (e) {
-      setStatus(`invalid JSON: ${errText(e)}`, "err");
-      return;
-    }
-    saveBtn.disabled = true;
-    setStatus("saving…");
-    try {
-      const saved = await invoke<Library>("compose_library_set", { library: lib });
-      text.value = JSON.stringify(saved, null, 2);
-      syncPickers();
-      setStatus("saved", "ok");
-    } catch (e) {
-      setStatus(`save failed: ${errText(e)}`, "err");
-    } finally {
-      saveBtn.disabled = false;
-    }
-  });
-
-  form.addEventListener("submit", async (ev) => {
-    ev.preventDefault();
-    let lib: Library;
-    try {
-      lib = parseLibrary();
-    } catch (e) {
-      setStatus(`invalid JSON: ${errText(e)}`, "err");
-      return;
-    }
-    const template = tmplSel.value;
-    if (!template) {
-      setStatus("pick a template to preview", "err");
-      return;
-    }
-    const overlay = ovlSel.value || null;
-    setStatus("composing…");
-    try {
-      const preview = await invoke<BundlePreview>("compose_preview", { library: lib, template, overlay });
-      if (out) out.innerHTML = renderPreviewHtml(preview);
-      setStatus(`composed — ${preview.files.length} files`, "ok");
-      // Reveal the deploy form and prefill sensible defaults from the preview.
-      if (deployForm) deployForm.hidden = false;
-      if (nameInput && !nameInput.value) nameInput.value = overlay ?? template;
-      if (imageInput) imageInput.placeholder = preview.image_tag;
-      setDeployStatus("");
-    } catch (e) {
-      if (out) out.innerHTML = "";
-      if (deployForm) deployForm.hidden = true;
-      setStatus(`compose failed: ${errText(e)}`, "err");
-    }
-  });
-
-  deployForm?.addEventListener("submit", async (ev) => {
-    ev.preventDefault();
-    let lib: Library;
-    try {
-      lib = parseLibrary();
-    } catch (e) {
-      setDeployStatus(`invalid JSON: ${errText(e)}`, "err");
-      return;
-    }
-    const template = tmplSel.value;
-    const name = nameInput?.value.trim() ?? "";
-    if (!template) {
-      setDeployStatus("preview a template first", "err");
-      return;
-    }
-    if (!name) {
-      setDeployStatus("agent name is required", "err");
-      return;
-    }
-    const overlay = ovlSel.value || null;
-    const namespace = nsInput?.value.trim() || "default";
-    const image = imageInput?.value.trim() || null;
-    if (deployBtn) deployBtn.disabled = true;
-    setDeployStatus("deploying…");
-    try {
-      const res = await invoke<{
-        action?: string;
-        objects?: number;
-        image?: string;
-        digest?: string;
-      }>("deploy_provision", { library: lib, template, overlay, name, namespace, image });
-      const action = res.action ? res.action.toLowerCase() : "applied";
-      setDeployStatus(
-        `${action} ${namespace}/${name} @ ${res.image ?? image ?? "?"} — ${res.objects ?? 0} files pushed`,
-        "ok",
-      );
-    } catch (e) {
-      setDeployStatus(`deploy failed: ${errText(e)}`, "err");
-    } finally {
-      if (deployBtn) deployBtn.disabled = false;
-    }
-  });
 }

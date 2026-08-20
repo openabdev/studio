@@ -4,7 +4,6 @@ import type {
   Deployment,
   FleetConfig,
   RemoteConfig,
-  RuntimeContext,
 } from "./types";
 
 const STATE_CLASS: Record<AgentState, string> = {
@@ -132,60 +131,11 @@ export function renderRoster(
   el.innerHTML = rosterHtml(deployments, pending);
 }
 
-// ---- Runtime identity / context panel (ADR #19) ------------------------------
-
-const KIND_CLASS: Record<string, string> = {
-  role: "k-role",
-  user: "k-user",
-  unknown: "k-unknown",
-};
-
-function kindBadge(kind: string): string {
-  return `<span class="kind ${KIND_CLASS[kind] ?? "k-unknown"}">${escapeHtml(kind)}</span>`;
-}
-
+// A label/value row shared by the identity panel (removed) and the agent
+// console's read-only config header (`agentConsoleHeaderHtml`, below).
 function field(label: string, value: string, mono = true): string {
   const v = mono ? `<code>${escapeHtml(value)}</code>` : escapeHtml(value);
   return `<div class="id-field"><span class="k">${label}</span>${v}</div>`;
-}
-
-// Pure: a RuntimeContext -> the identity panel HTML. `null` renders an
-// unavailable state (core not started / call failed). Highlights a mismatch
-// when the resolved principal doesn't satisfy the binding's expectation.
-export function identityHtml(ctx: RuntimeContext | null): string {
-  if (!ctx) {
-    return `<div class="identity"><span class="muted">identity unavailable</span></div>`;
-  }
-  const mismatch = ctx.identity_matches === false;
-  const matched = ctx.identity_matches === true;
-  const cls = mismatch ? "identity mismatch" : matched ? "identity ok" : "identity";
-  const binding = ctx.binding
-    ? field("binding", ctx.binding.name || ctx.binding.profile || "—", false)
-    : `<div class="id-field"><span class="k">binding</span><span class="muted">none (default chain)</span></div>`;
-  const verdict = mismatch
-    ? `<div class="id-warn">⚠ identity mismatch — expected <code>${escapeHtml(ctx.expected_principal ?? "")}</code></div>`
-    : matched
-      ? `<div class="id-ok">✓ matches expected principal</div>`
-      : "";
-  return `<div class="${cls}">
-      <div class="id-head">
-        <span class="id-label">managing</span>
-        <span class="id-cluster">${escapeHtml(ctx.cluster)}</span>
-        <span class="id-as">as</span> ${kindBadge(ctx.principal_kind)}
-      </div>
-      <div class="id-grid">
-        ${field("principal", ctx.principal || "—")}
-        ${field("account", ctx.scope || "—")}
-        ${field("region", ctx.location || "—")}
-        ${field("source", ctx.source || "—", false)}
-        ${binding}
-      </div>
-      ${verdict}
-    </div>`;
-}
-
-export function renderIdentity(el: HTMLElement, ctx: RuntimeContext | null): void {
-  el.innerHTML = identityHtml(ctx);
 }
 
 // ---- Fleet config panel (ADR #19: the "declare" side) ------------------------

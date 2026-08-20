@@ -147,16 +147,7 @@
         </div>
         <div class="drilldown-resizer" id="drilldown-resizer" title="Drag to resize"></div>
         <div class="drilldown-side" id="drilldown-side">
-          <!-- Identity (who's managing this cluster) and Remote (the live ACP
-               connection that powers Agent chat below) read as one unit — both
-               are supporting status for the same persistent chat, just two
-               different failure modes (bad credentials vs. no connection) —
-               so they're visually one box (`.mgmt-combo`) though still two
-               independently-rendered/tested sections. -->
-          <div class="mgmt-combo">
-            <section id="identity" class="identity-wrap"></section>
-            <section id="remote" class="remote-wrap"></section>
-          </div>
+          <section id="remote" class="remote-wrap"></section>
           <section id="chat" class="chat-wrap">
             <div class="chat-head">
               <span class="chat-title">Agent chat</span>
@@ -183,89 +174,6 @@
         </div>
         <div id="cfg-editor-mount" class="cfg-editor-mount"></div>
         <div class="cfg-editor-error" id="cfg-editor-error" hidden></div>
-      </section>
-      <!-- Compose (agent-deployment-templates.md: author library → preview →
-           deploy_provision) is the one surface Part C didn't fully relocate —
-           `[+ New fleet]`/`[+ Add instance]` (slice 5) reach the same engine as
-           an action, but where template/overlay *authoring* moves to once this
-           standing section goes away isn't decided in the ADR. Left in place;
-           flagged for the slice 7 self-review. Not part of the Debug drawer. -->
-      <section id="compose-standalone" class="compose-standalone">
-        <div class="compose-standalone-head">
-          <span class="compose-label">Compose</span>
-          <span class="compose-lib-path">template ⊕ overlay authoring — golden bundle library</span>
-        </div>
-        <div id="compose" class="pane compose">
-          <div class="compose-grid">
-            <div class="compose-lib">
-              <div class="compose-lib-head">
-                <span class="compose-label">Library</span>
-                <span class="compose-lib-path">template ⊕ overlay + skills</span>
-                <span class="compose-spacer"></span>
-                <button type="button" id="compose-save" class="cfg-btn">Save library</button>
-              </div>
-              <textarea
-                id="compose-lib-text"
-                class="compose-lib-text"
-                spellcheck="false"
-                autocomplete="off"
-                placeholder='{ "templates": {}, "overlays": {}, "skills": { "skills": {} } }'
-              ></textarea>
-            </div>
-            <div class="compose-preview-col">
-              <form id="compose-form" class="compose-form" autocomplete="off">
-                <label
-                  >Template
-                  <select id="compose-template" class="compose-select"></select>
-                </label>
-                <label
-                  >Overlay
-                  <select id="compose-overlay" class="compose-select">
-                    <option value="">— none (bare template) —</option>
-                  </select>
-                </label>
-                <div class="compose-actions">
-                  <button type="submit" id="compose-preview-btn">Preview bundle</button>
-                  <span class="compose-status" id="compose-status"></span>
-                </div>
-              </form>
-              <div id="compose-preview" class="compose-preview"></div>
-              <form id="compose-deploy-form" class="compose-deploy" autocomplete="off" hidden>
-                <div class="compose-deploy-head">Deploy to ECS</div>
-                <label
-                  >Namespace
-                  <input id="compose-ns" class="compose-input" type="text" value="default" spellcheck="false" />
-                </label>
-                <label
-                  >Agent name
-                  <input id="compose-name" class="compose-input" type="text" placeholder="e.g. orca" spellcheck="false" />
-                </label>
-                <label
-                  >Image tag
-                  <input id="compose-image" class="compose-input" type="text" placeholder="(bundle default)" spellcheck="false" />
-                </label>
-                <div class="compose-actions">
-                  <button type="submit" id="compose-deploy-btn">Deploy</button>
-                  <span class="compose-status" id="compose-deploy-status"></span>
-                </div>
-                <p class="config-hint">
-                  Pushes the composed bundle to the agent's S3 artifacts prefix and
-                  redeploys its ECS service at this image tag, reusing the stored
-                  manifest's networking/resources. The agent must already have been
-                  created.
-                </p>
-              </form>
-            </div>
-          </div>
-          <p class="config-hint">
-            Author a reusable <strong>template</strong> (golden bundle + default
-            image tag) and per-agent <strong>overlays</strong>; skills are shared
-            by reference. Compose is deterministic, last-writer-wins per path
-            (overlay &gt; skills &gt; template), and produces a
-            <code>{path → bytes}</code> bundle. Preview is local — no deploy. The
-            provider drivers that land a bundle on a runtime are a later slice.
-          </p>
-        </div>
       </section>
       <!-- ADR #83 Part D / slice 6 (7.6): Activity/MCP/Config collapse into a
            single secondary Debug drawer, reachable via any `[⚙]` — no longer

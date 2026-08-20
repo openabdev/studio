@@ -1,7 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
   rosterHtml,
-  identityHtml,
   fleetConfigHtml,
   fleetDetailHeaderHtml,
   remoteHtml,
@@ -16,18 +15,8 @@ import {
   FIXTURE_DEPLOYMENTS,
   FIXTURE_FLEET_CONFIG,
   FIXTURE_REMOTE_CONFIG,
-  FIXTURE_RUNTIME_CONTEXT,
 } from "./fixtures";
-import {
-  AGENT_STATES,
-  type AgentEndpointView,
-  type Deployment,
-  type RuntimeContext,
-} from "./types";
-
-function ctx(partial: Partial<RuntimeContext>): RuntimeContext {
-  return { ...structuredClone(FIXTURE_RUNTIME_CONTEXT), ...partial };
-}
+import { AGENT_STATES, type AgentEndpointView, type Deployment } from "./types";
 
 function dep(partial: Partial<Deployment>): Deployment {
   return {
@@ -155,55 +144,6 @@ describe("rosterHtml", () => {
 describe("deploymentKey", () => {
   it("is the namespace/name pair (not the ECS service name)", () => {
     expect(deploymentKey({ ...FIXTURE_DEPLOYMENTS[0] })).toBe("prod/orca");
-  });
-});
-
-describe("identityHtml", () => {
-  it("shows principal, account, region and the role kind badge", () => {
-    const html = identityHtml(FIXTURE_RUNTIME_CONTEXT);
-    expect(html).toContain('class="kind k-role"');
-    expect(html).toContain("504190915686");
-    expect(html).toContain("ap-east-2");
-    expect(html).toContain("openab-orca-task-role");
-  });
-
-  it("flags a mismatch and shows the expected principal", () => {
-    const html = identityHtml(
-      ctx({
-        principal: "arn:aws:iam::916371022086:user/brett.chien",
-        principal_kind: "user",
-        scope: "916371022086",
-        identity_matches: false,
-      }),
-    );
-    expect(html).toContain('class="identity mismatch"');
-    expect(html).toContain("identity mismatch");
-    expect(html).toContain("class=\"kind k-user\"");
-    expect(html).toContain("arn:aws:iam::504190915686:role/openab-orca-task-role");
-  });
-
-  it("shows a matches verdict when identity_matches is true", () => {
-    expect(identityHtml(ctx({ identity_matches: true }))).toContain(
-      "matches expected",
-    );
-  });
-
-  it("shows no verdict when there is no expectation", () => {
-    const html = identityHtml(
-      ctx({ identity_matches: null, expected_principal: null }),
-    );
-    expect(html).not.toContain("mismatch");
-    expect(html).not.toContain("matches expected");
-  });
-
-  it("renders an unavailable state for null", () => {
-    expect(identityHtml(null)).toContain("identity unavailable");
-  });
-
-  it("escapes the principal ARN", () => {
-    const html = identityHtml(ctx({ principal: "<script>" }));
-    expect(html).toContain("&lt;script&gt;");
-    expect(html).not.toContain("<script>");
   });
 });
 
