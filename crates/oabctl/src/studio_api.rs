@@ -110,11 +110,11 @@ pub async fn provision(
     // 2. Apply the service manifest at its chosen image tag, through the
     //    provisioning driver seam (config-free, reconciles create-or-update).
     let manifests = parse_manifests(manifest_yaml)?;
-    let mut opts = crate::apply::ApplyOptions::new(cluster);
-    if let Some(bucket) = control_plane_bucket {
-        opts = opts.with_control_plane_bucket(bucket);
-    }
-    crate::driver::EcsDriver { aws_config: config }
+    let opts = crate::driver::ProvisionOptions {
+        control_plane_bucket: control_plane_bucket.map(str::to_string),
+        wait: false,
+    };
+    crate::driver::EcsDriver { aws_config: config, cluster }
         .apply(&manifests, &opts)
         .await
         .context("failed to apply manifest during provision")
@@ -201,8 +201,8 @@ pub async fn scale(
     name: &str,
     size: i32,
 ) -> Result<()> {
-    crate::driver::EcsDriver { aws_config: config }
-        .scale(cluster, namespace, name, size)
+    crate::driver::EcsDriver { aws_config: config, cluster }
+        .scale(namespace, name, size)
         .await
 }
 
@@ -220,8 +220,8 @@ pub async fn delete(
     control_plane_bucket: Option<&str>,
 ) -> Result<()> {
     let bucket = crate::control_plane::resolve_bucket(config, control_plane_bucket).await?;
-    crate::driver::EcsDriver { aws_config: config }
-        .delete(resource, name, cluster, namespace, &bucket)
+    crate::driver::EcsDriver { aws_config: config, cluster }
+        .delete(resource, name, namespace, &bucket)
         .await
 }
 

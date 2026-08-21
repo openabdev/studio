@@ -73,7 +73,7 @@ pub use manifest::{
     Runtime, Spec,
 };
 
-pub use driver::{EcsDriver, ProvisionDriver};
+pub use driver::{EcsDriver, ProvisionDriver, ProvisionOptions};
 pub use events::{fetch_ecs_events, EcsEvent, DEFAULT_EVENTS_LOG_GROUP};
 pub use status::{instance_status, service_status, InstanceStatus, ServiceStatus};
 
