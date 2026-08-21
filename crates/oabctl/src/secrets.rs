@@ -1,6 +1,6 @@
 //! Shared resolution for `spec.secrets` values.
 //!
-//! Values can be either a Secrets Manager reference in ECS-native
+//! For ECS: values can be either a Secrets Manager reference in ECS-native
 //! `valueFrom` format directly (a full ARN, optionally suffixed with
 //! `:<jsonKey>::` to extract one field of a JSON secret — an ECS-only
 //! convention; the Secrets Manager API itself has no knowledge of it), or
@@ -9,6 +9,12 @@
 //! identical here so a manifest author can write one convention across both
 //! `spec.secrets` (consumed by ECS at container launch) and `config.toml`
 //! (consumed by openab itself at runtime).
+//!
+//! For k8s: `k8s-secret://<secret-name>#<key>` references a k8s Secret
+//! object's key directly (see [`parse_k8s_secret_uri`]) — no ARN-resolution
+//! equivalent needed, since kubelet resolves name+key at pod-start time.
+//! `k8s_driver::build_deployment` is the consumer; `aws-sm://` values in a
+//! k8s-runtime manifest are a manifest error, not silently ignored.
 
 use anyhow::{Context, Result};
 
@@ -22,6 +28,25 @@ fn parse_aws_sm_uri(value: &str) -> Option<Result<(&str, &str)>> {
         }
         _ => Err(anyhow::anyhow!(
             "invalid aws-sm:// secret ref '{value}' — expected aws-sm://<secret-id>#<json-key>"
+        )),
+    })
+}
+
+/// Parse `k8s-secret://<secret-name>#<key>` into `(secret_name, key)`. Unlike
+/// `aws-sm://`, there is no resolution step — a k8s Secret is referenced by
+/// name+key directly (kubelet resolves it at pod-start time), so this is pure
+/// parsing, no API call. The Secret object itself must already exist in the
+/// target namespace; creating it is a separate concern (mirrors `aws-sm://`,
+/// which likewise only *references* a secret Secrets Manager already holds).
+/// Returns `None` if `value` doesn't use the `k8s-secret://` scheme.
+pub(crate) fn parse_k8s_secret_uri(value: &str) -> Option<Result<(&str, &str)>> {
+    let rest = value.strip_prefix("k8s-secret://")?;
+    Some(match rest.rsplit_once('#') {
+        Some((secret_name, key)) if !secret_name.is_empty() && !key.is_empty() => {
+            Ok((secret_name, key))
+        }
+        _ => Err(anyhow::anyhow!(
+            "invalid k8s-secret:// secret ref '{value}' — expected k8s-secret://<secret-name>#<key>"
         )),
     })
 }
@@ -255,5 +280,31 @@ mod tests {
     fn parse_aws_sm_uri_returns_none_for_other_schemes() {
         assert!(parse_aws_sm_uri("arn:aws:secretsmanager:us-east-1:123:secret:oab/x-AbCdEf").is_none());
         assert!(parse_aws_sm_uri("plain-secret-name").is_none());
+    }
+
+    #[test]
+    fn parse_k8s_secret_uri_extracts_name_and_key() {
+        let (name, key) = parse_k8s_secret_uri("k8s-secret://oab-orca#DISCORD_BOT_TOKEN")
+            .unwrap()
+            .unwrap();
+        assert_eq!(name, "oab-orca");
+        assert_eq!(key, "DISCORD_BOT_TOKEN");
+    }
+
+    #[test]
+    fn parse_k8s_secret_uri_rejects_missing_hash() {
+        assert!(parse_k8s_secret_uri("k8s-secret://oab-orca").unwrap().is_err());
+    }
+
+    #[test]
+    fn parse_k8s_secret_uri_rejects_empty_parts() {
+        assert!(parse_k8s_secret_uri("k8s-secret://#key").unwrap().is_err());
+        assert!(parse_k8s_secret_uri("k8s-secret://oab-orca#").unwrap().is_err());
+    }
+
+    #[test]
+    fn parse_k8s_secret_uri_returns_none_for_other_schemes() {
+        assert!(parse_k8s_secret_uri("aws-sm://oab/telegram/pahudxbot#TOKEN").is_none());
+        assert!(parse_k8s_secret_uri("plain-secret-name").is_none());
     }
 }
