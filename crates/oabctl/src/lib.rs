@@ -53,6 +53,7 @@ mod config;
 mod control_plane;
 mod create;
 mod delete;
+pub mod driver;
 pub mod events;
 mod get;
 mod ingress;
@@ -72,6 +73,7 @@ pub use manifest::{
     Runtime, Spec,
 };
 
+pub use driver::{EcsDriver, ProvisionDriver};
 pub use events::{fetch_ecs_events, EcsEvent, DEFAULT_EVENTS_LOG_GROUP};
 pub use status::{instance_status, service_status, InstanceStatus, ServiceStatus};
 

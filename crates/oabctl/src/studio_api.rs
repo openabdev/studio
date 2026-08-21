@@ -12,6 +12,7 @@
 //! environment, so an MCP/host process with no oabctl config can still drive
 //! writes.
 
+use crate::driver::ProvisionDriver;
 use crate::manifest::{OABFleetManifest, OABServiceManifest, RawManifest};
 use anyhow::{Context, Result};
 use aws_sdk_s3::primitives::ByteStream;
@@ -106,14 +107,15 @@ pub async fn provision(
     //    pulls the task up and reads config/persona/skills from it.
     push_bundle(config, control_plane_bucket, objects).await?;
 
-    // 2. Apply the service manifest at its chosen image tag. `apply_manifests` is
-    //    config-free and reconciles create-or-update.
+    // 2. Apply the service manifest at its chosen image tag, through the
+    //    provisioning driver seam (config-free, reconciles create-or-update).
     let manifests = parse_manifests(manifest_yaml)?;
     let mut opts = crate::apply::ApplyOptions::new(cluster);
     if let Some(bucket) = control_plane_bucket {
         opts = opts.with_control_plane_bucket(bucket);
     }
-    crate::apply::apply_manifests(config, &manifests, &opts)
+    crate::driver::EcsDriver { aws_config: config }
+        .apply(&manifests, &opts)
         .await
         .context("failed to apply manifest during provision")
 }
@@ -199,15 +201,9 @@ pub async fn scale(
     name: &str,
     size: i32,
 ) -> Result<()> {
-    if size != 0 && size != 1 {
-        anyhow::bail!(
-            "invalid size: {size}. OAB services scale only to 0 (off) or 1 (on) — \
-             each runs a single bot token and scaling above 1 duplicates responses."
-        );
-    }
-    let service_name = format!("oab-{namespace}-{name}");
-    let ecs = aws_sdk_ecs::Client::new(config);
-    ecsctl::scale::scale_service(&ecs, cluster, &service_name, size, false).await
+    crate::driver::EcsDriver { aws_config: config }
+        .scale(cluster, namespace, name, size)
+        .await
 }
 
 /// Delete a control-plane resource (currently `oabservice`).
@@ -224,7 +220,9 @@ pub async fn delete(
     control_plane_bucket: Option<&str>,
 ) -> Result<()> {
     let bucket = crate::control_plane::resolve_bucket(config, control_plane_bucket).await?;
-    crate::delete::run_with_bucket(config, resource, name, cluster, namespace, &bucket).await
+    crate::driver::EcsDriver { aws_config: config }
+        .delete(resource, name, cluster, namespace, &bucket)
+        .await
 }
 
 #[cfg(test)]
