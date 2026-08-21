@@ -1,16 +1,20 @@
 //! K8s implementation of `ProvisionDriver` (ADR #63 slice 3b).
 //!
 //! Deliberately narrow for this slice: `apply`/`scale`/`delete` against a k8s
-//! `Deployment`, mirroring the shape `EcsDriver` already has. Two things a
-//! manifest can carry are explicitly **not yet supported** and fail loudly
-//! rather than silently mis-deploying:
+//! `Deployment`, mirroring the shape `EcsDriver` already has.
 //!
-//! - `spec.bundleFrom` (the composed persona/skills bundle) — ECS gets this
-//!   for free via its S3 file carrier; k8s needs a ConfigMap/volume carrier,
-//!   tracked as sub-slice 3c.
-//! - `spec.secrets` — ECS resolves these into `Secret.valueFrom` ARNs; a k8s
-//!   target needs a different output shape (a Secret key selector), tracked
-//!   as sub-slice 3d.
+//! `spec.secrets` is wired (sub-slice 3d): each value must be
+//! `k8s-secret://<secret-name>#<key>` (see `secrets::parse_k8s_secret_uri`)
+//! and becomes an `env[].valueFrom.secretKeyRef` — the Secret object itself
+//! must already exist in the target namespace; creating it is a separate
+//! concern (same non-creating shape `aws-sm://` already has for ECS). ECS's
+//! `aws-sm://`/raw-ARN values in a k8s-runtime manifest fail loudly at apply
+//! time — a manifest error, not a silent no-op.
+//!
+//! `spec.bundleFrom` (the composed persona/skills bundle) is explicitly
+//! **not yet supported** and fails loudly rather than silently
+//! mis-deploying — ECS gets this for free via its S3 file carrier, k8s needs
+//! a ConfigMap/volume carrier, tracked as sub-slice 3c.
 //!
 //! Observing k8s state into the canonical 6-state (the `apply`/`scale`
 //! counterpart to `status.rs`'s ECS `service_status`/`instance_status`) is
@@ -26,7 +30,8 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use k8s_openapi::api::apps::v1::{Deployment, DeploymentSpec};
 use k8s_openapi::api::core::v1::{
-    Container, EnvVar, PodSpec, PodTemplateSpec, ResourceRequirements, Toleration,
+    Container, EnvVar, EnvVarSource, PodSpec, PodTemplateSpec, ResourceRequirements,
+    SecretKeySelector, Toleration,
 };
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{LabelSelector, ObjectMeta};
@@ -83,8 +88,8 @@ fn require_kubernetes_runtime(m: &OABServiceManifest) -> Result<&crate::manifest
     }
 }
 
-/// Reject the two not-yet-supported manifest features explicitly (see module
-/// docs) instead of silently dropping them.
+/// Reject the still-not-yet-supported manifest feature explicitly (see
+/// module docs) instead of silently dropping it.
 fn reject_unsupported(m: &OABServiceManifest) -> Result<()> {
     if m.spec.bundle_from.is_some() {
         anyhow::bail!(
@@ -93,14 +98,42 @@ fn reject_unsupported(m: &OABServiceManifest) -> Result<()> {
             m.metadata.name
         );
     }
-    if !m.spec.secrets.is_empty() {
-        anyhow::bail!(
-            "k8s secret refs not implemented yet (studio#97 sub-slice 3d) — '{}/{}' has spec.secrets set",
-            m.metadata.namespace,
-            m.metadata.name
-        );
-    }
     Ok(())
+}
+
+/// Build the `env[]` entries for `spec.secrets`: each value must be a
+/// `k8s-secret://<secret-name>#<key>` ref, which becomes a `secretKeyRef` —
+/// kubelet resolves it at pod-start time, no API call needed here (unlike
+/// ECS's `aws-sm://`, which resolves to an ARN up front). Any other scheme
+/// (an ECS `aws-sm://` ref left over from copy-pasting an ECS manifest, a
+/// raw ARN, ...) is a manifest error, not silently dropped.
+fn secret_env_vars(m: &OABServiceManifest) -> Result<Vec<EnvVar>> {
+    m.spec
+        .secrets
+        .iter()
+        .map(|(env_name, value)| {
+            let (secret_name, key) = crate::secrets::parse_k8s_secret_uri(value)
+                .with_context(|| {
+                    format!(
+                        "spec.secrets['{env_name}'] for k8s runtime must use \
+                         k8s-secret://<secret-name>#<key> (got '{value}') — '{}/{}'",
+                        m.metadata.namespace, m.metadata.name
+                    )
+                })??;
+            Ok(EnvVar {
+                name: env_name.clone(),
+                value_from: Some(EnvVarSource {
+                    secret_key_ref: Some(SecretKeySelector {
+                        name: secret_name.to_string(),
+                        key: key.to_string(),
+                        optional: None,
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            })
+        })
+        .collect()
 }
 
 fn resource_requirements(resources: &crate::manifest::Resources) -> ResourceRequirements {
@@ -141,6 +174,7 @@ fn build_deployment(m: &OABServiceManifest) -> Result<Deployment> {
             ..Default::default()
         });
     }
+    env.extend(secret_env_vars(m)?);
 
     // Same convention as EcsDriver (apply.rs): the image's default CMD points
     // at a config.toml nothing populates, so override it to load configFrom
@@ -338,10 +372,34 @@ mod tests {
     }
 
     #[test]
-    fn reject_unsupported_bails_on_secrets() {
+    fn reject_unsupported_passes_manifests_with_k8s_secrets() {
+        let m = k8s_manifest(None, &[("DISCORD_BOT_TOKEN", "k8s-secret://oab-orca#DISCORD_BOT_TOKEN")]);
+        reject_unsupported(&m).unwrap();
+    }
+
+    #[test]
+    fn build_deployment_wires_secret_key_ref() {
+        let m = k8s_manifest(None, &[("DISCORD_BOT_TOKEN", "k8s-secret://oab-orca#DISCORD_BOT_TOKEN")]);
+        let dep = build_deployment(&m).unwrap();
+        let pod = dep.spec.unwrap().template.spec.unwrap();
+        let env = pod.containers[0].env.as_ref().unwrap();
+        let secret_env = env.iter().find(|e| e.name == "DISCORD_BOT_TOKEN").unwrap();
+        let secret_ref = secret_env
+            .value_from
+            .as_ref()
+            .unwrap()
+            .secret_key_ref
+            .as_ref()
+            .unwrap();
+        assert_eq!(secret_ref.name, "oab-orca");
+        assert_eq!(secret_ref.key, "DISCORD_BOT_TOKEN");
+    }
+
+    #[test]
+    fn build_deployment_rejects_non_k8s_secret_scheme() {
         let m = k8s_manifest(None, &[("DISCORD_BOT_TOKEN", "aws-sm://oab/prod/orca#DISCORD_BOT_TOKEN")]);
-        let err = reject_unsupported(&m).unwrap_err();
-        assert!(err.to_string().contains("3d"));
+        let err = build_deployment(&m).unwrap_err();
+        assert!(err.to_string().contains("k8s-secret://"));
     }
 
     #[test]
