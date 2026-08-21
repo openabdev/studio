@@ -11,6 +11,8 @@ agent-lifecycle = { path = "../agent-lifecycle" }
 studio-compose = { path = "../studio-compose" }
 aws-config = "1.5"
 aws-sdk-sts = "1"
+kube = { version = "0.99", default-features = false, features = ["client", "rustls-tls"] }
+k8s-openapi = { version = "0.24", features = ["latest"] }
 anyhow = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 toml = "0.8"
