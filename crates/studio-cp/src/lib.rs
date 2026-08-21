@@ -253,6 +253,79 @@ pub async fn observe_identity(
     })
 }
 
+/// Classify a k8s username the same way `principal_kind` classifies an AWS
+/// ARN: `"service-account"` (`system:serviceaccount:<ns>:<name>`) vs
+/// `"user"` (anything else non-empty) vs `"unknown"`.
+fn k8s_principal_kind(username: &str) -> &'static str {
+    if username.starts_with("system:serviceaccount:") {
+        "service-account"
+    } else if !username.is_empty() {
+        "user"
+    } else {
+        "unknown"
+    }
+}
+
+/// Observe the **effective** runtime identity/context a kubeconfig context
+/// resolves to — the k8s counterpart to [`observe_identity`], same
+/// `RuntimeContext` shape (ADR-19's AWS-driver/k8s-driver field mapping
+/// table). `context = None` uses the kubeconfig's `current-context`, mirroring
+/// `K8sDriver::from_context`'s "ambient default, explicit override" shape.
+///
+/// `principal`/`caller_id` come from a live `SelfSubjectReview`
+/// (`authentication.k8s.io/v1`, stable since k8s 1.28) — the literal API
+/// `kubectl auth whoami` calls, so this is the same "ask the server who it
+/// thinks I am" check `observe_identity`'s STS `GetCallerIdentity` does, not
+/// a value read out of the kubeconfig file (which only says who you *meant*
+/// to authenticate as).
+pub async fn observe_k8s_identity(context: Option<&str>) -> anyhow::Result<RuntimeContext> {
+    use k8s_openapi::api::authentication::v1::SelfSubjectReview;
+    use kube::api::{Api, PostParams};
+
+    let kubeconfig = kube::config::Kubeconfig::read()
+        .map_err(|e| anyhow::anyhow!("failed to read kubeconfig: {e}"))?;
+    let context_name = context
+        .map(str::to_string)
+        .or_else(|| kubeconfig.current_context.clone())
+        .unwrap_or_default();
+    let named_context = kubeconfig.contexts.iter().find(|c| c.name == context_name);
+    let ctx = named_context.and_then(|c| c.context.as_ref());
+    let scope = match ctx {
+        Some(c) => format!("{}/{}", c.cluster, c.namespace.as_deref().unwrap_or("default")),
+        None => String::new(),
+    };
+
+    let options = kube::config::KubeConfigOptions {
+        context: context.map(str::to_string),
+        ..Default::default()
+    };
+    let config = kube::Config::from_kubeconfig(&options)
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to resolve kubeconfig context '{context_name}': {e}"))?;
+    let client = kube::Client::try_from(config).map_err(|e| anyhow::anyhow!("failed to build k8s client: {e}"))?;
+
+    let api: Api<SelfSubjectReview> = Api::all(client);
+    let review = api
+        .create(&PostParams::default(), &SelfSubjectReview::default())
+        .await
+        .map_err(|e| anyhow::anyhow!("SelfSubjectReview (kubectl auth whoami) failed: {e}"))?;
+    let user_info = review.status.and_then(|s| s.user_info).unwrap_or_default();
+    let principal = user_info.username.unwrap_or_default();
+
+    Ok(RuntimeContext {
+        principal_kind: k8s_principal_kind(&principal).to_string(),
+        principal,
+        scope,
+        // k8s has no first-class region/zone concept the way AWS does — a
+        // cluster's server URL isn't reliably a region, so this stays empty
+        // rather than guessing at one (same "empty if unset" contract
+        // observe_identity already has for location).
+        location: String::new(),
+        source: format!("kubeconfig context: {context_name}"),
+        caller_id: user_info.uid.unwrap_or_default(),
+    })
+}
+
 // ---- Fleet → managing-credential binding (ADR: Per-Fleet managing identity) --
 //
 // The *declarative* side of the loop: which credential should manage which
@@ -776,6 +849,16 @@ mod tests {
             "user"
         );
         assert_eq!(principal_kind("arn:aws:iam::1:root"), "unknown");
+    }
+
+    #[test]
+    fn k8s_principal_kind_distinguishes_service_account_from_user() {
+        assert_eq!(
+            k8s_principal_kind("system:serviceaccount:prod:orca-sa"),
+            "service-account"
+        );
+        assert_eq!(k8s_principal_kind("brett@example.com"), "user");
+        assert_eq!(k8s_principal_kind(""), "unknown");
     }
 
     #[test]
