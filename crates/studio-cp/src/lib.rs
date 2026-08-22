@@ -725,7 +725,27 @@ pub async fn provision_from_library(
         .filter(|s| !s.is_empty())
         .map(str::to_string)
         .unwrap_or_else(|| bundle.image_tag.clone());
-    let objects = bundle.artifact_objects(namespace, name);
+
+    // Resolve the bucket once here (rather than letting `redeploy` resolve it
+    // internally, as before) so the zip's S3 URI can be computed and wired
+    // into config.toml *before* upload. See oabctl::studio_api::bundle_zip_uri
+    // for why this — not the loose-file artifact_objects prefix — is what
+    // actually gets restored on the deployed agent at boot.
+    let bucket = oabctl::resolve_bucket(aws_config, None).await?;
+    let mut objects = bundle.artifact_objects(namespace, name);
+    let zip_uri = oabctl::studio_api::bundle_zip_uri(&bucket, namespace, name);
+    let config_key = format!("{}/config.toml", studio_compose::artifacts_prefix(namespace, name));
+    match objects.iter_mut().find(|(key, _)| *key == config_key) {
+        Some((_, bytes)) => *bytes = oabctl::studio_api::inject_pre_seed_hook(bytes, &zip_uri)?,
+        None => anyhow::bail!("composed bundle for {namespace}/{name} has no config.toml — cannot wire hooks.pre_seed"),
+    }
+    let zip_key = format!(
+        "{}/{}",
+        studio_compose::artifacts_prefix(namespace, name),
+        oabctl::studio_api::BUNDLE_ZIP_FILENAME
+    );
+    objects.push((zip_key, bundle.zip_bytes()));
+
     let digest = bundle.digest();
 
     let report = oabctl::studio_api::redeploy(
@@ -735,7 +755,7 @@ pub async fn provision_from_library(
         name,
         Some(&image),
         &objects,
-        None,
+        Some(&bucket),
     )
     .await?;
 
@@ -1164,5 +1184,14 @@ namespace = "prod"
         assert!(!principal_matches(expected_role, other_acct));
         // exact match
         assert!(principal_matches(brett, brett));
+    }
+
+    #[test]
+    fn bundle_zip_filename_constants_stay_in_sync() {
+        // oabctl::studio_api::BUNDLE_ZIP_FILENAME and
+        // studio_compose::Bundle::ZIP_FILENAME can't share a dependency edge
+        // to enforce this with one constant (see provision_from_library) —
+        // this is the cross-crate seam that catches drift instead.
+        assert_eq!(oabctl::studio_api::BUNDLE_ZIP_FILENAME, studio_compose::Bundle::ZIP_FILENAME);
     }
 }

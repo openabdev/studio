@@ -165,6 +165,38 @@ impl Bundle {
             .map(|(path, bytes)| (format!("{prefix}/{path}"), bytes.clone()))
             .collect()
     }
+
+    /// The filename (relative to [`artifacts_prefix`]) the bundle's zip archive
+    /// uploads to: `bundle.zip`.
+    pub const ZIP_FILENAME: &'static str = "bundle.zip";
+
+    /// A zip archive of every bundle file, deterministic (files are a
+    /// `BTreeMap`, so entry order is stable across composes of equal inputs —
+    /// same guarantee [`Bundle::digest`] has). This is the artifact
+    /// `hooks.pre_seed` actually restores at boot — unlike
+    /// [`Bundle::artifact_objects`]'s loose per-file uploads, which nothing
+    /// downloads back (see the K8s driver ADR's slice-3c investigation:
+    /// `bundleFrom`'s doc comment claimed "the runtime restores this prefix
+    /// into ~ at first boot," but no such restore code exists anywhere in
+    /// `openab` — `pre_seed` only ever consumed zip sources). Still a pure,
+    /// no-I/O transform: `ZipWriter` writes to an in-memory buffer.
+    pub fn zip_bytes(&self) -> Vec<u8> {
+        let mut buf = std::io::Cursor::new(Vec::new());
+        {
+            let mut writer = zip::ZipWriter::new(&mut buf);
+            let options = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Deflated);
+            for (path, bytes) in &self.files {
+                // start_file/write on an in-memory Cursor<Vec<u8>> cannot fail
+                // (no OS I/O involved) — unwrap keeps this fn infallible, matching
+                // every other pure Bundle method (digest, preview, artifact_objects).
+                writer.start_file(path, options).expect("zip: in-memory write");
+                std::io::Write::write_all(&mut writer, bytes).expect("zip: in-memory write");
+            }
+            writer.finish().expect("zip: in-memory write");
+        }
+        buf.into_inner()
+    }
 }
 
 /// A UTF-8-lossy, serde-friendly view of one bundle file for the preview UI.
@@ -677,6 +709,33 @@ mod tests {
     #[test]
     fn artifacts_prefix_has_no_trailing_slash() {
         assert_eq!(artifacts_prefix("ns", "a"), "artifacts/ns/a");
+    }
+
+    #[test]
+    fn zip_bytes_round_trips_every_file_unmodified() {
+        let lib = SkillsLibrary::from_iter([("s", skill_with(&[("SKILL.md", "hi\n")]))]);
+        let mut t = tmpl();
+        t.skills = vec!["s".into()];
+        let bundle = compose(&t, &Overlay::default(), &lib).unwrap();
+
+        let zip_bytes = bundle.zip_bytes();
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(zip_bytes)).expect("valid zip");
+        let mut by_name: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+        for i in 0..archive.len() {
+            let mut entry = archive.by_index(i).unwrap();
+            let mut bytes = Vec::new();
+            std::io::Read::read_to_end(&mut entry, &mut bytes).unwrap();
+            by_name.insert(entry.name().to_string(), bytes);
+        }
+        assert_eq!(by_name, bundle.files);
+    }
+
+    #[test]
+    fn zip_bytes_is_deterministic_across_equal_composes() {
+        let lib = SkillsLibrary::default();
+        let bundle_a = compose(&tmpl(), &Overlay::default(), &lib).unwrap();
+        let bundle_b = compose(&tmpl(), &Overlay::default(), &lib).unwrap();
+        assert_eq!(bundle_a.zip_bytes(), bundle_b.zip_bytes());
     }
 
     #[test]
