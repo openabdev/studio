@@ -464,6 +464,152 @@ fn role_identity(arn: &str) -> Option<(String, String)> {
     Some((account, name))
 }
 
+// ---- K8s fleet binding (ADR #63 slice 3f) --------------------------------
+//
+// Parallel, additive config surface for k8s-driven fleets — a **separate
+// file** (`fleets-k8s.toml`, not a second table in `fleets.toml`). Kept
+// separate deliberately: `save_bindings_text`/`save_k8s_bindings_text` are
+// both whole-file verbatim writes, so if AWS and k8s bindings shared one
+// file, saving either one from the console would silently clobber the
+// other's edits (e.g. a k8s-only save wiping Brett's existing prod
+// `[fleet.*]` entries). One file per driver makes that class of bug
+// structurally impossible instead of relying on callers to merge carefully.
+//
+// A fleet is either AWS-driven (`FleetBinding`, `fleets.toml`) or k8s-driven
+// (`K8sFleetBinding`, `fleets-k8s.toml`); nothing infers one from the other,
+// and nothing here reads or writes `fleets.toml`.
+
+/// A declarative binding of a k8s-driven fleet to the kubeconfig context that
+/// should manage it, plus the fleet's members. `context`+`namespace` stand in
+/// for `FleetBinding`'s `cluster`+`profile` — there's no AWS account/region
+/// here, just "which kubeconfig context, and which namespace within it"
+/// (namespace is OAB's own `namespace`, which maps directly onto the k8s
+/// namespace — see `k8s_driver`'s module docs upstream in `oabctl`).
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct K8sFleetBinding {
+    /// Fleet name — the `[fleet.<name>]` key.
+    #[serde(default)]
+    pub name: String,
+    /// Kubeconfig context name. `None` = the kubeconfig's current-context —
+    /// same "ambient default, explicit override" shape `K8sDriver::from_context`
+    /// and `observe_k8s_identity` already use.
+    #[serde(default)]
+    pub context: Option<String>,
+    /// k8s namespace this fleet's members live in.
+    pub namespace: String,
+    /// Agent names in this fleet. Empty ⇒ the whole namespace (mirrors
+    /// `FleetBinding`'s empty-members-means-everything convention).
+    #[serde(default)]
+    pub members: Vec<String>,
+}
+
+impl K8sFleetBinding {
+    /// Whether `agent_name` belongs to this fleet. An **empty** member list ⇒
+    /// the fleet covers the whole namespace (mirrors `FleetBinding::includes`).
+    pub fn includes(&self, agent_name: &str) -> bool {
+        self.members.is_empty() || self.members.iter().any(|m| m == agent_name)
+    }
+}
+
+/// The body of a `[fleet.<name>]` table in `fleets-k8s.toml` — the fields of
+/// a [`K8sFleetBinding`] minus `name`, which is the table key.
+#[derive(Debug, Clone, serde::Deserialize)]
+struct K8sFleetBody {
+    #[serde(default)]
+    context: Option<String>,
+    namespace: String,
+    #[serde(default)]
+    members: Vec<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct K8sFleetsDoc {
+    #[serde(default)]
+    fleet: std::collections::BTreeMap<String, K8sFleetBody>,
+}
+
+impl From<K8sFleetsDoc> for K8sFleetBindings {
+    fn from(doc: K8sFleetsDoc) -> Self {
+        K8sFleetBindings {
+            fleets: doc
+                .fleet
+                .into_iter()
+                .map(|(name, b)| K8sFleetBinding {
+                    name,
+                    context: b.context,
+                    namespace: b.namespace,
+                    members: b.members,
+                })
+                .collect(),
+        }
+    }
+}
+
+/// Parsed k8s-fleet-binding file, canonicalized to a list. Deserializes from
+/// `[fleet.<name>]` (only form — no legacy array form, unlike `FleetBindings`,
+/// since there's no pre-existing k8s config to stay compatible with).
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[serde(from = "K8sFleetsDoc")]
+pub struct K8sFleetBindings {
+    pub fleets: Vec<K8sFleetBinding>,
+}
+
+impl K8sFleetBindings {
+    /// The fleet whose explicit `members` contain `agent_name`, if any.
+    pub fn fleet_for_agent(&self, agent_name: &str) -> Option<&K8sFleetBinding> {
+        self.fleets.iter().find(|b| b.includes(agent_name))
+    }
+
+    /// A fleet by name.
+    pub fn get(&self, name: &str) -> Option<&K8sFleetBinding> {
+        self.fleets.iter().find(|b| b.name == name)
+    }
+}
+
+/// Default k8s-fleet-binding config path: `$OAB_K8S_FLEETS_CONFIG`, else
+/// `<config-dir>/oab-studio/fleets-k8s.toml`. Deliberately a different file
+/// from `default_bindings_path()` — see module docs above.
+pub fn default_k8s_bindings_path() -> Option<std::path::PathBuf> {
+    if let Ok(p) = std::env::var("OAB_K8S_FLEETS_CONFIG") {
+        return Some(std::path::PathBuf::from(p));
+    }
+    dirs::config_dir().map(|d| d.join("oab-studio").join("fleets-k8s.toml"))
+}
+
+/// Load k8s fleet bindings from `path`. A missing file is **not** an error —
+/// it yields an empty set, so bindings are strictly opt-in (mirrors
+/// `load_bindings`).
+pub fn load_k8s_bindings(path: &std::path::Path) -> anyhow::Result<K8sFleetBindings> {
+    match std::fs::read_to_string(path) {
+        Ok(content) => Ok(toml::from_str(&content)?),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(K8sFleetBindings::default()),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Resolve the k8s driver a binding selects — a `K8sDriver` bound to its
+/// kubeconfig context. This is the k8s counterpart to
+/// `resolve_binding_config`'s AWS `SdkConfig` resolution: the **switch**,
+/// calls for this fleet act against the bound context instead of whatever
+/// kubeconfig `current-context` happens to be ambient. Orbstack's local
+/// cluster is targeted exactly this way — just a context name, no
+/// special-casing.
+pub async fn resolve_binding_driver(binding: &K8sFleetBinding) -> anyhow::Result<oabctl::K8sDriver> {
+    oabctl::K8sDriver::from_context(binding.context.as_deref()).await
+}
+
+/// Validate `text` parses as a k8s-bindings file and, if so, persist it
+/// verbatim to `fleets-k8s.toml` (never `fleets.toml` — see module docs
+/// above), returning the parsed set. Mirrors `save_bindings_text`.
+pub fn save_k8s_bindings_text(
+    path: &std::path::Path,
+    text: &str,
+) -> anyhow::Result<K8sFleetBindings> {
+    let parsed: K8sFleetBindings = toml::from_str(text)?;
+    write_bindings_atomic(path, text)?;
+    Ok(parsed)
+}
+
 // ---- Fleet-binding editing (raw-text, whole-file) ------------------------
 //
 // The write half of the config panel: the operator edits `fleets.toml` as text
@@ -873,6 +1019,97 @@ members = ["oab-prod-mira"]
             .unwrap()
             .fleets
             .is_empty());
+    }
+
+    #[test]
+    fn k8s_fleets_parse_with_context_and_members() {
+        let doc = r#"
+[fleet.orbstack-dev]
+context = "orbstack"
+namespace = "dev"
+members = ["scratch-agent"]
+
+[fleet.orca-k8s]
+namespace = "prod"
+"#;
+        let b: K8sFleetBindings = toml::from_str(doc).expect("parse");
+        assert_eq!(b.fleets.len(), 2);
+        let dev = b.get("orbstack-dev").expect("orbstack-dev fleet");
+        assert_eq!(dev.context.as_deref(), Some("orbstack"));
+        assert_eq!(dev.namespace, "dev");
+        assert_eq!(dev.members, vec!["scratch-agent".to_string()]);
+        // context omitted ⇒ None (kubeconfig current-context), same as
+        // K8sDriver::from_context's "ambient default" contract
+        let prod = b.get("orca-k8s").expect("orca-k8s fleet");
+        assert_eq!(prod.context, None);
+    }
+
+    #[test]
+    fn k8s_binding_includes_matches_by_name_or_whole_namespace() {
+        let scoped = K8sFleetBinding {
+            name: "dev".into(),
+            context: Some("orbstack".into()),
+            namespace: "dev".into(),
+            members: vec!["scratch-agent".into()],
+        };
+        assert!(scoped.includes("scratch-agent"));
+        assert!(!scoped.includes("other-agent"));
+
+        let whole = K8sFleetBinding {
+            name: "prod".into(),
+            context: None,
+            namespace: "prod".into(),
+            members: vec![],
+        };
+        assert!(whole.includes("anything"));
+    }
+
+    #[test]
+    fn empty_k8s_config_and_no_fleet_key_parse_to_empty() {
+        assert!(toml::from_str::<K8sFleetBindings>("").unwrap().fleets.is_empty());
+        assert!(toml::from_str::<K8sFleetBindings>("# just a comment\n")
+            .unwrap()
+            .fleets
+            .is_empty());
+    }
+
+    #[test]
+    fn load_k8s_bindings_missing_file_is_empty() {
+        let path = std::env::temp_dir().join("oab-k8s-fleets-does-not-exist-xyz.toml");
+        let _ = std::fs::remove_file(&path);
+        assert!(load_k8s_bindings(&path).unwrap().fleets.is_empty());
+    }
+
+    #[test]
+    fn save_k8s_bindings_round_trips_and_preserves_text_verbatim() {
+        let dir = std::env::temp_dir().join(format!("oab-k8s-fleets-save-{}", std::process::id()));
+        let path = dir.join("fleets-k8s.toml");
+        let _ = std::fs::remove_dir_all(&dir);
+        let text = "# my k8s fleets\n\n[fleet.dev]\ncontext = \"orbstack\"\nnamespace = \"dev\"\n";
+        let parsed = save_k8s_bindings_text(&path, text).expect("save");
+        assert_eq!(parsed.fleets.len(), 1);
+        assert_eq!(parsed.get("dev").unwrap().namespace, "dev");
+        assert_eq!(read_bindings_text(&path).unwrap(), text);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn k8s_bindings_file_is_separate_from_aws_bindings_file() {
+        // Saving k8s bindings must never touch fleets.toml — the whole reason
+        // this is a separate file (see module docs on K8sFleetBinding).
+        let dir = std::env::temp_dir().join(format!("oab-separate-fleets-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let aws_path = dir.join("fleets.toml");
+        let k8s_path = dir.join("fleets-k8s.toml");
+
+        let aws_text = "[fleet.prod]\ncluster = \"oab\"\nprofile = \"oab-fleet\"\n";
+        save_bindings_text(&aws_path, aws_text).expect("save aws");
+        let k8s_text = "[fleet.dev]\ncontext = \"orbstack\"\nnamespace = \"dev\"\n";
+        save_k8s_bindings_text(&k8s_path, k8s_text).expect("save k8s");
+
+        assert_eq!(read_bindings_text(&aws_path).unwrap(), aws_text);
+        assert_eq!(read_bindings_text(&k8s_path).unwrap(), k8s_text);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
