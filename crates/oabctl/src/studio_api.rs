@@ -40,12 +40,64 @@ pub fn parse_manifests(yaml: &str) -> Result<Vec<OABServiceManifest>> {
     }
 }
 
-/// The `bundleFrom` S3 **prefix** URI an agent's composed bundle is uploaded to
-/// and restored from at boot: `s3://{bucket}/artifacts/{namespace}/{name}/`
-/// (trailing slash). Pairs with `studio_compose::Bundle::artifact_objects`, whose
-/// keys are exactly `artifacts/{namespace}/{name}/{path}` under the same bucket.
+/// The `bundleFrom` S3 **prefix** URI an agent's composed bundle is uploaded to:
+/// `s3://{bucket}/artifacts/{namespace}/{name}/` (trailing slash). Pairs with
+/// `studio_compose::Bundle::artifact_objects`, whose keys are exactly
+/// `artifacts/{namespace}/{name}/{path}` under the same bucket.
+///
+/// Bookkeeping only — nothing downloads this prefix back (see
+/// [`bundle_zip_uri`]'s doc for the mechanism that actually restores a
+/// bundle). Kept for now as an informational record of where the loose files
+/// landed; no manifest field or driver reads it.
 pub fn bundle_from_uri(bucket: &str, namespace: &str, name: &str) -> String {
     format!("s3://{bucket}/artifacts/{namespace}/{name}/")
+}
+
+/// Filename (relative to the artifacts prefix) a bundle's zip archive uploads
+/// to. Must match `studio_compose::Bundle::ZIP_FILENAME` — the two crates
+/// don't share a dependency edge to enforce this with a shared constant, so
+/// `studio-cp` (which depends on both) tests the two stay in sync.
+pub const BUNDLE_ZIP_FILENAME: &str = "bundle.zip";
+
+/// The S3 URI a bundle's zip archive (`studio_compose::Bundle::zip_bytes`)
+/// uploads to: `s3://{bucket}/artifacts/{namespace}/{name}/bundle.zip`.
+///
+/// This — not [`bundle_from_uri`]'s loose-file prefix — is what actually gets
+/// restored at boot: [`inject_pre_seed_hook`] wires this URI into the
+/// deployed agent's own `config.toml` as a `[hooks.pre_seed]` source, and
+/// `openab`'s `pre_seed` feature (already the mechanism that restores an
+/// agent's own persistent state across restarts) downloads + extracts it into
+/// `~` on every boot. Platform-agnostic by construction — `pre_seed` is pure
+/// "S3 GetObject + extract," it doesn't know or care whether the process
+/// booting is an ECS task or a k8s pod, so no k8s-specific bundle carrier is
+/// needed (see studio#97's slice-3c investigation: `bundle_from_uri`'s prefix
+/// was never actually consumed by anything on the ECS path either).
+pub fn bundle_zip_uri(bucket: &str, namespace: &str, name: &str) -> String {
+    format!("s3://{bucket}/artifacts/{namespace}/{name}/{BUNDLE_ZIP_FILENAME}")
+}
+
+/// Append a `[hooks.pre_seed]` section to `config_toml`'s bytes, pointing at
+/// `zip_uri` — see [`bundle_zip_uri`] for why this is the actual bundle-restore
+/// mechanism. A no-op (returns `config_toml` unchanged) if the config already
+/// declares `[hooks.pre_seed]`: an operator who hand-authored one keeps
+/// control, this never silently overrides it. Appends rather than
+/// re-serializing the whole document, so existing comments/formatting in the
+/// operator's authored `config.toml` survive untouched — same "verbatim,
+/// don't round-trip through a parser" principle `save_bindings_text` already
+/// applies to `fleets.toml`.
+pub fn inject_pre_seed_hook(config_toml: &[u8], zip_uri: &str) -> Result<Vec<u8>> {
+    let text = std::str::from_utf8(config_toml).context("config.toml is not valid UTF-8")?;
+    let parsed: toml::Value = text.parse().context("config.toml is not valid TOML")?;
+    if parsed.get("hooks").and_then(|h| h.get("pre_seed")).is_some() {
+        return Ok(config_toml.to_vec());
+    }
+    let quoted_uri = toml::Value::String(zip_uri.to_string());
+    let mut out = text.to_string();
+    if !out.is_empty() && !out.ends_with('\n') {
+        out.push('\n');
+    }
+    out.push_str(&format!("\n[hooks.pre_seed]\nsources = [{quoted_uri}]\n"));
+    Ok(out.into_bytes())
 }
 
 /// Outcome of pushing a bundle: which bucket it landed in and how many objects.
@@ -235,6 +287,46 @@ mod tests {
             bundle_from_uri("oab-control-plane-123", "prod", "orca"),
             "s3://oab-control-plane-123/artifacts/prod/orca/"
         );
+    }
+
+    #[test]
+    fn bundle_zip_uri_is_the_bundle_from_prefix_plus_zip_filename() {
+        assert_eq!(
+            bundle_zip_uri("oab-control-plane-123", "prod", "orca"),
+            format!(
+                "{}{BUNDLE_ZIP_FILENAME}",
+                bundle_from_uri("oab-control-plane-123", "prod", "orca")
+            )
+        );
+        assert_eq!(
+            bundle_zip_uri("b", "prod", "orca"),
+            "s3://b/artifacts/prod/orca/bundle.zip"
+        );
+    }
+
+    #[test]
+    fn inject_pre_seed_hook_appends_to_existing_config() {
+        let config = b"[agent]\nname = \"orca\"\n";
+        let out = inject_pre_seed_hook(config, "s3://bucket/artifacts/prod/orca/bundle.zip").unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.starts_with("[agent]\nname = \"orca\"\n"));
+        assert!(text.contains("[hooks.pre_seed]"));
+        assert!(text.contains("s3://bucket/artifacts/prod/orca/bundle.zip"));
+        // still valid TOML after injection
+        text.parse::<toml::Value>().expect("valid toml");
+    }
+
+    #[test]
+    fn inject_pre_seed_hook_is_a_noop_when_already_present() {
+        let config = b"[hooks.pre_seed]\nsources = [\"s3://other/bucket.zip\"]\n";
+        let out = inject_pre_seed_hook(config, "s3://bucket/artifacts/prod/orca/bundle.zip").unwrap();
+        // unchanged, byte-for-byte — an operator's own hook is never overridden
+        assert_eq!(out, config);
+    }
+
+    #[test]
+    fn inject_pre_seed_hook_rejects_invalid_toml() {
+        assert!(inject_pre_seed_hook(b"not = [valid", "s3://x/bundle.zip").is_err());
     }
 
     #[test]

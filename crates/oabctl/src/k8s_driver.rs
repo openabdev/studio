@@ -11,10 +11,16 @@
 //! `aws-sm://`/raw-ARN values in a k8s-runtime manifest fail loudly at apply
 //! time — a manifest error, not a silent no-op.
 //!
-//! `spec.bundleFrom` (the composed persona/skills bundle) is explicitly
-//! **not yet supported** and fails loudly rather than silently
-//! mis-deploying — ECS gets this for free via its S3 file carrier, k8s needs
-//! a ConfigMap/volume carrier, tracked as sub-slice 3c.
+//! `spec.bundleFrom` needs no k8s-specific handling at all (sub-slice 3c
+//! turned out to be a non-issue): the actual bundle restore happens via
+//! `openab`'s own `hooks.pre_seed` feature, wired into the composed
+//! `config.toml`'s content at provisioning time
+//! (`oabctl::studio_api::inject_pre_seed_hook`) — orchestrator-agnostic by
+//! construction, since `pre_seed` is just "S3 GetObject + extract," it
+//! doesn't know or care whether the booting process is an ECS task or a k8s
+//! pod. `build_deployment` already points the container's command at
+//! `configFrom`, same as ECS, so this Just Works without any driver code
+//! here reading `bundleFrom` at all.
 //!
 //! Observing k8s state into the canonical 6-state (the `apply`/`scale`
 //! counterpart to `status.rs`'s ECS `service_status`/`instance_status`) is
@@ -86,19 +92,6 @@ fn require_kubernetes_runtime(m: &OABServiceManifest) -> Result<&crate::manifest
             m.metadata.name
         ),
     }
-}
-
-/// Reject the still-not-yet-supported manifest feature explicitly (see
-/// module docs) instead of silently dropping it.
-fn reject_unsupported(m: &OABServiceManifest) -> Result<()> {
-    if m.spec.bundle_from.is_some() {
-        anyhow::bail!(
-            "k8s bundle carrier not implemented yet (studio#97 sub-slice 3c) — '{}/{}' has spec.bundleFrom set",
-            m.metadata.namespace,
-            m.metadata.name
-        );
-    }
-    Ok(())
 }
 
 /// Build the `env[]` entries for `spec.secrets`: each value must be a
@@ -249,7 +242,6 @@ impl ProvisionDriver for K8sDriver {
     async fn apply(&self, manifests: &[OABServiceManifest], _opts: &ProvisionOptions) -> Result<ApplyReport> {
         let mut services = Vec::with_capacity(manifests.len());
         for m in manifests {
-            reject_unsupported(m)?;
             let deployment = build_deployment(m)?;
             let name = k8s_deployment_name(&m.metadata.name);
             let api: Api<Deployment> = Api::namespaced(self.client.clone(), &m.metadata.namespace);
@@ -359,22 +351,12 @@ mod tests {
     }
 
     #[test]
-    fn reject_unsupported_passes_a_plain_manifest() {
-        let m = k8s_manifest(None, &[]);
-        reject_unsupported(&m).unwrap();
-    }
-
-    #[test]
-    fn reject_unsupported_bails_on_bundle_from() {
-        let m = k8s_manifest(Some("s3://bucket/artifacts/prod/orca/"), &[]);
-        let err = reject_unsupported(&m).unwrap_err();
-        assert!(err.to_string().contains("3c"));
-    }
-
-    #[test]
-    fn reject_unsupported_passes_manifests_with_k8s_secrets() {
-        let m = k8s_manifest(None, &[("DISCORD_BOT_TOKEN", "k8s-secret://oab-orca#DISCORD_BOT_TOKEN")]);
-        reject_unsupported(&m).unwrap();
+    fn build_deployment_ignores_bundle_from_no_special_handling_needed() {
+        // bundleFrom isn't consumed by the driver at all (see module docs) —
+        // a manifest carrying it builds identically to one without.
+        let with = k8s_manifest(Some("s3://bucket/artifacts/prod/orca/"), &[]);
+        let without = k8s_manifest(None, &[]);
+        assert_eq!(build_deployment(&with).unwrap(), build_deployment(&without).unwrap());
     }
 
     #[test]

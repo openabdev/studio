@@ -8,7 +8,14 @@ pub(crate) fn select_bucket(configured: Option<&str>, env: Option<&str>) -> Opti
         .map(str::to_owned)
 }
 
-pub(crate) async fn resolve_bucket(
+/// Resolve the control-plane bucket: `configured`, else `$OAB_CONTROL_PLANE_BUCKET`,
+/// else `oab-control-plane-{account}` derived from the caller's AWS identity
+/// (an STS call — only made when neither of the first two is set). `provision`/
+/// `redeploy`/`push_bundle`/`delete` all resolve it internally via this same
+/// function; exposed `pub` so a caller that needs the resolved value *before*
+/// calling one of those (e.g. to compute a bundle's zip URI ahead of upload)
+/// doesn't have to reimplement or guess at the resolution order.
+pub async fn resolve_bucket(
     aws_config: &aws_config::SdkConfig,
     configured: Option<&str>,
 ) -> Result<String> {
