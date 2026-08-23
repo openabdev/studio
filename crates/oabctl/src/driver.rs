@@ -66,7 +66,7 @@ impl<'a> ProvisionDriver for EcsDriver<'a> {
         }
         crate::apply::apply_manifests(self.aws_config, manifests, &ecs_opts)
             .await
-            .map_err(|e| anyhow::anyhow!("apply failed [{:?}]: {e}", e.kind))
+            .map_err(ecs_apply_error_to_anyhow)
     }
 
     async fn scale(&self, namespace: &str, name: &str, size: i32) -> Result<()> {
@@ -91,5 +91,56 @@ impl<'a> ProvisionDriver for EcsDriver<'a> {
             control_plane_bucket,
         )
         .await
+    }
+}
+
+/// Convert `apply_manifests`'s structured error into an `anyhow::Error`
+/// while keeping the `ApplyError` itself in the source chain — a caller can
+/// still `err.chain().find_map(anyhow::Error::downcast_ref::<apply::ApplyError>)`
+/// to recover `.completed`/`.failed_service` for a partial fleet-apply
+/// failure, same as callers could before `ProvisionDriver` existed (when
+/// `studio_api::provision` used `.context(..)` directly on `apply_manifests`'s
+/// result). A prior version of this flattened `e` into `anyhow::anyhow!(...)`,
+/// which silently dropped that recovery path — extracted as its own function
+/// so the conversion is unit-testable without a live ECS call.
+fn ecs_apply_error_to_anyhow(e: crate::apply::ApplyError) -> anyhow::Error {
+    let kind = e.kind;
+    anyhow::Error::new(e).context(format!("apply failed [{kind:?}]"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::apply::{ApplyAction, AppliedService, ApplyError, ApplyErrorKind, ApplyReport, ServiceTarget};
+
+    #[test]
+    fn ecs_apply_error_to_anyhow_preserves_downcast_and_partial_progress() {
+        let completed = ApplyReport {
+            services: vec![AppliedService {
+                namespace: "prod".to_string(),
+                name: "orca".to_string(),
+                resource_name: "oab-prod-orca".to_string(),
+                action: ApplyAction::Updated,
+                webhook_urls: vec![],
+                warnings: vec![],
+            }],
+        };
+        let failed = ServiceTarget {
+            namespace: "prod".to_string(),
+            name: "mira".to_string(),
+            ecs_service_name: "oab-prod-mira".to_string(),
+        };
+        let source = ApplyError::reconciliation(failed.clone(), completed.clone(), anyhow::anyhow!("boom"));
+
+        let err = ecs_apply_error_to_anyhow(source);
+
+        assert!(err.to_string().contains("Reconciliation"));
+        let recovered = err
+            .chain()
+            .find_map(|e| e.downcast_ref::<ApplyError>())
+            .expect("ApplyError must survive in the source chain");
+        assert_eq!(recovered.kind, ApplyErrorKind::Reconciliation);
+        assert_eq!(recovered.failed_service, Some(failed));
+        assert_eq!(recovered.completed, completed);
     }
 }

@@ -719,7 +719,7 @@ pub async fn provision_from_library(
     overlay: Option<&str>,
     image_override: Option<&str>,
 ) -> anyhow::Result<ProvisionOutcome> {
-    let bundle = studio_compose::compose_named(library, template, overlay)
+    let mut bundle = studio_compose::compose_named(library, template, overlay)
         .map_err(|e| anyhow::anyhow!("compose failed: {e}"))?;
     let image = image_override
         .filter(|s| !s.is_empty())
@@ -731,14 +731,21 @@ pub async fn provision_from_library(
     // into config.toml *before* upload. See oabctl::studio_api::bundle_zip_uri
     // for why this — not the loose-file artifact_objects prefix — is what
     // actually gets restored on the deployed agent at boot.
+    //
+    // Patch `bundle.files` itself (not a derived copy) *before* deriving
+    // artifact_objects/zip_bytes/digest from it, so all three agree on the
+    // same, actually-uploaded content — deriving them from the bundle
+    // pre-patch (as an earlier version of this function did) meant the
+    // uploaded zip's own config.toml lacked the hook, and the reported
+    // digest didn't match what was actually deployed.
     let bucket = oabctl::resolve_bucket(aws_config, None).await?;
-    let mut objects = bundle.artifact_objects(namespace, name);
     let zip_uri = oabctl::studio_api::bundle_zip_uri(&bucket, namespace, name);
-    let config_key = format!("{}/config.toml", studio_compose::artifacts_prefix(namespace, name));
-    match objects.iter_mut().find(|(key, _)| *key == config_key) {
-        Some((_, bytes)) => *bytes = oabctl::studio_api::inject_pre_seed_hook(bytes, &zip_uri)?,
+    match bundle.files.get_mut("config.toml") {
+        Some(bytes) => *bytes = oabctl::studio_api::inject_pre_seed_hook(bytes, &zip_uri)?,
         None => anyhow::bail!("composed bundle for {namespace}/{name} has no config.toml — cannot wire hooks.pre_seed"),
     }
+
+    let mut objects = bundle.artifact_objects(namespace, name);
     let zip_key = format!(
         "{}/{}",
         studio_compose::artifacts_prefix(namespace, name),

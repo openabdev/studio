@@ -105,14 +105,22 @@ fn secret_env_vars(m: &OABServiceManifest) -> Result<Vec<EnvVar>> {
         .secrets
         .iter()
         .map(|(env_name, value)| {
+            // parse_k8s_secret_uri returns Option<Result<..>>: None for the
+            // wrong scheme, Some(Err(..)) for the right scheme but a
+            // malformed body (e.g. missing '#'). anyhow's Context impl for
+            // Option<T> only fires on None, so a chained `.with_context()??`
+            // here would silently drop this context on the Some(Err(..))
+            // path — attach it explicitly to both instead.
+            let context = || {
+                format!(
+                    "spec.secrets['{env_name}'] for k8s runtime must use \
+                     k8s-secret://<secret-name>#<key> (got '{value}') — '{}/{}'",
+                    m.metadata.namespace, m.metadata.name
+                )
+            };
             let (secret_name, key) = crate::secrets::parse_k8s_secret_uri(value)
-                .with_context(|| {
-                    format!(
-                        "spec.secrets['{env_name}'] for k8s runtime must use \
-                         k8s-secret://<secret-name>#<key> (got '{value}') — '{}/{}'",
-                        m.metadata.namespace, m.metadata.name
-                    )
-                })??;
+                .ok_or_else(|| anyhow::anyhow!(context()))?
+                .with_context(context)?;
             Ok(EnvVar {
                 name: env_name.clone(),
                 value_from: Some(EnvVarSource {
@@ -382,6 +390,17 @@ mod tests {
         let m = k8s_manifest(None, &[("DISCORD_BOT_TOKEN", "aws-sm://oab/prod/orca#DISCORD_BOT_TOKEN")]);
         let err = build_deployment(&m).unwrap_err();
         assert!(err.to_string().contains("k8s-secret://"));
+    }
+
+    #[test]
+    fn build_deployment_attributes_malformed_k8s_secret_ref_to_its_env_var() {
+        // Right scheme, malformed body (missing #key) — must still name the
+        // offending spec.secrets entry, not just the bare parser error.
+        let m = k8s_manifest(None, &[("DISCORD_BOT_TOKEN", "k8s-secret://oab-orca")]);
+        let err = build_deployment(&m).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("DISCORD_BOT_TOKEN"), "must name the env var: {msg}");
+        assert!(msg.contains("prod/orca"), "must name the agent: {msg}");
     }
 
     #[test]
