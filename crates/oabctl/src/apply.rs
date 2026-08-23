@@ -61,7 +61,8 @@ impl From<&OABServiceManifest> for ServiceTarget {
 pub struct AppliedService {
     pub namespace: String,
     pub name: String,
-    pub ecs_service_name: String,
+    /// The driver-native resource name (ECS service name today).
+    pub resource_name: String,
     pub action: ApplyAction,
     pub webhook_urls: Vec<String>,
     pub warnings: Vec<String>,
@@ -1063,7 +1064,7 @@ async fn apply_ecs(
     Ok(AppliedService {
         namespace: m.metadata.namespace.clone(),
         name: m.metadata.name.clone(),
-        ecs_service_name: service_name,
+        resource_name: service_name,
         action,
         webhook_urls,
         warnings,
@@ -1290,7 +1291,7 @@ spec:
         let completed_service = AppliedService {
             namespace: "prod".to_string(),
             name: "done".to_string(),
-            ecs_service_name: "oab-prod-done".to_string(),
+            resource_name: "oab-prod-done".to_string(),
             action: ApplyAction::Updated,
             webhook_urls: vec!["https://example.test/webhook".to_string()],
             warnings: vec!["degraded".to_string()],
