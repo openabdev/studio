@@ -40,12 +40,121 @@ pub fn parse_manifests(yaml: &str) -> Result<Vec<OABServiceManifest>> {
     }
 }
 
-/// The `bundleFrom` S3 **prefix** URI an agent's composed bundle is uploaded to
-/// and restored from at boot: `s3://{bucket}/artifacts/{namespace}/{name}/`
-/// (trailing slash). Pairs with `studio_compose::Bundle::artifact_objects`, whose
-/// keys are exactly `artifacts/{namespace}/{name}/{path}` under the same bucket.
+/// The `bundleFrom` S3 **prefix** URI an agent's composed bundle is uploaded to:
+/// `s3://{bucket}/artifacts/{namespace}/{name}/` (trailing slash). Pairs with
+/// `studio_compose::Bundle::artifact_objects`, whose keys are exactly
+/// `artifacts/{namespace}/{name}/{path}` under the same bucket.
+///
+/// Bookkeeping only — nothing downloads this prefix back (see
+/// [`bundle_zip_uri`]'s doc for the mechanism that actually restores a
+/// bundle). Kept for now as an informational record of where the loose files
+/// landed; no manifest field or driver reads it.
 pub fn bundle_from_uri(bucket: &str, namespace: &str, name: &str) -> String {
     format!("s3://{bucket}/artifacts/{namespace}/{name}/")
+}
+
+/// Filename (relative to the artifacts prefix) a bundle's zip archive uploads
+/// to. Must match `studio_compose::Bundle::ZIP_FILENAME` — the two crates
+/// don't share a dependency edge to enforce this with a shared constant, so
+/// `studio-cp` (which depends on both) tests the two stay in sync.
+pub const BUNDLE_ZIP_FILENAME: &str = "bundle.zip";
+
+/// The S3 URI a bundle's zip archive (`studio_compose::Bundle::zip_bytes`)
+/// uploads to: `s3://{bucket}/artifacts/{namespace}/{name}/bundle.zip`.
+///
+/// This — not [`bundle_from_uri`]'s loose-file prefix — is what actually gets
+/// restored at boot: [`inject_pre_seed_hook`] wires this URI into the
+/// deployed agent's own `config.toml` as a `[hooks.pre_seed]` source, and
+/// `openab`'s `pre_seed` feature (already the mechanism that restores an
+/// agent's own persistent state across restarts) downloads + extracts it into
+/// `~` on every boot. Platform-agnostic by construction — `pre_seed` is pure
+/// "S3 GetObject + extract," it doesn't know or care whether the process
+/// booting is an ECS task or a k8s pod, so no k8s-specific bundle carrier is
+/// needed (see studio#97's slice-3c investigation: `bundle_from_uri`'s prefix
+/// was never actually consumed by anything on the ECS path either).
+pub fn bundle_zip_uri(bucket: &str, namespace: &str, name: &str) -> String {
+    format!("s3://{bucket}/artifacts/{namespace}/{name}/{BUNDLE_ZIP_FILENAME}")
+}
+
+/// `pre_seed`'s own cap on `hooks.pre_seed.sources` length
+/// (`openab_core::pre_seed::MAX_SOURCES`) — mirrored here so a full sources
+/// list fails loudly at inject time instead of silently at the deployed
+/// agent's next boot.
+const PRE_SEED_MAX_SOURCES: usize = 5;
+
+/// Add `zip_uri` to `config_toml`'s `hooks.pre_seed.sources`, creating
+/// `[hooks.pre_seed]` if absent — see [`bundle_zip_uri`] for why this is the
+/// actual bundle-restore mechanism. Uses `toml_edit` (format-preserving), so
+/// an operator's existing comments/layout survive; only the `sources` array
+/// (and, if needed, the `[hooks]`/`[hooks.pre_seed]` headers) are touched.
+///
+/// Idempotent — a true no-op (byte-for-byte unchanged) only when `zip_uri`
+/// is *already in* the sources list. Critically, this is **not** the same as
+/// "a `[hooks.pre_seed]` section already exists": an operator's own
+/// unrelated `hooks.pre_seed` (e.g. modeled on this fleet's own persistent
+/// state restore) gets `zip_uri` appended to its sources, not silently left
+/// alone — the earlier version of this function treated *any* existing
+/// `hooks.pre_seed` as "already handled" and skipped injection entirely,
+/// which meant a template that already used pre_seed for something else
+/// silently never got the new bundle wired in at all.
+///
+/// Bails (doesn't guess) when `hooks` or `hooks.pre_seed` already exists but
+/// isn't a table (e.g. an inline table `hooks = { restart = "always" }` —
+/// TOML forbids reopening a key already closed by inline-table syntax with a
+/// `[hooks.pre_seed]` header, so blindly appending would silently produce
+/// invalid TOML that only fails at the deployed agent's boot), or when
+/// `sources` is already at `pre_seed`'s own 5-entry cap.
+pub fn inject_pre_seed_hook(config_toml: &[u8], zip_uri: &str) -> Result<Vec<u8>> {
+    let text = std::str::from_utf8(config_toml).context("config.toml is not valid UTF-8")?;
+    let mut doc: toml_edit::DocumentMut = text.parse().context("config.toml is not valid TOML")?;
+
+    let hooks: &mut dyn toml_edit::TableLike = table_like_entry(doc.as_table_mut(), "hooks")?;
+    let pre_seed = table_like_entry(hooks, "pre_seed")?;
+
+    let sources_item = pre_seed
+        .entry("sources")
+        .or_insert(toml_edit::value(toml_edit::Array::new()));
+    let sources = sources_item
+        .as_array_mut()
+        .with_context(|| "config.toml's hooks.pre_seed.sources is not an array".to_string())?;
+
+    if sources.iter().any(|v| v.as_str() == Some(zip_uri)) {
+        return Ok(config_toml.to_vec());
+    }
+    if sources.len() >= PRE_SEED_MAX_SOURCES {
+        anyhow::bail!(
+            "config.toml's hooks.pre_seed.sources already has {PRE_SEED_MAX_SOURCES} entries \
+             (openab's own limit) — cannot add the bundle zip source '{zip_uri}' without \
+             exceeding it; trim an existing source first"
+        );
+    }
+    sources.push(zip_uri);
+
+    Ok(doc.to_string().into_bytes())
+}
+
+/// Get-or-create `parent[key]` as a table-like entry (regular `[table]` or
+/// inline `{ ... }` both qualify structurally, but only a regular table can
+/// safely receive a further nested `[table.child]` header — see
+/// [`inject_pre_seed_hook`]'s doc for why an inline table bails instead of
+/// silently producing invalid TOML).
+fn table_like_entry<'a>(
+    parent: &'a mut dyn toml_edit::TableLike,
+    key: &str,
+) -> Result<&'a mut dyn toml_edit::TableLike> {
+    if let Some(existing) = parent.get(key) {
+        if existing.is_inline_table() {
+            anyhow::bail!(
+                "config.toml's `{key}` is an inline table — cannot add a nested `[{key}.*]` \
+                 section to it; use a regular `[{key}]` table instead"
+            );
+        }
+    }
+    parent
+        .entry(key)
+        .or_insert(toml_edit::Item::Table(toml_edit::Table::new()))
+        .as_table_like_mut()
+        .with_context(|| format!("config.toml's `{key}` key is not a table"))
 }
 
 /// Outcome of pushing a bundle: which bucket it landed in and how many objects.
@@ -235,6 +344,94 @@ mod tests {
             bundle_from_uri("oab-control-plane-123", "prod", "orca"),
             "s3://oab-control-plane-123/artifacts/prod/orca/"
         );
+    }
+
+    #[test]
+    fn bundle_zip_uri_is_the_bundle_from_prefix_plus_zip_filename() {
+        assert_eq!(
+            bundle_zip_uri("oab-control-plane-123", "prod", "orca"),
+            format!(
+                "{}{BUNDLE_ZIP_FILENAME}",
+                bundle_from_uri("oab-control-plane-123", "prod", "orca")
+            )
+        );
+        assert_eq!(
+            bundle_zip_uri("b", "prod", "orca"),
+            "s3://b/artifacts/prod/orca/bundle.zip"
+        );
+    }
+
+    #[test]
+    fn inject_pre_seed_hook_appends_to_existing_config() {
+        let config = b"[agent]\nname = \"orca\"\n";
+        let out = inject_pre_seed_hook(config, "s3://bucket/artifacts/prod/orca/bundle.zip").unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.starts_with("[agent]\nname = \"orca\"\n"));
+        assert!(text.contains("[hooks.pre_seed]"));
+        assert!(text.contains("s3://bucket/artifacts/prod/orca/bundle.zip"));
+        // still valid TOML after injection
+        text.parse::<toml::Value>().expect("valid toml");
+    }
+
+    #[test]
+    fn inject_pre_seed_hook_is_a_true_noop_only_when_source_already_present() {
+        let config = b"[hooks.pre_seed]\nsources = [\"s3://bucket/artifacts/prod/orca/bundle.zip\"]\n";
+        let out = inject_pre_seed_hook(config, "s3://bucket/artifacts/prod/orca/bundle.zip").unwrap();
+        // unchanged, byte-for-byte — this exact source is already wired, a
+        // second redeploy of the same agent shouldn't touch the file at all
+        assert_eq!(out, config);
+    }
+
+    #[test]
+    fn inject_pre_seed_hook_appends_to_an_operators_own_unrelated_pre_seed() {
+        // The bug this replaced: an operator's own hooks.pre_seed (e.g. for
+        // this agent's own persistent-state restore, unrelated to the deploy
+        // bundle) used to make injection silently no-op entirely, so the new
+        // bundle was never wired in at all. It must be added alongside.
+        let config = b"[hooks.pre_seed]\nsources = [\"s3://other/state.zip\"]\n";
+        let out = inject_pre_seed_hook(config, "s3://bucket/artifacts/prod/orca/bundle.zip").unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("s3://other/state.zip"), "operator's own source must survive: {text}");
+        assert!(text.contains("s3://bucket/artifacts/prod/orca/bundle.zip"), "new source must be added: {text}");
+        let reparsed: toml::Value = text.parse().expect("valid toml");
+        let sources = reparsed["hooks"]["pre_seed"]["sources"].as_array().unwrap();
+        assert_eq!(sources.len(), 2);
+    }
+
+    #[test]
+    fn inject_pre_seed_hook_rejects_more_than_five_sources() {
+        let config = br#"[hooks.pre_seed]
+sources = ["s3://a", "s3://b", "s3://c", "s3://d", "s3://e"]
+"#;
+        let err = inject_pre_seed_hook(config, "s3://new").unwrap_err();
+        assert!(err.to_string().contains('5'));
+    }
+
+    #[test]
+    fn inject_pre_seed_hook_rejects_invalid_toml() {
+        assert!(inject_pre_seed_hook(b"not = [valid", "s3://x/bundle.zip").is_err());
+    }
+
+    #[test]
+    fn inject_pre_seed_hook_rejects_inline_table_hooks() {
+        let config = b"hooks = { restart = \"always\" }\n";
+        let err = inject_pre_seed_hook(config, "s3://x/bundle.zip").unwrap_err();
+        assert!(err.to_string().contains("inline table"));
+    }
+
+    #[test]
+    fn inject_pre_seed_hook_rejects_inline_table_pre_seed() {
+        let config = b"[hooks]\npre_seed = { target = \"~\" }\n";
+        let err = inject_pre_seed_hook(config, "s3://x/bundle.zip").unwrap_err();
+        assert!(err.to_string().contains("inline table"));
+    }
+
+    #[test]
+    fn inject_pre_seed_hook_preserves_comments_and_layout() {
+        let config = b"# a comment worth keeping\n[agent]\nname = \"orca\" # inline comment\n";
+        let out = inject_pre_seed_hook(config, "s3://x/bundle.zip").unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.starts_with("# a comment worth keeping\n[agent]\nname = \"orca\" # inline comment\n"));
     }
 
     #[test]

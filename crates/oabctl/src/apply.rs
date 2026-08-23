@@ -111,7 +111,9 @@ impl ApplyError {
         }
     }
 
-    fn reconciliation(
+    // pub(crate): driver.rs's tests construct one to verify the
+    // ApplyError -> anyhow::Error conversion preserves it in the source chain.
+    pub(crate) fn reconciliation(
         failed_service: ServiceTarget,
         completed: ApplyReport,
         source: impl Into<anyhow::Error>,

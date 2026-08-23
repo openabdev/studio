@@ -719,13 +719,40 @@ pub async fn provision_from_library(
     overlay: Option<&str>,
     image_override: Option<&str>,
 ) -> anyhow::Result<ProvisionOutcome> {
-    let bundle = studio_compose::compose_named(library, template, overlay)
+    let mut bundle = studio_compose::compose_named(library, template, overlay)
         .map_err(|e| anyhow::anyhow!("compose failed: {e}"))?;
     let image = image_override
         .filter(|s| !s.is_empty())
         .map(str::to_string)
         .unwrap_or_else(|| bundle.image_tag.clone());
-    let objects = bundle.artifact_objects(namespace, name);
+
+    // Resolve the bucket once here (rather than letting `redeploy` resolve it
+    // internally, as before) so the zip's S3 URI can be computed and wired
+    // into config.toml *before* upload. See oabctl::studio_api::bundle_zip_uri
+    // for why this — not the loose-file artifact_objects prefix — is what
+    // actually gets restored on the deployed agent at boot.
+    //
+    // Patch `bundle.files` itself (not a derived copy) *before* deriving
+    // artifact_objects/zip_bytes/digest from it, so all three agree on the
+    // same, actually-uploaded content — deriving them from the bundle
+    // pre-patch (as an earlier version of this function did) meant the
+    // uploaded zip's own config.toml lacked the hook, and the reported
+    // digest didn't match what was actually deployed.
+    let bucket = oabctl::resolve_bucket(aws_config, None).await?;
+    let zip_uri = oabctl::studio_api::bundle_zip_uri(&bucket, namespace, name);
+    match bundle.files.get_mut("config.toml") {
+        Some(bytes) => *bytes = oabctl::studio_api::inject_pre_seed_hook(bytes, &zip_uri)?,
+        None => anyhow::bail!("composed bundle for {namespace}/{name} has no config.toml — cannot wire hooks.pre_seed"),
+    }
+
+    let mut objects = bundle.artifact_objects(namespace, name);
+    let zip_key = format!(
+        "{}/{}",
+        studio_compose::artifacts_prefix(namespace, name),
+        oabctl::studio_api::BUNDLE_ZIP_FILENAME
+    );
+    objects.push((zip_key, bundle.zip_bytes()));
+
     let digest = bundle.digest();
 
     let report = oabctl::studio_api::redeploy(
@@ -735,7 +762,7 @@ pub async fn provision_from_library(
         name,
         Some(&image),
         &objects,
-        None,
+        Some(&bucket),
     )
     .await?;
 
@@ -1164,5 +1191,14 @@ namespace = "prod"
         assert!(!principal_matches(expected_role, other_acct));
         // exact match
         assert!(principal_matches(brett, brett));
+    }
+
+    #[test]
+    fn bundle_zip_filename_constants_stay_in_sync() {
+        // oabctl::studio_api::BUNDLE_ZIP_FILENAME and
+        // studio_compose::Bundle::ZIP_FILENAME can't share a dependency edge
+        // to enforce this with one constant (see provision_from_library) —
+        // this is the cross-crate seam that catches drift instead.
+        assert_eq!(oabctl::studio_api::BUNDLE_ZIP_FILENAME, studio_compose::Bundle::ZIP_FILENAME);
     }
 }
