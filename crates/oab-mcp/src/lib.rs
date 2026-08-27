@@ -146,7 +146,7 @@ pub fn tools() -> Vec<Tool> {
         ),
         Tool::new(
             "deploy_provision",
-            "Provision an agent from the compose library: compose template ⊕ overlay into a file bundle, push it to the agent's S3 artifacts prefix, and redeploy the ECS service at the chosen image tag. Reuses the agent's stored manifest for networking/resources/secrets, so the agent must already have been created.",
+            "Provision an agent from the compose library: compose template ⊕ overlay into a file bundle and push it to the agent's S3 artifacts prefix (bundle carrier — shared regardless of provider). If the agent already has a stored manifest, patches its image/bundle and re-applies (networking/resources/secrets/runtime ride along unchanged). If not, builds a fresh manifest with sensible defaults and creates the agent — this now works for a genuinely brand-new agent, not just a redeploy of one already created via `oabctl create`. `provider` (default \"aws\") selects the target: \"aws\" applies via ECS (`fleet`/`cluster` select the credential); \"k8s\" applies via the given kubeconfig `context` instead, with `expected_principal` optionally naming a service account (`system:serviceaccount:<ns>:<name>` — the bare name becomes the pod's serviceAccountName; unset uses the namespace's default).",
             as_map(json!({
                 "type": "object",
                 "properties": {
@@ -156,8 +156,11 @@ pub fn tools() -> Vec<Tool> {
                     "name": { "type": "string", "description": "Agent / service name (service = oab-{namespace}-{name})." },
                     "namespace": { "type": "string", "description": "Namespace (default \"default\")." },
                     "image_tag": { "type": "string", "description": "Image tag override (defaults to the bundle's own image tag)." },
-                    "fleet": { "type": "string", "description": "Fleet name (see fleet_config): targets the fleet's cluster and managing credential; a write to a service outside the fleet's members is refused. Overrides the cluster arg." },
-                    "cluster": { "type": "string", "description": "ECS cluster (defaults to the server's configured cluster)." }
+                    "provider": { "type": "string", "description": "\"aws\" (default) or \"k8s\" — which driver applies the result." },
+                    "fleet": { "type": "string", "description": "AWS only. Fleet name (see fleet_config): targets the fleet's cluster and managing credential; a write to a service outside the fleet's members is refused. Overrides the cluster arg." },
+                    "cluster": { "type": "string", "description": "AWS only. ECS cluster (defaults to the server's configured cluster)." },
+                    "context": { "type": "string", "description": "k8s only. Kubeconfig context to apply through. Omit to use the kubeconfig's current-context." },
+                    "expected_principal": { "type": "string", "description": "k8s only, optional. `system:serviceaccount:<namespace>:<name>` to set the pod's service account; unset uses the namespace's default." }
                 },
                 "required": ["library", "template", "name"]
             })),
@@ -492,8 +495,6 @@ impl OabMcp {
     }
 
     async fn t_provision(&self, args: &Map<String, Value>) -> Result<Value> {
-        let t = self.target(args)?;
-        let cluster = t.cluster.clone();
         let namespace = args
             .get("namespace")
             .and_then(Value::as_str)
@@ -514,6 +515,44 @@ impl OabMcp {
                 .ok_or_else(|| anyhow::anyhow!("missing required arg: library"))?,
         )
         .map_err(|e| anyhow::anyhow!("invalid library: {e}"))?;
+
+        // studio#104: k8s dispatch. `context`/`expected_principal` come as
+        // direct args — the console's identity form already collects them
+        // (context/namespace/service-account <select>s, #108/#109), there's
+        // no existing K8sFleetBinding to resolve them from for a brand-new
+        // fleet (unlike AWS's `fleet` + `self.target()` — a fleet-scoped k8s
+        // lookup is future work for redeploys into an *existing* k8s fleet,
+        // not needed for this dispatch to exist).
+        if args.get("provider").and_then(Value::as_str) == Some("k8s") {
+            let context = args.get("context").and_then(Value::as_str);
+            let expected_principal = args.get("expected_principal").and_then(Value::as_str);
+            let outcome = scp::provision_from_library_k8s(
+                &self.aws,
+                context,
+                namespace,
+                name,
+                &library,
+                template,
+                overlay,
+                image,
+                expected_principal,
+            )
+            .await?;
+            return Ok(json!({
+                "ok": true,
+                "context": context,
+                "namespace": namespace,
+                "name": name,
+                "image": outcome.image,
+                "digest": outcome.digest,
+                "objects": outcome.objects,
+                "action": outcome.action,
+                "services_applied": outcome.services_applied,
+            }));
+        }
+
+        let t = self.target(args)?;
+        let cluster = t.cluster.clone();
 
         // Same fleet-scope guard as scale/delete: a fleet handle only provisions
         // its own members, so a scoped call can't reach a co-located non-member.

@@ -574,6 +574,14 @@ pub struct K8sFleetBinding {
     /// `FleetBinding`'s empty-members-means-everything convention).
     #[serde(default)]
     pub members: Vec<String>,
+    /// Expected principal to verify the resolved k8s identity against —
+    /// same name/semantics as `FleetBinding::expected_principal` for AWS.
+    /// **Duplicated from #107** (this branch was cut from `main` before
+    /// #107 merged, not from #107's own branch — see this PR's description
+    /// for the reconciliation note) — identical field, will be a trivial
+    /// merge conflict to resolve whenever both land.
+    #[serde(default)]
+    pub expected_principal: Option<String>,
 }
 
 impl K8sFleetBinding {
@@ -593,6 +601,8 @@ struct K8sFleetBody {
     namespace: String,
     #[serde(default)]
     members: Vec<String>,
+    #[serde(default)]
+    expected_principal: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -612,6 +622,7 @@ impl From<K8sFleetsDoc> for K8sFleetBindings {
                     context: b.context,
                     namespace: b.namespace,
                     members: b.members,
+                    expected_principal: b.expected_principal,
                 })
                 .collect(),
         }
@@ -1382,6 +1393,7 @@ namespace = "prod"
             context: Some("orbstack".into()),
             namespace: "dev".into(),
             members: vec!["scratch-agent".into()],
+            expected_principal: None,
         };
         assert!(scoped.includes("scratch-agent"));
         assert!(!scoped.includes("other-agent"));
@@ -1391,6 +1403,7 @@ namespace = "prod"
             context: None,
             namespace: "prod".into(),
             members: vec![],
+            expected_principal: None,
         };
         assert!(whole.includes("anything"));
     }
