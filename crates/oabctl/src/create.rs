@@ -349,6 +349,31 @@ pub async fn default_security_group(ec2: &Ec2Client, vpc_id: &str, name: &str) -
     Ok(resp.group_id().unwrap_or_default().to_string())
 }
 
+/// Subnet + security-group IDs for a new agent's ECS networking, with no
+/// interactive prompt. The single entry point studio#111's provision-from-
+/// scratch path needs — takes just an `SdkConfig` (not an `Ec2Client`) so
+/// callers outside `oabctl` (e.g. `studio-cp`) don't need `aws-sdk-ec2` as a
+/// direct dependency just to reach this; ADR-2's "RuntimeDriver is the only
+/// layer with vendor terms" principle extends here too — `Ec2Client` stays
+/// an `oabctl`-internal detail.
+pub struct DefaultNetworking {
+    pub vpc_id: String,
+    pub subnets: Vec<String>,
+    pub security_groups: Vec<String>,
+}
+
+pub async fn default_networking(config: &aws_config::SdkConfig, name: &str) -> Result<DefaultNetworking> {
+    let ec2 = Ec2Client::new(config);
+    let vpc = default_vpc(&ec2).await?;
+    let subnets = select_subnets(&ec2, &vpc.id).await?;
+    let sg = default_security_group(&ec2, &vpc.id, name).await?;
+    Ok(DefaultNetworking {
+        vpc_id: vpc.id,
+        subnets: subnets.into_iter().map(|s| s.id).collect(),
+        security_groups: vec![sg],
+    })
+}
+
 fn generate_config(_backend: &str, name: &str, namespace: &str, stt_enabled: bool) -> String {
     let stt_section = if stt_enabled {
         r#"[stt]
