@@ -206,7 +206,7 @@ async fn store_secret(sm: &SmClient, name: &str, value: &str) -> Result<()> {
 /// `pub` (studio#111): reused by the provision-from-scratch path to pick a
 /// sensible default VPC without prompting, same discovery `oabctl create`'s
 /// wizard uses interactively.
-pub struct VpcInfo { pub id: String, pub label: String }
+pub struct VpcInfo { pub id: String, pub label: String, pub is_default: bool }
 
 pub async fn list_vpcs(ec2: &Ec2Client) -> Result<Vec<VpcInfo>> {
     let resp = ec2.describe_vpcs().send().await?;
@@ -219,8 +219,26 @@ pub async fn list_vpcs(ec2: &Ec2Client) -> Result<Vec<VpcInfo>> {
             .and_then(|t| t.value())
             .unwrap_or("unnamed");
         let label = format!("{id} ({name}, {cidr}{})", if is_default { ", default" } else { "" });
-        VpcInfo { id, label }
+        VpcInfo { id, label, is_default }
     }).collect())
+}
+
+/// Pick a VPC with **no interactive prompt**, for the provision-from-scratch
+/// path (studio#111): the account/region's default VPC, if there is exactly
+/// one. Unlike subnet/security-group, `run()`'s wizard has no default here
+/// (it always asks) — a "default VPC" is the closest zero-prompt equivalent,
+/// but it's genuinely ambiguous when there's none or more than one, so this
+/// errors rather than guessing at that point (a caller that has an explicit
+/// VPC choice — e.g. from per-fleet config — should skip this and pass it
+/// directly to `select_subnets`/`default_security_group` instead).
+pub async fn default_vpc(ec2: &Ec2Client) -> Result<VpcInfo> {
+    let vpcs = list_vpcs(ec2).await?;
+    let defaults: Vec<VpcInfo> = vpcs.into_iter().filter(|v| v.is_default).collect();
+    match defaults.len() {
+        1 => Ok(defaults.into_iter().next().unwrap()),
+        0 => anyhow::bail!("no default VPC in this account/region — configure a VPC explicitly"),
+        n => anyhow::bail!("{n} VPCs marked default — configure a VPC explicitly, can't pick automatically"),
+    }
 }
 
 /// A subnet candidate, already classified private/public + NAT reachability.
