@@ -223,6 +223,28 @@ pub fn tools() -> Vec<Tool> {
                 "properties": {}
             })),
         ),
+        Tool::new(
+            "list_namespaces",
+            "List namespaces in the cluster a kubeconfig context resolves to. Read-only; backs the New Fleet wizard's namespace <select> (with a manual-entry fallback for a namespace that doesn't exist yet — this can only list what's already there).",
+            as_map(json!({
+                "type": "object",
+                "properties": {
+                    "context": { "type": "string", "description": "Kubeconfig context name. Omit to use the kubeconfig's current-context." }
+                }
+            })),
+        ),
+        Tool::new(
+            "list_service_accounts",
+            "List service accounts in one namespace of a kubeconfig context. Read-only; backs the New Fleet wizard's optional service-account <select>. Any failure here (including an RBAC-denied list) should be treated by the caller as \"leave it unset\" — the namespace's `default` service account applies — not surfaced as an error.",
+            as_map(json!({
+                "type": "object",
+                "properties": {
+                    "context": { "type": "string", "description": "Kubeconfig context name. Omit to use the kubeconfig's current-context." },
+                    "namespace": { "type": "string", "description": "k8s namespace to list service accounts in." }
+                },
+                "required": ["namespace"]
+            })),
+        ),
     ]
 }
 
@@ -337,6 +359,8 @@ impl OabMcp {
             "fleet_config_write" => self.t_fleet_write(args),
             "list_aws_profiles" => self.t_list_aws_profiles(args),
             "list_k8s_contexts" => self.t_list_k8s_contexts(args),
+            "list_namespaces" => self.t_list_namespaces(args).await,
+            "list_service_accounts" => self.t_list_service_accounts(args).await,
             other => anyhow::bail!("unknown tool {other:?}"),
         }
     }
@@ -748,6 +772,28 @@ impl OabMcp {
         }))
     }
 
+    /// Namespace discovery (studio#104): backs the New Fleet wizard's
+    /// namespace `<select>`.
+    async fn t_list_namespaces(&self, args: &Map<String, Value>) -> Result<Value> {
+        let context = args.get("context").and_then(Value::as_str);
+        let namespaces = scp::list_namespaces(context).await?;
+        Ok(json!({ "namespaces": namespaces }))
+    }
+
+    /// Service-account discovery (studio#104): backs the New Fleet wizard's
+    /// optional service-account `<select>`. Errors (including RBAC-denied)
+    /// propagate as a normal tool error — per the design, the caller treats
+    /// any failure here as "leave it unset", not something to surface.
+    async fn t_list_service_accounts(&self, args: &Map<String, Value>) -> Result<Value> {
+        let context = args.get("context").and_then(Value::as_str);
+        let namespace = args
+            .get("namespace")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("missing required arg: namespace"))?;
+        let service_accounts = scp::list_service_accounts(context, namespace).await?;
+        Ok(json!({ "service_accounts": service_accounts }))
+    }
+
     async fn t_delete(&self, args: &Map<String, Value>) -> Result<Value> {
         let t = self.target(args)?;
         let cluster = t.cluster.clone();
@@ -830,7 +876,7 @@ mod tests {
             .iter()
             .map(|t| t["name"].as_str().expect("tool has a name").to_string())
             .collect();
-        assert_eq!(names.len(), 13);
+        assert_eq!(names.len(), 15);
         for expected in [
             "deploy_list",
             "deploy_get",
@@ -845,6 +891,8 @@ mod tests {
             "fleet_config_write",
             "list_aws_profiles",
             "list_k8s_contexts",
+            "list_namespaces",
+            "list_service_accounts",
         ] {
             assert!(names.contains(&expected.to_string()), "missing {expected}");
         }
