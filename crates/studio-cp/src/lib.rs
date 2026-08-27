@@ -774,12 +774,74 @@ pub struct ProvisionOutcome {
     pub action: String,
 }
 
+/// Where a brand-new agent's `spec.configFrom` should point — the same
+/// `artifacts/{namespace}/{name}/config.toml` key `Bundle::artifact_objects`
+/// already uploads a copy of the composed config.toml to, and the same
+/// convention `oabctl create`'s wizard uses for its own generated manifest.
+fn default_config_from_uri(bucket: &str, namespace: &str, name: &str) -> String {
+    format!("s3://{bucket}/{}/config.toml", studio_compose::artifacts_prefix(namespace, name))
+}
+
+/// Build a fresh `OABServiceManifest` for an agent that has never been
+/// provisioned before — `redeploy()` can only patch an *already-stored*
+/// manifest (studio#111: it has no "create the first one" path). Fields not
+/// derivable from the compose bundle get sensible, zero-prompt defaults:
+/// networking from `oabctl::create::default_networking` (same discovery
+/// `oabctl create`'s CLI wizard uses, minus the interactive prompts),
+/// resources 256/512 (the CLI wizard's own default), `FARGATE`/`X86_64`
+/// (the schema's own `#[serde(default)]` values), empty `secrets` (valid —
+/// no ECS-level Secrets Manager env injection; whatever the template's own
+/// config.toml needs is the operator's concern, unchanged from how
+/// `oabctl create` already works), no ingress.
+async fn build_default_manifest(
+    aws_config: &aws_config::SdkConfig,
+    namespace: &str,
+    name: &str,
+    image: &str,
+    bucket: &str,
+) -> anyhow::Result<oabctl::manifest::OABServiceManifest> {
+    let net = oabctl::create::default_networking(aws_config, name).await?;
+    let config_from = default_config_from_uri(bucket, namespace, name);
+    Ok(oabctl::manifest::OABServiceManifest {
+        api_version: "oab.dev/v2".to_string(),
+        kind: "OABService".to_string(),
+        metadata: oabctl::manifest::Metadata {
+            name: name.to_string(),
+            namespace: namespace.to_string(),
+            generation: 0,
+        },
+        spec: oabctl::manifest::Spec {
+            image: image.to_string(),
+            resources: oabctl::manifest::Resources {
+                cpu: "256".to_string(),
+                memory: "512".to_string(),
+            },
+            config_from,
+            bundle_from: None,
+            bootstrap_from: None,
+            secrets: std::collections::HashMap::new(),
+            runtime: oabctl::manifest::Runtime::Ecs(oabctl::manifest::EcsRuntime {
+                capacity_provider: "FARGATE".to_string(),
+                architecture: "X86_64".to_string(),
+                task_role_arn: None,
+                networking: oabctl::manifest::EcsNetworking {
+                    subnets: net.subnets,
+                    security_groups: net.security_groups,
+                    assign_public_ip: false,
+                },
+            }),
+            ingress: None,
+        },
+    })
+}
+
 /// Provision an agent from the compose **library**: compose `template ⊕ overlay`,
 /// then **redeploy** — push the bundle to the agent's artifacts prefix and apply
 /// its stored manifest at the chosen image tag (agent-deployment ADR slice 2,
 /// path A). Networking/resources/secrets ride along from the stored manifest, so
-/// this is the "update this agent to new persona / skills / image" path; the
-/// agent must already have been `create`d.
+/// this is the "update this agent to new persona / skills / image" path — unless
+/// the agent has never been provisioned before, in which case a fresh manifest is
+/// built instead ([`build_default_manifest`], studio#111).
 ///
 /// `image_override` (when non-empty) wins over the bundle's own default image tag.
 pub async fn provision_from_library(
@@ -828,16 +890,32 @@ pub async fn provision_from_library(
 
     let digest = bundle.digest();
 
-    let report = oabctl::studio_api::redeploy(
-        aws_config,
-        cluster,
-        namespace,
-        name,
-        Some(&image),
-        &objects,
-        Some(&bucket),
-    )
-    .await?;
+    // studio#111: `redeploy()` only patches an *existing* stored manifest —
+    // it errors if this agent has never been provisioned. Check first and
+    // build a fresh manifest in that case, rather than surfacing that error
+    // to the console on every "+ New fleet" first deploy.
+    let existing_manifest =
+        oabctl::studio_api::load_manifest(aws_config, namespace, name, Some(&bucket)).await?;
+    let report = match existing_manifest {
+        Some(_) => {
+            oabctl::studio_api::redeploy(
+                aws_config,
+                cluster,
+                namespace,
+                name,
+                Some(&image),
+                &objects,
+                Some(&bucket),
+            )
+            .await?
+        }
+        None => {
+            let mut manifest = build_default_manifest(aws_config, namespace, name, &image, &bucket).await?;
+            manifest.spec.bundle_from = Some(oabctl::studio_api::bundle_from_uri(&bucket, namespace, name));
+            oabctl::studio_api::provision_manifest(aws_config, cluster, &manifest, &objects, Some(&bucket))
+                .await?
+        }
+    };
 
     Ok(ProvisionOutcome {
         image,
@@ -1283,5 +1361,17 @@ namespace = "prod"
         // to enforce this with one constant (see provision_from_library) —
         // this is the cross-crate seam that catches drift instead.
         assert_eq!(oabctl::studio_api::BUNDLE_ZIP_FILENAME, studio_compose::Bundle::ZIP_FILENAME);
+    }
+
+    #[test]
+    fn default_config_from_uri_matches_artifact_objects_key() {
+        // Must land at the same key Bundle::artifact_objects uploads
+        // config.toml to (and the same convention oabctl create's wizard
+        // uses for its own generated manifest) — a brand-new agent's
+        // configFrom pointing anywhere else would read nothing at boot.
+        assert_eq!(
+            default_config_from_uri("oab-control-plane-123", "prod", "orca"),
+            "s3://oab-control-plane-123/artifacts/prod/orca/config.toml",
+        );
     }
 }
