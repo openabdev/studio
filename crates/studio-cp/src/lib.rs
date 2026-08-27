@@ -295,14 +295,9 @@ pub async fn observe_k8s_identity(context: Option<&str>) -> anyhow::Result<Runti
         None => String::new(),
     };
 
-    let options = kube::config::KubeConfigOptions {
-        context: context.map(str::to_string),
-        ..Default::default()
-    };
-    let config = kube::Config::from_kubeconfig(&options)
+    let client = k8s_client_for(context)
         .await
         .map_err(|e| anyhow::anyhow!("failed to resolve kubeconfig context '{context_name}': {e}"))?;
-    let client = kube::Client::try_from(config).map_err(|e| anyhow::anyhow!("failed to build k8s client: {e}"))?;
 
     let api: Api<SelfSubjectReview> = Api::all(client);
     let review = api
@@ -517,6 +512,53 @@ pub fn list_k8s_contexts() -> K8sContextsResult {
             }
         }
     }
+}
+
+async fn k8s_client_for(context: Option<&str>) -> anyhow::Result<kube::Client> {
+    let options = kube::config::KubeConfigOptions {
+        context: context.map(str::to_string),
+        ..Default::default()
+    };
+    let config = kube::Config::from_kubeconfig(&options)
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to resolve kubeconfig context: {e}"))?;
+    kube::Client::try_from(config).map_err(|e| anyhow::anyhow!("failed to build k8s client: {e}"))
+}
+
+/// List namespaces in the cluster the given kubeconfig context (or the
+/// ambient current-context) resolves to. Backs the New Fleet wizard's
+/// namespace `<select>` — a manual-entry fallback covers a namespace that
+/// doesn't exist yet (this can only list what's already there).
+pub async fn list_namespaces(context: Option<&str>) -> anyhow::Result<Vec<String>> {
+    use k8s_openapi::api::core::v1::Namespace;
+    use kube::api::{Api, ListParams};
+
+    let client = k8s_client_for(context).await?;
+    let api: Api<Namespace> = Api::all(client);
+    let list = api
+        .list(&ListParams::default())
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to list namespaces: {e}"))?;
+    Ok(list.items.into_iter().filter_map(|ns| ns.metadata.name).collect())
+}
+
+/// List service accounts in one namespace of the given kubeconfig context.
+/// Backs the New Fleet wizard's (optional) service-account `<select>` — the
+/// caller falls back to leaving it unset (the namespace's `default` service
+/// account applies) on any error here, including an RBAC-denied `list`, so
+/// this deliberately doesn't distinguish failure reasons the way
+/// `list_aws_profiles`/`list_k8s_contexts` do.
+pub async fn list_service_accounts(context: Option<&str>, namespace: &str) -> anyhow::Result<Vec<String>> {
+    use k8s_openapi::api::core::v1::ServiceAccount;
+    use kube::api::{Api, ListParams};
+
+    let client = k8s_client_for(context).await?;
+    let api: Api<ServiceAccount> = Api::namespaced(client, namespace);
+    let list = api
+        .list(&ListParams::default())
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to list service accounts: {e}"))?;
+    Ok(list.items.into_iter().filter_map(|sa| sa.metadata.name).collect())
 }
 
 // ---- Fleet → managing-credential binding (ADR: Per-Fleet managing identity) --
