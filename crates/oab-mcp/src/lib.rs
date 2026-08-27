@@ -207,6 +207,22 @@ pub fn tools() -> Vec<Tool> {
                 "required": ["text"]
             })),
         ),
+        Tool::new(
+            "list_aws_profiles",
+            "List AWS credential profiles discovered on this machine (scans ~/.aws/config and ~/.aws/credentials — this server runs as a local sidecar next to the console, so this reads the operator's own machine, not a remote one). Each entry has a name and region (region omitted when not set). `exists=false` means no AWS config was found at all — the caller should suggest `aws configure`/`aws sso login` rather than treat it as an error. Read-only; backs the New Fleet wizard's profile picker.",
+            as_map(json!({
+                "type": "object",
+                "properties": {}
+            })),
+        ),
+        Tool::new(
+            "list_k8s_contexts",
+            "List kubeconfig contexts discovered on this machine (reads $KUBECONFIG or ~/.kube/config — local sidecar, same machine as the console). Each entry has the context name, its cluster, namespace (if set), and user. `current_context` names the kubeconfig's default. `exists=false` means no kubeconfig was found at all — the caller should suggest installing a local cluster (OrbStack/kind/minikube) or merging in a cloud kubeconfig, rather than treat it as an error. Read-only; backs the New Fleet wizard's k8s context picker.",
+            as_map(json!({
+                "type": "object",
+                "properties": {}
+            })),
+        ),
     ]
 }
 
@@ -319,6 +335,8 @@ impl OabMcp {
             "runtime_context" => self.t_runtime_context(args).await,
             "fleet_config" => self.t_fleet_config(args),
             "fleet_config_write" => self.t_fleet_write(args),
+            "list_aws_profiles" => self.t_list_aws_profiles(args),
+            "list_k8s_contexts" => self.t_list_k8s_contexts(args),
             other => anyhow::bail!("unknown tool {other:?}"),
         }
     }
@@ -698,6 +716,38 @@ impl OabMcp {
         self.t_fleet_config(args)
     }
 
+    /// Local AWS profile discovery (studio#104): backs the New Fleet wizard's
+    /// profile `<select>`. `exists`/`error` are surfaced separately so the
+    /// console can tell "nothing configured yet" (show setup guidance) apart
+    /// from "found a config but couldn't read it" (show the raw error).
+    fn t_list_aws_profiles(&self, _args: &Map<String, Value>) -> Result<Value> {
+        let r = scp::list_aws_profiles();
+        Ok(json!({
+            "profiles": r.profiles.iter().map(|p| json!({ "name": p.name, "region": p.region })).collect::<Vec<_>>(),
+            "source_path": r.source_path,
+            "exists": r.exists,
+            "error": r.error,
+        }))
+    }
+
+    /// Local kubeconfig context discovery (studio#104): backs the New Fleet
+    /// wizard's k8s context `<select>`. Same `exists`/`error` split as
+    /// `list_aws_profiles`.
+    fn t_list_k8s_contexts(&self, _args: &Map<String, Value>) -> Result<Value> {
+        let r = scp::list_k8s_contexts();
+        Ok(json!({
+            "contexts": r.contexts.iter().map(|c| json!({
+                "name": c.name,
+                "cluster": c.cluster,
+                "namespace": c.namespace,
+                "user": c.user,
+            })).collect::<Vec<_>>(),
+            "current_context": r.current_context,
+            "exists": r.exists,
+            "error": r.error,
+        }))
+    }
+
     async fn t_delete(&self, args: &Map<String, Value>) -> Result<Value> {
         let t = self.target(args)?;
         let cluster = t.cluster.clone();
@@ -780,7 +830,7 @@ mod tests {
             .iter()
             .map(|t| t["name"].as_str().expect("tool has a name").to_string())
             .collect();
-        assert_eq!(names.len(), 11);
+        assert_eq!(names.len(), 13);
         for expected in [
             "deploy_list",
             "deploy_get",
@@ -793,6 +843,8 @@ mod tests {
             "runtime_context",
             "fleet_config",
             "fleet_config_write",
+            "list_aws_profiles",
+            "list_k8s_contexts",
         ] {
             assert!(names.contains(&expected.to_string()), "missing {expected}");
         }
