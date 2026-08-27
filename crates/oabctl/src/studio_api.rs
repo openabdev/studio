@@ -245,6 +245,43 @@ pub async fn provision_manifest(
     provision(config, cluster, &yaml, objects, control_plane_bucket).await
 }
 
+/// [`provision_manifest`], but applies through [`crate::k8s_driver::K8sDriver`]
+/// instead of [`crate::driver::EcsDriver`] (studio#104's k8s `deploy_provision`
+/// dispatch, resumed once #111 landed a create-vs-redeploy branch point that
+/// doesn't care which driver applies the result).
+///
+/// Takes **two** separate credential contexts, unlike every other function in
+/// this module — this is inherent to how k8s provisioning works here, not
+/// something to simplify away: the bundle carrier (`hooks.pre_seed`, studio#97
+/// slice 3c) still goes through S3 regardless of runtime, so `aws_config` is
+/// still needed for [`push_bundle`]; `context` is the kubeconfig context
+/// [`crate::k8s_driver::K8sDriver::apply`] actually applies the Deployment
+/// through. A k8s-provisioned agent's bundle upload and its Deployment apply
+/// are two different systems with two different credentials — there's no way
+/// to collapse this to a single config the way the ECS path's one
+/// `aws_config::SdkConfig` covers both S3 and ECS.
+pub async fn provision_k8s(
+    aws_config: &aws_config::SdkConfig,
+    context: Option<&str>,
+    manifest: &crate::manifest::OABServiceManifest,
+    objects: &[(String, Vec<u8>)],
+    control_plane_bucket: Option<&str>,
+) -> Result<crate::apply::ApplyReport> {
+    // Same ordering as `provision()`: bundle first (idempotent puts), so the
+    // carrier is ready before the Deployment comes up and pre_seed runs.
+    push_bundle(aws_config, control_plane_bucket, objects).await?;
+
+    let driver = crate::k8s_driver::K8sDriver::from_context(context).await?;
+    let opts = crate::driver::ProvisionOptions {
+        control_plane_bucket: control_plane_bucket.map(str::to_string),
+        wait: false,
+    };
+    driver
+        .apply(std::slice::from_ref(manifest), &opts)
+        .await
+        .context("failed to apply k8s manifest during provision")
+}
+
 /// Load the desired `OABService` manifest oabctl persists at
 /// `manifests/{namespace}/{name}.yaml` in the control-plane bucket. Returns
 /// `Ok(None)` when the agent has no stored manifest yet (never applied); other

@@ -930,6 +930,149 @@ pub async fn provision_from_library(
     })
 }
 
+/// Extract the bare service-account name from an `expected_principal` string
+/// in `system:serviceaccount:<namespace>:<name>` form — the format
+/// `K8sFleetBinding.expected_principal` holds when the "+ New fleet" wizard's
+/// service-account picker set it (studio#104). `KubernetesRuntime.
+/// service_account` wants just the bare name (`k8s_driver::build_deployment`
+/// sets it as `pod_spec.service_account_name` directly), not the qualified
+/// form `k8s_principal_kind` classifies against. `None` — or a plain
+/// username, not a service account — means the pod uses the namespace's
+/// default service account.
+fn k8s_service_account_from_principal(expected_principal: Option<&str>) -> Option<String> {
+    expected_principal
+        .and_then(|p| p.strip_prefix("system:serviceaccount:"))
+        .and_then(|rest| rest.split_once(':'))
+        .map(|(_namespace, name)| name.to_string())
+}
+
+/// Build a fresh k8s `OABServiceManifest` — the `Runtime::Kubernetes`
+/// counterpart to [`build_default_manifest`]. No VPC/subnet/security-group
+/// concept (that's ECS-specific networking); k8s's per-fleet placement is
+/// `context` (which cluster) and `namespace` (both already resolved by the
+/// caller from `K8sFleetBinding`, not part of the manifest itself — mirrors
+/// how AWS's `cluster` is a driver-construction parameter, not a manifest
+/// field). `node_selector`/`tolerations` default empty; `service_account`
+/// comes from `expected_principal` when it names one, else the namespace's
+/// default applies (same "unset = use default" contract `default_security_group`-
+/// style AWS defaults don't have an equivalent of, since k8s already has one
+/// built in).
+async fn build_default_k8s_manifest(
+    namespace: &str,
+    name: &str,
+    image: &str,
+    bucket: &str,
+    expected_principal: Option<&str>,
+) -> anyhow::Result<oabctl::manifest::OABServiceManifest> {
+    let config_from = default_config_from_uri(bucket, namespace, name);
+    Ok(oabctl::manifest::OABServiceManifest {
+        api_version: "oab.dev/v2".to_string(),
+        kind: "OABService".to_string(),
+        metadata: oabctl::manifest::Metadata {
+            name: name.to_string(),
+            namespace: namespace.to_string(),
+            generation: 0,
+        },
+        spec: oabctl::manifest::Spec {
+            image: image.to_string(),
+            resources: oabctl::manifest::Resources {
+                cpu: "256".to_string(),
+                memory: "512".to_string(),
+            },
+            config_from,
+            bundle_from: None,
+            bootstrap_from: None,
+            secrets: std::collections::HashMap::new(),
+            runtime: oabctl::manifest::Runtime::Kubernetes(oabctl::manifest::KubernetesRuntime {
+                node_selector: std::collections::HashMap::new(),
+                service_account: k8s_service_account_from_principal(expected_principal),
+                tolerations: Vec::new(),
+            }),
+            ingress: None,
+        },
+    })
+}
+
+/// [`provision_from_library`], but for a k8s-driven fleet — studio#104's
+/// `deploy_provision` k8s dispatch, resumed once #111 gave both drivers a
+/// shared, provider-agnostic create-vs-redeploy branch point
+/// (`load_manifest` is just an S3 key, it doesn't care which `Runtime` variant
+/// the stored manifest holds).
+///
+/// Compose/bundle-upload is identical to the AWS path (the bundle carrier —
+/// `hooks.pre_seed`, studio#97 slice 3c — is provider-agnostic, still S3
+/// regardless of where the agent actually runs) — some duplication with
+/// `provision_from_library` here is deliberate for now rather than risk
+/// reworking that already-landed function's shape again; worth revisiting
+/// once both paths are proven.
+///
+/// `expected_principal` is `K8sFleetBinding.expected_principal` — see
+/// [`k8s_service_account_from_principal`] for how it maps onto the manifest.
+pub async fn provision_from_library_k8s(
+    aws_config: &aws_config::SdkConfig,
+    context: Option<&str>,
+    namespace: &str,
+    name: &str,
+    library: &Library,
+    template: &str,
+    overlay: Option<&str>,
+    image_override: Option<&str>,
+    expected_principal: Option<&str>,
+) -> anyhow::Result<ProvisionOutcome> {
+    let mut bundle = studio_compose::compose_named(library, template, overlay)
+        .map_err(|e| anyhow::anyhow!("compose failed: {e}"))?;
+    let image = image_override
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| bundle.image_tag.clone());
+
+    let bucket = oabctl::resolve_bucket(aws_config, None).await?;
+    let zip_uri = oabctl::studio_api::bundle_zip_uri(&bucket, namespace, name);
+    match bundle.files.get_mut("config.toml") {
+        Some(bytes) => *bytes = oabctl::studio_api::inject_pre_seed_hook(bytes, &zip_uri)?,
+        None => anyhow::bail!("composed bundle for {namespace}/{name} has no config.toml — cannot wire hooks.pre_seed"),
+    }
+
+    let mut objects = bundle.artifact_objects(namespace, name);
+    let zip_key = format!(
+        "{}/{}",
+        studio_compose::artifacts_prefix(namespace, name),
+        oabctl::studio_api::BUNDLE_ZIP_FILENAME
+    );
+    objects.push((zip_key, bundle.zip_bytes()));
+
+    let digest = bundle.digest();
+
+    let existing_manifest =
+        oabctl::studio_api::load_manifest(aws_config, namespace, name, Some(&bucket)).await?;
+    let mut manifest = match existing_manifest {
+        // Redeploy: preserve everything else about the stored manifest
+        // (including its k8s runtime config), only bump the image — same
+        // guarantee the AWS path's `redeploy()` gives.
+        Some(mut stored) => {
+            stored.spec.image = image.clone();
+            stored
+        }
+        None => build_default_k8s_manifest(namespace, name, &image, &bucket, expected_principal).await?,
+    };
+    manifest.spec.bundle_from = Some(oabctl::studio_api::bundle_from_uri(&bucket, namespace, name));
+
+    let report =
+        oabctl::studio_api::provision_k8s(aws_config, context, &manifest, &objects, Some(&bucket)).await?;
+
+    Ok(ProvisionOutcome {
+        image,
+        digest,
+        objects: objects.len(),
+        services_applied: report.services.len(),
+        action: report
+            .services
+            .first()
+            .map(|s| format!("{:?}", s.action))
+            .unwrap_or_default(),
+    })
+}
+
 /// Scale an OAB service to `size` replicas (0 = off, 1 = on).
 ///
 /// Config-free: `cluster` / `namespace` are explicit (service = `oab-{namespace}-{name}`).
@@ -1373,5 +1516,21 @@ namespace = "prod"
             default_config_from_uri("oab-control-plane-123", "prod", "orca"),
             "s3://oab-control-plane-123/artifacts/prod/orca/config.toml",
         );
+    }
+
+    #[test]
+    fn k8s_service_account_from_principal_extracts_bare_name() {
+        assert_eq!(
+            k8s_service_account_from_principal(Some("system:serviceaccount:dev:oab-agent")),
+            Some("oab-agent".to_string()),
+        );
+    }
+
+    #[test]
+    fn k8s_service_account_from_principal_none_for_plain_username() {
+        // A plain username (not a service account) or unset both mean "use
+        // the namespace's default service account" — not an error.
+        assert_eq!(k8s_service_account_from_principal(Some("brett.chien")), None);
+        assert_eq!(k8s_service_account_from_principal(None), None);
     }
 }
