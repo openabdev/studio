@@ -201,9 +201,14 @@ async fn store_secret(sm: &SmClient, name: &str, value: &str) -> Result<()> {
     }
 }
 
-struct VpcInfo { id: String, label: String }
+/// A VPC discovered in the account/region, with a human-readable label
+/// (id + Name tag + CIDR + default marker) for interactive selection.
+/// `pub` (studio#111): reused by the provision-from-scratch path to pick a
+/// sensible default VPC without prompting, same discovery `oabctl create`'s
+/// wizard uses interactively.
+pub struct VpcInfo { pub id: String, pub label: String }
 
-async fn list_vpcs(ec2: &Ec2Client) -> Result<Vec<VpcInfo>> {
+pub async fn list_vpcs(ec2: &Ec2Client) -> Result<Vec<VpcInfo>> {
     let resp = ec2.describe_vpcs().send().await?;
     Ok(resp.vpcs().iter().map(|v| {
         let id = v.vpc_id().unwrap_or_default().to_string();
@@ -218,9 +223,15 @@ async fn list_vpcs(ec2: &Ec2Client) -> Result<Vec<VpcInfo>> {
     }).collect())
 }
 
-struct SubnetInfo { id: String, az: String, kind: String, has_nat: bool }
+/// A subnet candidate, already classified private/public + NAT reachability.
+/// `pub` (studio#111): see `VpcInfo`.
+pub struct SubnetInfo { pub id: String, pub az: String, pub kind: String, pub has_nat: bool }
 
-async fn select_subnets(ec2: &Ec2Client, vpc_id: &str) -> Result<Vec<SubnetInfo>> {
+/// Auto-select up to 3 subnets (one per AZ), preferring private+NAT >
+/// private > public — this already has zero interactive prompting, it's the
+/// exact "sensible default" the provision-from-scratch path (studio#111)
+/// needs, just needed to be reachable outside `create.rs`.
+pub async fn select_subnets(ec2: &Ec2Client, vpc_id: &str) -> Result<Vec<SubnetInfo>> {
     let subnets_resp = ec2.describe_subnets()
         .filters(aws_sdk_ec2::types::Filter::builder().name("vpc-id").values(vpc_id).build())
         .send().await?;
@@ -282,9 +293,10 @@ async fn select_subnets(ec2: &Ec2Client, vpc_id: &str) -> Result<Vec<SubnetInfo>
     Ok(selected)
 }
 
-struct SgInfo { id: String, name: String }
+/// `pub` (studio#111): see `VpcInfo`.
+pub struct SgInfo { pub id: String, pub name: String }
 
-async fn list_security_groups(ec2: &Ec2Client, vpc_id: &str) -> Result<Vec<SgInfo>> {
+pub async fn list_security_groups(ec2: &Ec2Client, vpc_id: &str) -> Result<Vec<SgInfo>> {
     let resp = ec2.describe_security_groups()
         .filters(aws_sdk_ec2::types::Filter::builder().name("vpc-id").values(vpc_id).build())
         .send().await?;
@@ -294,6 +306,29 @@ async fn list_security_groups(ec2: &Ec2Client, vpc_id: &str) -> Result<Vec<SgInf
             name: sg.group_name().unwrap_or_default().to_string(),
         }
     }).collect())
+}
+
+/// Pick a security group for a new agent with **no interactive prompt** —
+/// the fully-automatic counterpart to `run()`'s "Create new (oab-{name})"
+/// default choice (studio#111: the provision-from-scratch path needs a
+/// sensible default here, not a prompt). Reuses an existing `oab-{name}`
+/// group if one's already there (idempotent — safe to call again for the
+/// same agent), otherwise creates it. Unlike `run()`'s interactive flow,
+/// this never offers picking a different existing group; that choice stays
+/// CLI-only.
+pub async fn default_security_group(ec2: &Ec2Client, vpc_id: &str, name: &str) -> Result<String> {
+    let sg_name = format!("oab-{name}");
+    let existing = list_security_groups(ec2, vpc_id).await?;
+    if let Some(sg) = existing.iter().find(|sg| sg.name == sg_name) {
+        return Ok(sg.id.clone());
+    }
+    let resp = ec2.create_security_group()
+        .group_name(&sg_name)
+        .description(format!("OAB agent {name}"))
+        .vpc_id(vpc_id)
+        .send().await
+        .context("failed to create security group")?;
+    Ok(resp.group_id().unwrap_or_default().to_string())
 }
 
 fn generate_config(_backend: &str, name: &str, namespace: &str, stt_enabled: bool) -> String {
