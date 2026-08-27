@@ -229,6 +229,22 @@ pub async fn provision(
         .context("failed to apply manifest during provision")
 }
 
+/// [`provision`], but takes an already-built [`crate::manifest::OABServiceManifest`]
+/// instead of YAML text — for a caller (studio-cp's provision-from-scratch
+/// path, studio#111) that constructs one directly rather than starting from
+/// a stored manifest's YAML. Keeps the YAML serialization an `oabctl`-internal
+/// detail rather than making every caller depend on `serde_yaml` themselves.
+pub async fn provision_manifest(
+    config: &aws_config::SdkConfig,
+    cluster: &str,
+    manifest: &crate::manifest::OABServiceManifest,
+    objects: &[(String, Vec<u8>)],
+    control_plane_bucket: Option<&str>,
+) -> Result<crate::apply::ApplyReport> {
+    let yaml = serde_yaml::to_string(manifest).context("failed to serialize manifest")?;
+    provision(config, cluster, &yaml, objects, control_plane_bucket).await
+}
+
 /// Load the desired `OABService` manifest oabctl persists at
 /// `manifests/{namespace}/{name}.yaml` in the control-plane bucket. Returns
 /// `Ok(None)` when the agent has no stored manifest yet (never applied); other
