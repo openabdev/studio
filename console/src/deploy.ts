@@ -46,6 +46,9 @@ interface K8sContextsResponse {
 interface K8sNamespacesResponse {
   namespaces: string[];
 }
+interface K8sServiceAccountsResponse {
+  service_accounts: string[];
+}
 
 export type DeployMode = { kind: "new-fleet" } | { kind: "add-instance"; fleetName: string };
 
@@ -97,6 +100,10 @@ export function initDeployPanel(deps: DeployPanelDeps): DeployPanelHandle | null
   // choice and a plain select can't express "not in this list yet".
   const k8sNamespaceInput = document.getElementById("deploy-k8s-namespace") as HTMLInputElement | null;
   const k8sNamespaceOptions = document.getElementById("deploy-k8s-namespace-options") as HTMLDataListElement | null;
+  // Service account, unlike namespace, must already exist for k8s to accept
+  // it as a pod's serviceAccountName — so (unlike namespace) a plain <select>
+  // is the right shape here, no free-text escape hatch needed.
+  const k8sServiceAccountSel = document.getElementById("deploy-k8s-service-account") as HTMLSelectElement | null;
   const identityStatusEl = document.getElementById("deploy-identity-status");
   const composeSection = document.getElementById("deploy-compose");
   const composeHeading = document.getElementById("deploy-compose-heading");
@@ -125,6 +132,7 @@ export function initDeployPanel(deps: DeployPanelDeps): DeployPanelHandle | null
     !k8sContextSel ||
     !k8sNamespaceInput ||
     !k8sNamespaceOptions ||
+    !k8sServiceAccountSel ||
     !composeSection ||
     !tmplSel ||
     !ovlSel ||
@@ -189,6 +197,35 @@ export function initDeployPanel(deps: DeployPanelDeps): DeployPanelHandle | null
     }
   };
 
+  // Service account is scoped to (context, namespace) and per #104's design
+  // fails *silently* — unlike context/namespace, any error here (including an
+  // RBAC-denied list, which is common against a scoped-down cluster identity)
+  // means "leave it unset" (the namespace's default service account applies),
+  // not something worth surfacing a status message for.
+  const loadK8sServiceAccounts = async (): Promise<void> => {
+    const defaultOption = '<option value="">— namespace default —</option>';
+    const invoke = tauriInvoke();
+    const namespace = k8sNamespaceInput.value.trim();
+    if (!invoke || !namespace) {
+      k8sServiceAccountSel.innerHTML = defaultOption;
+      return;
+    }
+    const context = k8sContextSel.value || undefined;
+    try {
+      const res = await invoke<K8sServiceAccountsResponse>(
+        "list_service_accounts",
+        context ? { context, namespace } : { namespace },
+      );
+      k8sServiceAccountSel.innerHTML =
+        defaultOption +
+        res.service_accounts
+          .map((sa) => `<option value="${escapeHtml(sa)}">${escapeHtml(sa)}</option>`)
+          .join("");
+    } catch {
+      k8sServiceAccountSel.innerHTML = defaultOption;
+    }
+  };
+
   const loadK8sContexts = async (): Promise<void> => {
     const invoke = tauriInvoke();
     if (!invoke) return;
@@ -210,7 +247,13 @@ export function initDeployPanel(deps: DeployPanelDeps): DeployPanelHandle | null
     showProviderFields(providerSel.value);
     if (providerSel.value === "k8s") void loadK8sContexts();
   });
-  k8sContextSel.addEventListener("change", () => void loadK8sNamespaces());
+  k8sContextSel.addEventListener("change", () => {
+    void loadK8sNamespaces();
+    void loadK8sServiceAccounts();
+  });
+  // "change" (fires on commit/blur), not "input" (every keystroke) — avoids a
+  // tool call per character typed into the namespace field.
+  k8sNamespaceInput.addEventListener("change", () => void loadK8sServiceAccounts());
 
   const loadLibraryAndPickers = async (): Promise<void> => {
     const invoke = tauriInvoke();

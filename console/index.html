@@ -124,7 +124,9 @@
                 </label>
                 <label
                   >Service account (optional)
-                  <input id="deploy-k8s-service-account" class="compose-input" type="text" placeholder="defaults to the namespace's default SA" spellcheck="false" />
+                  <select id="deploy-k8s-service-account" class="compose-select">
+                    <option value="">— namespace default —</option>
+                  </select>
                 </label>
               </div>
               <div class="compose-actions">
