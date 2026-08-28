@@ -17,7 +17,7 @@ import type {
 import { createChatPanel, type ChatPanel } from "./chatPanel";
 import { initAgentConsole, type AgentConsole } from "./agentConsole";
 import { initDeployPanel, type DeployPanelHandle, type DeployedInfo } from "./deploy";
-import { createPane, bindBackend, type Level } from "./log";
+import { createPane, bindBackend, paneText, type Level } from "./log";
 import { initThemeToggle } from "./theme";
 import { initSplitPane } from "./splitPane";
 import { initRowResize, applySavedRowHeight } from "./rowResize";
@@ -119,6 +119,21 @@ function closeDebugDrawer(): void {
 document
   .getElementById("debug-close")
   ?.addEventListener("click", closeDebugDrawer);
+
+// studio#119: "download log" for whichever Debug drawer tab is active —
+// the MCP tab in particular can push many lines a second, making manual
+// copy-paste out of the scrolling pane impractical.
+document.getElementById("log-download")?.addEventListener("click", () => {
+  const paneEl = debugActiveTarget === "mcpio" ? mcpEl : debugActiveTarget === "log" ? logEl : null;
+  if (!paneEl) return;
+  const blob = new Blob([paneText(paneEl)], { type: "text/plain" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `studio-${debugActiveTarget}-${new Date().toISOString().replace(/[:.]/g, "-")}.log`;
+  a.click();
+  URL.revokeObjectURL(url);
+});
 
 // Global entry point (top bar, right of "Check for updates") — opens the
 // same drawer the per-fleet `[⚙]` buttons do, scoped to whichever cluster is
