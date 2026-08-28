@@ -72,6 +72,27 @@ export interface FleetConfig {
   text: string;
 }
 
+// One configured k8s fleet → (context, namespace) binding — mirrors an entry
+// of oab-mcp's `k8s_fleet_config` tool (studio#104). The k8s counterpart to
+// `FleetConfigEntry`: no `cluster`/`region`/`profile` (those are AWS-only),
+// `context`/`namespace` select the target instead.
+export interface K8sFleetConfigEntry {
+  name: string;
+  context: string | null;
+  namespace: string;
+  members: string[];
+  expected_principal: string | null;
+}
+
+// The declarative k8s fleet-binding config — mirrors oab-mcp's
+// `k8s_fleet_config` tool. `path` is `fleets-k8s.toml`'s location (null when
+// unresolved, e.g. no config dir).
+export interface K8sFleetConfig {
+  path: string | null;
+  fleets: K8sFleetConfigEntry[];
+  text: string;
+}
+
 // The remote reverse-MCP connection view — mirrors src-tauri's `remote_config`
 // command (reverse-MCP client ADR, Part B). `path`/`text` back the in-app editor
 // for `remote.toml`; `url` + `configured` drive the panel; `status` is the live

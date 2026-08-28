@@ -406,6 +406,29 @@ async fn list_service_accounts(
     }
 }
 
+/// Bridge command: the declarative k8s fleet-binding config (studio#104, k8s
+/// counterpart to `fleet_config`), sourced through the sidecar's
+/// `k8s_fleet_config` tool. The New Fleet wizard's k8s submit path reads this
+/// first to compute an appended `fleets-k8s.toml` block, since the write tool
+/// takes the whole file's text.
+#[tauri::command]
+async fn k8s_fleet_config(core: tauri::State<'_, Core>) -> Result<Value, String> {
+    let client = {
+        let guard = core.0.lock().await;
+        guard
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| "core not started yet".to_string())?
+    };
+    match client.call_tool("k8s_fleet_config", json!({})).await {
+        Ok(v) => Ok(v),
+        Err(e) => {
+            client.log("error", &format!("k8s_fleet_config: {e}"));
+            Err(e)
+        }
+    }
+}
+
 /// Bridge command: persist the edited `fleets-k8s.toml` text (studio#104,
 /// k8s counterpart to `fleet_config_write`) via the sidecar's
 /// `k8s_fleet_config_write` tool.
@@ -713,6 +736,7 @@ pub fn run() {
             list_k8s_contexts,
             list_namespaces,
             list_service_accounts,
+            k8s_fleet_config,
             k8s_fleet_config_write,
             deploy_scale,
             remote_config,
