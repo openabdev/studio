@@ -51,7 +51,7 @@ mod bootstrap;
 mod cli;
 mod config;
 mod control_plane;
-mod create;
+pub mod create;
 mod delete;
 pub mod driver;
 pub mod events;
