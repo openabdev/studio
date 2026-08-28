@@ -223,6 +223,39 @@ pub fn tools() -> Vec<Tool> {
                 "properties": {}
             })),
         ),
+        Tool::new(
+            "list_namespaces",
+            "List namespaces in the cluster a kubeconfig context resolves to. Read-only; backs the New Fleet wizard's namespace <select> (with a manual-entry fallback for a namespace that doesn't exist yet — this can only list what's already there).",
+            as_map(json!({
+                "type": "object",
+                "properties": {
+                    "context": { "type": "string", "description": "Kubeconfig context name. Omit to use the kubeconfig's current-context." }
+                }
+            })),
+        ),
+        Tool::new(
+            "list_service_accounts",
+            "List service accounts in one namespace of a kubeconfig context. Read-only; backs the New Fleet wizard's optional service-account <select>. Any failure here (including an RBAC-denied list) should be treated by the caller as \"leave it unset\" — the namespace's `default` service account applies — not surfaced as an error.",
+            as_map(json!({
+                "type": "object",
+                "properties": {
+                    "context": { "type": "string", "description": "Kubeconfig context name. Omit to use the kubeconfig's current-context." },
+                    "namespace": { "type": "string", "description": "k8s namespace to list service accounts in." }
+                },
+                "required": ["namespace"]
+            })),
+        ),
+        Tool::new(
+            "k8s_fleet_config_write",
+            "Persist the whole k8s fleet-binding config (fleets-k8s.toml, separate from AWS's fleets.toml) from raw TOML `text`. Validates the text parses before writing — a bad edit never lands on disk — and the bytes are stored verbatim, so comments/layout are preserved. Returns the parsed fleets (name, context, namespace, members, expected_principal) plus the raw text. Write tool: overwrites the operator's fleets-k8s.toml.",
+            as_map(json!({
+                "type": "object",
+                "properties": {
+                    "text": { "type": "string", "description": "Full TOML document for fleets-k8s.toml (a list of [fleet.<name>] tables)." }
+                },
+                "required": ["text"]
+            })),
+        ),
     ]
 }
 
@@ -337,6 +370,9 @@ impl OabMcp {
             "fleet_config_write" => self.t_fleet_write(args),
             "list_aws_profiles" => self.t_list_aws_profiles(args),
             "list_k8s_contexts" => self.t_list_k8s_contexts(args),
+            "list_namespaces" => self.t_list_namespaces(args).await,
+            "list_service_accounts" => self.t_list_service_accounts(args).await,
+            "k8s_fleet_config_write" => self.t_k8s_fleet_write(args),
             other => anyhow::bail!("unknown tool {other:?}"),
         }
     }
@@ -748,6 +784,60 @@ impl OabMcp {
         }))
     }
 
+    /// Namespace discovery (studio#104): backs the New Fleet wizard's
+    /// namespace `<select>`.
+    async fn t_list_namespaces(&self, args: &Map<String, Value>) -> Result<Value> {
+        let context = args.get("context").and_then(Value::as_str);
+        let namespaces = scp::list_namespaces(context).await?;
+        Ok(json!({ "namespaces": namespaces }))
+    }
+
+    /// Service-account discovery (studio#104): backs the New Fleet wizard's
+    /// optional service-account `<select>`. Errors (including RBAC-denied)
+    /// propagate as a normal tool error — per the design, the caller treats
+    /// any failure here as "leave it unset", not something to surface.
+    async fn t_list_service_accounts(&self, args: &Map<String, Value>) -> Result<Value> {
+        let context = args.get("context").and_then(Value::as_str);
+        let namespace = args
+            .get("namespace")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("missing required arg: namespace"))?;
+        let service_accounts = scp::list_service_accounts(context, namespace).await?;
+        Ok(json!({ "service_accounts": service_accounts }))
+    }
+
+    /// Write tool: persist the whole `fleets-k8s.toml` from the editor's
+    /// `text` after validating it parses, mirroring `t_fleet_write`'s
+    /// AWS-side shape. Unlike AWS bindings, k8s bindings aren't cached
+    /// anywhere in `OabMcp` yet (nothing here dispatches provisioning to
+    /// `K8sDriver` yet either — that's a separate item), so this is a plain
+    /// validate-then-write with no in-memory state to invalidate.
+    fn t_k8s_fleet_write(&self, args: &Map<String, Value>) -> Result<Value> {
+        let text = args
+            .get("text")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("missing required arg: text"))?;
+        let path = scp::default_k8s_bindings_path()
+            .ok_or_else(|| anyhow::anyhow!("no k8s fleet config path resolved; cannot write bindings"))?;
+        let bindings = scp::save_k8s_bindings_text(&path, text)?;
+        let fleets: Vec<Value> = bindings
+            .fleets
+            .iter()
+            .map(|b| json!({
+                "name": b.name,
+                "context": b.context,
+                "namespace": b.namespace,
+                "members": b.members,
+                "expected_principal": b.expected_principal,
+            }))
+            .collect();
+        Ok(json!({
+            "path": path.display().to_string(),
+            "fleets": fleets,
+            "text": text,
+        }))
+    }
+
     async fn t_delete(&self, args: &Map<String, Value>) -> Result<Value> {
         let t = self.target(args)?;
         let cluster = t.cluster.clone();
@@ -830,7 +920,7 @@ mod tests {
             .iter()
             .map(|t| t["name"].as_str().expect("tool has a name").to_string())
             .collect();
-        assert_eq!(names.len(), 13);
+        assert_eq!(names.len(), 16);
         for expected in [
             "deploy_list",
             "deploy_get",
@@ -845,6 +935,9 @@ mod tests {
             "fleet_config_write",
             "list_aws_profiles",
             "list_k8s_contexts",
+            "list_namespaces",
+            "list_service_accounts",
+            "k8s_fleet_config_write",
         ] {
             assert!(names.contains(&expected.to_string()), "missing {expected}");
         }

@@ -37,6 +37,19 @@ function fillOptions(sel: HTMLSelectElement, names: string[], keepNoneFirst: boo
   sel.innerHTML = opts.join("");
 }
 
+// list_k8s_contexts / list_namespaces response shapes (oab-mcp, studio#104) —
+// kept minimal (just what this panel reads), not the tools' full contract.
+interface K8sContextsResponse {
+  contexts: { name: string }[];
+  current_context: string | null;
+}
+interface K8sNamespacesResponse {
+  namespaces: string[];
+}
+interface K8sServiceAccountsResponse {
+  service_accounts: string[];
+}
+
 export type DeployMode = { kind: "new-fleet" } | { kind: "add-instance"; fleetName: string };
 
 // What the panel reports back once a deploy + fleets.toml write both succeed —
@@ -75,9 +88,22 @@ export function initDeployPanel(deps: DeployPanelDeps): DeployPanelHandle | null
   const cancelBtn = document.getElementById("deploy-cancel") as HTMLButtonElement | null;
   const identityForm = document.getElementById("deploy-identity-form") as HTMLFormElement | null;
   const nameInput = document.getElementById("deploy-fleet-name") as HTMLInputElement | null;
+  const providerSel = document.getElementById("deploy-provider") as HTMLSelectElement | null;
+  const awsFieldsEl = document.getElementById("deploy-aws-fields");
   const regionInput = document.getElementById("deploy-region") as HTMLInputElement | null;
   const profileInput = document.getElementById("deploy-profile") as HTMLInputElement | null;
   const principalInput = document.getElementById("deploy-principal") as HTMLInputElement | null;
+  const k8sFieldsEl = document.getElementById("deploy-k8s-fields");
+  const k8sContextSel = document.getElementById("deploy-k8s-context") as HTMLSelectElement | null;
+  // Namespace is a text input with a <datalist> of what already exists (not a
+  // <select>) — per studio#104's design, a brand-new namespace is a valid
+  // choice and a plain select can't express "not in this list yet".
+  const k8sNamespaceInput = document.getElementById("deploy-k8s-namespace") as HTMLInputElement | null;
+  const k8sNamespaceOptions = document.getElementById("deploy-k8s-namespace-options") as HTMLDataListElement | null;
+  // Service account, unlike namespace, must already exist for k8s to accept
+  // it as a pod's serviceAccountName — so (unlike namespace) a plain <select>
+  // is the right shape here, no free-text escape hatch needed.
+  const k8sServiceAccountSel = document.getElementById("deploy-k8s-service-account") as HTMLSelectElement | null;
   const identityStatusEl = document.getElementById("deploy-identity-status");
   const composeSection = document.getElementById("deploy-compose");
   const composeHeading = document.getElementById("deploy-compose-heading");
@@ -97,9 +123,16 @@ export function initDeployPanel(deps: DeployPanelDeps): DeployPanelHandle | null
     !cancelBtn ||
     !identityForm ||
     !nameInput ||
+    !providerSel ||
+    !awsFieldsEl ||
     !regionInput ||
     !profileInput ||
     !principalInput ||
+    !k8sFieldsEl ||
+    !k8sContextSel ||
+    !k8sNamespaceInput ||
+    !k8sNamespaceOptions ||
+    !k8sServiceAccountSel ||
     !composeSection ||
     !tmplSel ||
     !ovlSel ||
@@ -130,7 +163,97 @@ export function initDeployPanel(deps: DeployPanelDeps): DeployPanelHandle | null
     setStatus(identityStatusEl, "");
     setStatus(previewStatusEl, "");
     setStatus(deployStatusEl, "");
+    // identityForm.reset() puts <select id="deploy-provider"> back to its
+    // `selected` default ("aws"), but doesn't touch the field-group `hidden`
+    // attributes this panel manages by hand — sync those too.
+    showProviderFields(providerSel.value);
   };
+
+  // Toggle the AWS/k8s field groups per studio#104's design: switching
+  // providers resets which group is visible; field *values* aren't cleared
+  // here (identityForm.reset() already did that on open/close) since the
+  // two groups have no overlapping semantics to accidentally carry over.
+  const showProviderFields = (provider: string): void => {
+    awsFieldsEl.hidden = provider !== "aws";
+    k8sFieldsEl.hidden = provider !== "k8s";
+  };
+
+  const loadK8sNamespaces = async (): Promise<void> => {
+    const invoke = tauriInvoke();
+    if (!invoke) return;
+    const context = k8sContextSel.value || undefined;
+    try {
+      const res = await invoke<K8sNamespacesResponse>(
+        "list_namespaces",
+        context ? { context } : {},
+      );
+      k8sNamespaceOptions.innerHTML = res.namespaces
+        .map((n) => `<option value="${escapeHtml(n)}"></option>`)
+        .join("");
+    } catch (e) {
+      // Non-fatal: the namespace field is a free-text input either way (list_
+      // namespaces failing just means no autocomplete suggestions).
+      setStatus(identityStatusEl, `namespace list unavailable: ${errText(e)}`, "err");
+    }
+  };
+
+  // Service account is scoped to (context, namespace) and per #104's design
+  // fails *silently* — unlike context/namespace, any error here (including an
+  // RBAC-denied list, which is common against a scoped-down cluster identity)
+  // means "leave it unset" (the namespace's default service account applies),
+  // not something worth surfacing a status message for.
+  const loadK8sServiceAccounts = async (): Promise<void> => {
+    const defaultOption = '<option value="">— namespace default —</option>';
+    const invoke = tauriInvoke();
+    const namespace = k8sNamespaceInput.value.trim();
+    if (!invoke || !namespace) {
+      k8sServiceAccountSel.innerHTML = defaultOption;
+      return;
+    }
+    const context = k8sContextSel.value || undefined;
+    try {
+      const res = await invoke<K8sServiceAccountsResponse>(
+        "list_service_accounts",
+        context ? { context, namespace } : { namespace },
+      );
+      k8sServiceAccountSel.innerHTML =
+        defaultOption +
+        res.service_accounts
+          .map((sa) => `<option value="${escapeHtml(sa)}">${escapeHtml(sa)}</option>`)
+          .join("");
+    } catch {
+      k8sServiceAccountSel.innerHTML = defaultOption;
+    }
+  };
+
+  const loadK8sContexts = async (): Promise<void> => {
+    const invoke = tauriInvoke();
+    if (!invoke) return;
+    try {
+      const res = await invoke<K8sContextsResponse>("list_k8s_contexts");
+      const opts = ['<option value="">— kubeconfig current-context —</option>'];
+      for (const c of res.contexts) {
+        const label = c.name === res.current_context ? `${c.name} (current)` : c.name;
+        opts.push(`<option value="${escapeHtml(c.name)}">${escapeHtml(label)}</option>`);
+      }
+      k8sContextSel.innerHTML = opts.join("");
+    } catch (e) {
+      setStatus(identityStatusEl, `k8s context list unavailable: ${errText(e)}`, "err");
+    }
+    void loadK8sNamespaces();
+  };
+
+  providerSel.addEventListener("change", () => {
+    showProviderFields(providerSel.value);
+    if (providerSel.value === "k8s") void loadK8sContexts();
+  });
+  k8sContextSel.addEventListener("change", () => {
+    void loadK8sNamespaces();
+    void loadK8sServiceAccounts();
+  });
+  // "change" (fires on commit/blur), not "input" (every keystroke) — avoids a
+  // tool call per character typed into the namespace field.
+  k8sNamespaceInput.addEventListener("change", () => void loadK8sServiceAccounts());
 
   const loadLibraryAndPickers = async (): Promise<void> => {
     const invoke = tauriInvoke();
@@ -182,6 +305,18 @@ export function initDeployPanel(deps: DeployPanelDeps): DeployPanelHandle | null
     ev.preventDefault();
     if (!nameInput.value.trim()) {
       setStatus(identityStatusEl, "fleet name is required", "err");
+      return;
+    }
+    // k8s provisioning isn't wired end-to-end yet (deploy_provision has no
+    // k8s dispatch — see openabdev/studio#104's discussion of why this isn't
+    // just "swap the driver"). Block here rather than let the wizard proceed
+    // into a Compose step that would fail at the final deploy_provision call.
+    if (providerSel.value === "k8s") {
+      setStatus(
+        identityStatusEl,
+        "Kubernetes provisioning isn't available yet — tracked in openabdev/studio#104",
+        "err",
+      );
       return;
     }
     identityForm.hidden = true;

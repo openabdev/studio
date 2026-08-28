@@ -92,17 +92,43 @@
                 <input id="deploy-fleet-name" class="compose-input" type="text" placeholder="e.g. support-fleet" spellcheck="false" />
               </label>
               <label
-                >Region
-                <input id="deploy-region" class="compose-input" type="text" placeholder="e.g. ap-east-2" spellcheck="false" />
+                >Provider
+                <select id="deploy-provider" class="compose-select">
+                  <option value="aws" selected>AWS (ECS)</option>
+                  <option value="k8s">Kubernetes</option>
+                </select>
               </label>
-              <label
-                >Credential profile
-                <input id="deploy-profile" class="compose-input" type="text" placeholder="e.g. oab-fleet" spellcheck="false" />
-              </label>
-              <label
-                >Principal (optional)
-                <input id="deploy-principal" class="compose-input" type="text" placeholder="arn:aws:iam::…" spellcheck="false" />
-              </label>
+              <div id="deploy-aws-fields">
+                <label
+                  >Region
+                  <input id="deploy-region" class="compose-input" type="text" placeholder="e.g. ap-east-2" spellcheck="false" />
+                </label>
+                <label
+                  >Credential profile
+                  <input id="deploy-profile" class="compose-input" type="text" placeholder="e.g. oab-fleet" spellcheck="false" />
+                </label>
+                <label
+                  >Principal (optional)
+                  <input id="deploy-principal" class="compose-input" type="text" placeholder="arn:aws:iam::…" spellcheck="false" />
+                </label>
+              </div>
+              <div id="deploy-k8s-fields" hidden>
+                <label
+                  >Context
+                  <select id="deploy-k8s-context" class="compose-select"></select>
+                </label>
+                <label
+                  >Namespace
+                  <input id="deploy-k8s-namespace" class="compose-input" type="text" list="deploy-k8s-namespace-options" placeholder="pick existing or type a new one" spellcheck="false" />
+                  <datalist id="deploy-k8s-namespace-options"></datalist>
+                </label>
+                <label
+                  >Service account (optional)
+                  <select id="deploy-k8s-service-account" class="compose-select">
+                    <option value="">— namespace default —</option>
+                  </select>
+                </label>
+              </div>
               <div class="compose-actions">
                 <button type="submit">Next: first instance &rarr;</button>
                 <span class="compose-status" id="deploy-identity-status"></span>

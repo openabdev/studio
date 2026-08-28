@@ -7,7 +7,10 @@
 // regex-based (not a full TOML parser) so it's unit-testable and only ever
 // touches the one array/block it means to.
 
-function quote(s: string): string {
+// Exported so fleetsK8sToml.ts (fleets-k8s.toml's client-side edits, same
+// `[fleet.<name>]` shape) can reuse it instead of duplicating a one-line
+// helper.
+export function quote(s: string): string {
   return JSON.stringify(s);
 }
 
