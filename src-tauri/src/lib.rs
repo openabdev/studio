@@ -118,9 +118,11 @@ async fn compose_preview(
 
 /// Provision an agent from the compose library over MCP (`deploy_provision`):
 /// compose `template ⊕ overlay`, push the bundle to the agent's S3 artifacts
-/// prefix, and redeploy the ECS service at the chosen image tag (agent-deployment
-/// ADR slice 2). The heavy lifting (compose + S3 + apply) runs in the sidecar
-/// with its hermetic AWS env; this is a thin bridge like `deploy_scale`.
+/// prefix, and either redeploy the ECS service (AWS, default) or apply a k8s
+/// Deployment (studio#104: `provider = "k8s"`, applied through the given
+/// `context` — see `t_provision`'s dispatch in `oab-mcp`) at the chosen image
+/// tag. The heavy lifting (compose + S3 + apply) runs in the sidecar with its
+/// hermetic AWS/kube env; this is a thin bridge like `deploy_scale`.
 #[tauri::command]
 async fn deploy_provision(
     core: tauri::State<'_, Core>,
@@ -131,6 +133,9 @@ async fn deploy_provision(
     namespace: Option<String>,
     image: Option<String>,
     cluster: Option<String>,
+    provider: Option<String>,
+    context: Option<String>,
+    expected_principal: Option<String>,
 ) -> Result<Value, String> {
     let cluster = cluster.unwrap_or_else(default_cluster);
     let client = {
@@ -154,6 +159,15 @@ async fn deploy_provision(
     }
     if let Some(img) = image.filter(|s| !s.is_empty()) {
         params["image_tag"] = json!(img);
+    }
+    if let Some(p) = provider.filter(|s| !s.is_empty()) {
+        params["provider"] = json!(p);
+    }
+    if let Some(c) = context.filter(|s| !s.is_empty()) {
+        params["context"] = json!(c);
+    }
+    if let Some(ep) = expected_principal.filter(|s| !s.is_empty()) {
+        params["expected_principal"] = json!(ep);
     }
     match client.call_tool("deploy_provision", params).await {
         Ok(v) => Ok(v),
@@ -287,6 +301,130 @@ async fn fleet_config_write(core: tauri::State<'_, Core>, text: String) -> Resul
         Ok(v) => Ok(v),
         Err(e) => {
             client.log("error", &format!("fleet_config_write: {e}"));
+            Err(e)
+        }
+    }
+}
+
+/// Bridge command: AWS profiles discovered on this machine (studio#104), via
+/// the sidecar's `list_aws_profiles` tool — backs the New Fleet wizard's AWS
+/// profile picker.
+#[tauri::command]
+async fn list_aws_profiles(core: tauri::State<'_, Core>) -> Result<Value, String> {
+    let client = {
+        let guard = core.0.lock().await;
+        guard
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| "core not started yet".to_string())?
+    };
+    match client.call_tool("list_aws_profiles", json!({})).await {
+        Ok(v) => Ok(v),
+        Err(e) => {
+            client.log("error", &format!("list_aws_profiles: {e}"));
+            Err(e)
+        }
+    }
+}
+
+/// Bridge command: kubeconfig contexts discovered on this machine (studio#104),
+/// via the sidecar's `list_k8s_contexts` tool — backs the New Fleet wizard's
+/// k8s context picker.
+#[tauri::command]
+async fn list_k8s_contexts(core: tauri::State<'_, Core>) -> Result<Value, String> {
+    let client = {
+        let guard = core.0.lock().await;
+        guard
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| "core not started yet".to_string())?
+    };
+    match client.call_tool("list_k8s_contexts", json!({})).await {
+        Ok(v) => Ok(v),
+        Err(e) => {
+            client.log("error", &format!("list_k8s_contexts: {e}"));
+            Err(e)
+        }
+    }
+}
+
+/// Bridge command: namespaces in a kubeconfig context (studio#104), via the
+/// sidecar's `list_namespaces` tool — backs the New Fleet wizard's namespace
+/// field's autocomplete.
+#[tauri::command]
+async fn list_namespaces(core: tauri::State<'_, Core>, context: Option<String>) -> Result<Value, String> {
+    let client = {
+        let guard = core.0.lock().await;
+        guard
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| "core not started yet".to_string())?
+    };
+    let mut params = json!({});
+    if let Some(c) = context.filter(|s| !s.is_empty()) {
+        params["context"] = json!(c);
+    }
+    match client.call_tool("list_namespaces", params).await {
+        Ok(v) => Ok(v),
+        Err(e) => {
+            client.log("error", &format!("list_namespaces: {e}"));
+            Err(e)
+        }
+    }
+}
+
+/// Bridge command: service accounts in one namespace of a kubeconfig context
+/// (studio#104), via the sidecar's `list_service_accounts` tool — backs the
+/// New Fleet wizard's optional service-account picker. Per the tool's own
+/// contract, a failure here should read to the caller as "leave it unset,"
+/// not an error — this bridge doesn't editorialize that, it just forwards
+/// whatever the sidecar returns (including an `Err`) and the console decides
+/// how to treat it (deploy.ts's `loadK8sServiceAccounts` swallows failures).
+#[tauri::command]
+async fn list_service_accounts(
+    core: tauri::State<'_, Core>,
+    context: Option<String>,
+    namespace: String,
+) -> Result<Value, String> {
+    let client = {
+        let guard = core.0.lock().await;
+        guard
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| "core not started yet".to_string())?
+    };
+    let mut params = json!({ "namespace": namespace });
+    if let Some(c) = context.filter(|s| !s.is_empty()) {
+        params["context"] = json!(c);
+    }
+    match client.call_tool("list_service_accounts", params).await {
+        Ok(v) => Ok(v),
+        Err(e) => {
+            client.log("error", &format!("list_service_accounts: {e}"));
+            Err(e)
+        }
+    }
+}
+
+/// Bridge command: persist the edited `fleets-k8s.toml` text (studio#104,
+/// k8s counterpart to `fleet_config_write`) via the sidecar's
+/// `k8s_fleet_config_write` tool.
+#[tauri::command]
+async fn k8s_fleet_config_write(core: tauri::State<'_, Core>, text: String) -> Result<Value, String> {
+    let client = {
+        let guard = core.0.lock().await;
+        guard
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| "core not started yet".to_string())?
+    };
+    match client
+        .call_tool("k8s_fleet_config_write", json!({ "text": text }))
+        .await
+    {
+        Ok(v) => Ok(v),
+        Err(e) => {
+            client.log("error", &format!("k8s_fleet_config_write: {e}"));
             Err(e)
         }
     }
@@ -571,6 +709,11 @@ pub fn run() {
             runtime_context,
             fleet_config,
             fleet_config_write,
+            list_aws_profiles,
+            list_k8s_contexts,
+            list_namespaces,
+            list_service_accounts,
+            k8s_fleet_config_write,
             deploy_scale,
             remote_config,
             remote_agents,
