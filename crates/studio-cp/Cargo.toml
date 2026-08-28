@@ -18,3 +18,14 @@ serde = { version = "1.0", features = ["derive"] }
 toml = "0.8"
 dirs = "6"
 tokio = { version = "1.40", features = ["rt-multi-thread", "macros"] }
+# studio#119: mints GKE bearer tokens in-process (same ADC credential chain
+# `gke-gcloud-auth-plugin` itself reads) instead of shelling out to that
+# plugin — sidesteps the GUI-app PATH-visibility problem entirely for GKE
+# specifically (fix-path-env in src-tauri still covers other exec-based
+# providers like Azure kubelogin, which has no equivalent crate).
+gcp_auth = "0.12"
+# Only needed to construct `kube::config::AuthInfo.token` (a
+# `SecretBox<str>`) directly. Pinned to match kube 0.99's own resolved
+# `secrecy` version (0.10.x) so the types actually unify — kube::config
+# doesn't re-export the type.
+secrecy = "0.10"

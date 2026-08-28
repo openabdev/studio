@@ -519,9 +519,38 @@ async fn k8s_client_for(context: Option<&str>) -> anyhow::Result<kube::Client> {
         context: context.map(str::to_string),
         ..Default::default()
     };
-    let config = kube::Config::from_kubeconfig(&options)
+    let mut config = kube::Config::from_kubeconfig(&options)
         .await
         .map_err(|e| anyhow::anyhow!("failed to resolve kubeconfig context: {e}"))?;
+
+    // studio#119: don't shell out to `gke-gcloud-auth-plugin` for GKE
+    // contexts — GUI-launched apps often can't find it on PATH even when
+    // it's correctly installed (fix-path-env in src-tauri covers the general
+    // case, but this sidesteps the problem entirely for GKE specifically).
+    // Mint the bearer token in-process instead, via the same Application
+    // Default Credentials chain the plugin itself reads (gcloud user creds /
+    // GOOGLE_APPLICATION_CREDENTIALS / GCE-GKE metadata server), then set it
+    // directly instead of leaving the exec plugin in place.
+    let is_gke_exec = config
+        .auth_info
+        .exec
+        .as_ref()
+        .and_then(|e| e.command.as_deref())
+        == Some("gke-gcloud-auth-plugin");
+    if is_gke_exec {
+        let provider = gcp_auth::provider()
+            .await
+            .map_err(|e| anyhow::anyhow!("gcp_auth: failed to resolve GCP credentials: {e}"))?;
+        let token = provider
+            .token(&["https://www.googleapis.com/auth/cloud-platform"])
+            .await
+            .map_err(|e| anyhow::anyhow!("gcp_auth: failed to fetch GKE token: {e}"))?;
+        config.auth_info.token = Some(secrecy::SecretBox::new(
+            token.as_str().to_string().into_boxed_str(),
+        ));
+        config.auth_info.exec = None;
+    }
+
     kube::Client::try_from(config).map_err(|e| anyhow::anyhow!("failed to build k8s client: {e}"))
 }
 
