@@ -191,6 +191,10 @@ export function initDeployPanel(deps: DeployPanelDeps): DeployPanelHandle | null
       k8sNamespaceOptions.innerHTML = res.namespaces
         .map((n) => `<option value="${escapeHtml(n)}"></option>`)
         .join("");
+      // studio#119: a prior failed attempt (e.g. before switching context)
+      // can leave its error text on screen — clear it once a load actually
+      // succeeds, otherwise a stale error outlives the state it described.
+      setStatus(identityStatusEl, "");
     } catch (e) {
       // Non-fatal: the namespace field is a free-text input either way (list_
       // namespaces failing just means no autocomplete suggestions).
@@ -238,6 +242,11 @@ export function initDeployPanel(deps: DeployPanelDeps): DeployPanelHandle | null
         opts.push(`<option value="${escapeHtml(c.name)}">${escapeHtml(label)}</option>`);
       }
       k8sContextSel.innerHTML = opts.join("");
+      // studio#119: same staleness fix as loadK8sNamespaces — the
+      // loadK8sNamespaces() call below will overwrite this with its own
+      // result once it resolves, but clear here too so a stale error doesn't
+      // linger for the gap between the two if that call is slow.
+      setStatus(identityStatusEl, "");
     } catch (e) {
       setStatus(identityStatusEl, `k8s context list unavailable: ${errText(e)}`, "err");
     }
