@@ -14,12 +14,24 @@ export interface Pane {
   push(opts: { cls?: string; tag: string; msg: string }): void;
 }
 
+// Only auto-follow new lines while the user is already at (or very near) the
+// bottom — studio#119: unconditionally forcing scrollTop to the bottom on
+// every push fought manual text selection / scroll-up, making the MCP tab's
+// JSON-RPC log (which can push many lines a second) nearly impossible to
+// copy from by hand.
+const STICK_TO_BOTTOM_PX = 24;
+function isNearBottom(el: HTMLElement): boolean {
+  return el.scrollHeight - el.scrollTop - el.clientHeight <= STICK_TO_BOTTOM_PX;
+}
+
 // `onPush` fires after every appended line — used to flag the tab when its pane
 // is not the visible one.
 export function createPane(el: HTMLElement, onPush?: () => void): Pane {
   el.innerHTML = "";
   return {
     push({ cls, tag, msg }) {
+      const stick = isNearBottom(el);
+
       const line = document.createElement("div");
       line.className = cls ? `logline ${cls}` : "logline";
 
@@ -41,10 +53,25 @@ export function createPane(el: HTMLElement, onPush?: () => void): Pane {
       while (el.childElementCount > MAX_LINES && el.firstChild) {
         el.removeChild(el.firstChild);
       }
-      el.scrollTop = el.scrollHeight;
+      if (stick) el.scrollTop = el.scrollHeight;
       onPush?.();
     },
   };
+}
+
+// studio#119: "download log" — reconstructs each line from its `.lt`/`.ll`/
+// `.lm` spans (el.textContent alone glues them together with no whitespace,
+// since there are no text nodes between the spans) rather than copy-pasting
+// out of the scrolling DOM by hand.
+export function paneText(el: HTMLElement): string {
+  return Array.from(el.querySelectorAll<HTMLElement>(".logline"))
+    .map((line) => {
+      const parts = [".lt", ".ll", ".lm"].map(
+        (sel) => line.querySelector<HTMLElement>(sel)?.textContent ?? "",
+      );
+      return parts.join(" ").trim();
+    })
+    .join("\n");
 }
 
 // Minimal shape of the Tauri event global (v2, `withGlobalTauri`).
