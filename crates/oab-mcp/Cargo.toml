@@ -12,3 +12,10 @@ rmcp = { version = "1.7", default-features = false, features = ["server", "trans
 serde_json = "1"
 anyhow = "1.0"
 tokio = { version = "1.40", features = ["rt-multi-thread", "macros"] }
+# studio-cp pulls in both rustls crypto backends transitively (kube's
+# rustls-tls -> hyper-rustls default-features "ring"; the AWS SDK crates
+# default to "aws-lc-rs") and nothing installs a process-level default, so the
+# first real TLS handshake panics ("Could not automatically determine the
+# process-level CryptoProvider"). Depend on rustls directly just to pick one
+# explicitly at startup (studio#119) — aws-lc-rs, matching the AWS SDK side.
+rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs", "std"] }

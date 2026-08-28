@@ -342,6 +342,15 @@ impl OabMcp {
     /// MCP JSON-RPC wire for the stdio front door). Shared by the stdio binary
     /// and the in-process tunnel driver.
     pub async fn from_env() -> Result<Self> {
+        // studio#119: install a process-level rustls CryptoProvider before any
+        // TLS handshake can happen (k8s client build, AWS SDK calls). Without
+        // this, the first handshake panics — both `ring` (via kube's
+        // rustls-tls) and `aws-lc-rs` (via the AWS SDK crates) are present in
+        // the dependency graph and rustls refuses to guess. Ignore the error:
+        // it just means some other path already installed one first, which is
+        // fine — we only need *a* provider installed, not this exact call to
+        // win.
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
         let aws = aws_config::load_defaults(aws_config::BehaviorVersion::latest()).await;
         let default_cluster = std::env::var("OAB_CLUSTER").unwrap_or_else(|_| "oab".to_string());
         let bindings_path = scp::default_bindings_path();
