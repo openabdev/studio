@@ -11,6 +11,7 @@
 import type { Source } from "./source";
 import { libraryNames, renderPreviewHtml, type Library, type BundlePreview } from "./compose";
 import { appendMember, appendFleetBlock } from "./fleetToml";
+import { appendK8sFleetBlock } from "./fleetsK8sToml";
 
 type Invoke = <T>(cmd: string, args?: Record<string, unknown>) => Promise<T>;
 
@@ -307,18 +308,6 @@ export function initDeployPanel(deps: DeployPanelDeps): DeployPanelHandle | null
       setStatus(identityStatusEl, "fleet name is required", "err");
       return;
     }
-    // k8s provisioning isn't wired end-to-end yet (deploy_provision has no
-    // k8s dispatch — see openabdev/studio#104's discussion of why this isn't
-    // just "swap the driver"). Block here rather than let the wizard proceed
-    // into a Compose step that would fail at the final deploy_provision call.
-    if (providerSel.value === "k8s") {
-      setStatus(
-        identityStatusEl,
-        "Kubernetes provisioning isn't available yet — tracked in openabdev/studio#104",
-        "err",
-      );
-      return;
-    }
     identityForm.hidden = true;
     composeSection.hidden = false;
     if (composeHeading) composeHeading.textContent = "Step 2 — first instance";
@@ -373,13 +362,36 @@ export function initDeployPanel(deps: DeployPanelDeps): DeployPanelHandle | null
       return;
     }
     const overlay = ovlSel.value || null;
-    const namespace = "default";
+    // Only "new-fleet" ever reaches provider "k8s" — identityForm (where the
+    // provider <select> lives) is skipped for "add-instance", and reset()
+    // (run on every open()) puts the <select> back to its "aws" default, so
+    // an add-instance submit always sees "aws" here regardless of the fleet
+    // it's adding to. Adding an instance to an *existing* k8s fleet isn't
+    // wired through this wizard yet.
+    const isK8s = mode.kind === "new-fleet" && providerSel.value === "k8s";
+    const namespace = isK8s ? k8sNamespaceInput.value.trim() || "default" : "default";
+    const context = isK8s ? k8sContextSel.value || undefined : undefined;
+    const serviceAccount = isK8s ? k8sServiceAccountSel.value : "";
+    // studio-cp's provision_from_library_k8s expects the full
+    // `system:serviceaccount:<ns>:<name>` form (it extracts the bare name
+    // itself) — same shape as K8sFleetBinding.expected_principal.
+    const expectedPrincipal = serviceAccount
+      ? `system:serviceaccount:${namespace}:${serviceAccount}`
+      : undefined;
     const image = imageInput.value.trim() || null;
     deployBtn.disabled = true;
     setStatus(deployStatusEl, "deploying…");
     let res: { image?: string; digest?: string; objects?: number };
     try {
-      res = await invoke("deploy_provision", { library, template, overlay, name, namespace, image });
+      res = await invoke("deploy_provision", {
+        library,
+        template,
+        overlay,
+        name,
+        namespace,
+        image,
+        ...(isK8s ? { provider: "k8s", context, expected_principal: expectedPrincipal } : {}),
+      });
     } catch (e) {
       setStatus(deployStatusEl, `deploy failed: ${errText(e)}`, "err");
       deployBtn.disabled = false;
@@ -387,24 +399,37 @@ export function initDeployPanel(deps: DeployPanelDeps): DeployPanelHandle | null
     }
     const service = `oab-${namespace}-${name}`;
     const fleetName = mode.kind === "new-fleet" ? nameInput.value.trim() : mode.fleetName;
-    setStatus(deployStatusEl, `deployed ${service} — updating fleets.toml…`, "ok");
+    const configFile = isK8s ? "fleets-k8s.toml" : "fleets.toml";
+    setStatus(deployStatusEl, `deployed ${service} — updating ${configFile}…`, "ok");
     try {
-      const current = await deps.source.fleetConfig();
-      const nextText =
-        mode.kind === "new-fleet"
-          ? appendFleetBlock(current.text, {
-              name: fleetName,
-              member: service,
-              region: regionInput.value.trim() || null,
-              profile: profileInput.value.trim() || null,
-              expectedPrincipal: principalInput.value.trim() || null,
-            })
-          : appendMember(current.text, fleetName, service);
-      await deps.source.writeFleetConfig(nextText);
+      if (isK8s) {
+        const current = await deps.source.k8sFleetConfig();
+        const nextText = appendK8sFleetBlock(current.text, {
+          name: fleetName,
+          member: service,
+          context: context ?? null,
+          namespace,
+          expectedPrincipal: expectedPrincipal ?? null,
+        });
+        await deps.source.writeK8sFleetConfig(nextText);
+      } else {
+        const current = await deps.source.fleetConfig();
+        const nextText =
+          mode.kind === "new-fleet"
+            ? appendFleetBlock(current.text, {
+                name: fleetName,
+                member: service,
+                region: regionInput.value.trim() || null,
+                profile: profileInput.value.trim() || null,
+                expectedPrincipal: principalInput.value.trim() || null,
+              })
+            : appendMember(current.text, fleetName, service);
+        await deps.source.writeFleetConfig(nextText);
+      }
     } catch (e) {
-      // The instance is live but fleets.toml wasn't updated — surface it
+      // The instance is live but the config file wasn't updated — surface it
       // rather than silently leaving the roster's membership stale.
-      setStatus(deployStatusEl, `deployed ${service}, but fleets.toml update failed: ${errText(e)}`, "err");
+      setStatus(deployStatusEl, `deployed ${service}, but ${configFile} update failed: ${errText(e)}`, "err");
       deployBtn.disabled = false;
       return;
     }

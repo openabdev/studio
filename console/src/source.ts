@@ -2,6 +2,7 @@ import type {
   AgentEndpointView,
   Deployment,
   FleetConfig,
+  K8sFleetConfig,
   RegistryConfig,
   FsCapability,
   FsFile,
@@ -13,6 +14,7 @@ import {
   FIXTURE_AGENTS,
   FIXTURE_DEPLOYMENTS,
   FIXTURE_FLEET_CONFIG,
+  FIXTURE_K8S_FLEET_CONFIG,
   FIXTURE_REGISTRY_CONFIG,
   FIXTURE_FS_CAPABILITY,
   FIXTURE_FS_DIRS,
@@ -30,6 +32,12 @@ export interface Source {
   // Persist the raw TOML `text` of the config file, returning the reloaded
   // config. Rejects (without writing) when the text doesn't parse.
   writeFleetConfig(text: string): Promise<FleetConfig>;
+  // The k8s counterpart (studio#104): `fleets-k8s.toml`, a separate file from
+  // AWS's `fleets.toml`. The New Fleet wizard's k8s submit path reads this
+  // first to compute an appended block, since `writeK8sFleetConfig` (like its
+  // AWS sibling) takes the whole file's text with no partial/append primitive.
+  k8sFleetConfig(): Promise<K8sFleetConfig>;
+  writeK8sFleetConfig(text: string): Promise<K8sFleetConfig>;
   // Scale a deployment on (size 1) or off (size 0) — the start/stop action.
   // Reversible: ECS keeps the Spec at desiredCount 0, so no state store is
   // needed. `namespace` is required (the service is `oab-{namespace}-{name}`);
@@ -94,6 +102,14 @@ export class MockSource implements Source {
   // persistence, no server-side TOML validation).
   async writeFleetConfig(text: string): Promise<FleetConfig> {
     return { ...structuredClone(FIXTURE_FLEET_CONFIG), text };
+  }
+  async k8sFleetConfig(): Promise<K8sFleetConfig> {
+    return structuredClone(FIXTURE_K8S_FLEET_CONFIG);
+  }
+  // Browser preview: no core, so "saving" just echoes the text back (no
+  // persistence, no server-side TOML validation).
+  async writeK8sFleetConfig(text: string): Promise<K8sFleetConfig> {
+    return { ...structuredClone(FIXTURE_K8S_FLEET_CONFIG), text };
   }
   // Browser preview: no core, so scaling is a no-op — the fixture roster is
   // re-cloned each poll, so nothing would persist anyway.
@@ -169,6 +185,12 @@ export class TauriSource implements Source {
   }
   async writeFleetConfig(text: string): Promise<FleetConfig> {
     return this.invoke()<FleetConfig>("fleet_config_write", { text });
+  }
+  async k8sFleetConfig(): Promise<K8sFleetConfig> {
+    return this.invoke()<K8sFleetConfig>("k8s_fleet_config");
+  }
+  async writeK8sFleetConfig(text: string): Promise<K8sFleetConfig> {
+    return this.invoke()<K8sFleetConfig>("k8s_fleet_config_write", { text });
   }
   async scaleDeployment(
     name: string,

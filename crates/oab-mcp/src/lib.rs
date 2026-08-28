@@ -249,6 +249,14 @@ pub fn tools() -> Vec<Tool> {
             })),
         ),
         Tool::new(
+            "k8s_fleet_config",
+            "List the configured k8s fleet bindings (fleets-k8s.toml, separate from AWS's fleets.toml): each fleet's name, kubeconfig context, namespace, members, and expected_principal, plus the config file path and raw TOML text. Read-only; the k8s counterpart to `fleet_config` — used to read the current file before computing an appended block, since `k8s_fleet_config_write` takes the whole file's text with no partial/append primitive.",
+            as_map(json!({
+                "type": "object",
+                "properties": {}
+            })),
+        ),
+        Tool::new(
             "k8s_fleet_config_write",
             "Persist the whole k8s fleet-binding config (fleets-k8s.toml, separate from AWS's fleets.toml) from raw TOML `text`. Validates the text parses before writing — a bad edit never lands on disk — and the bytes are stored verbatim, so comments/layout are preserved. Returns the parsed fleets (name, context, namespace, members, expected_principal) plus the raw text. Write tool: overwrites the operator's fleets-k8s.toml.",
             as_map(json!({
@@ -260,6 +268,22 @@ pub fn tools() -> Vec<Tool> {
             })),
         ),
     ]
+}
+
+fn k8s_fleets_json(bindings: &scp::K8sFleetBindings) -> Vec<Value> {
+    bindings
+        .fleets
+        .iter()
+        .map(|b| {
+            json!({
+                "name": b.name,
+                "context": b.context,
+                "namespace": b.namespace,
+                "members": b.members,
+                "expected_principal": b.expected_principal,
+            })
+        })
+        .collect()
 }
 
 fn deployment_json(d: &scp::Deployment) -> Value {
@@ -375,6 +399,7 @@ impl OabMcp {
             "list_k8s_contexts" => self.t_list_k8s_contexts(args),
             "list_namespaces" => self.t_list_namespaces(args).await,
             "list_service_accounts" => self.t_list_service_accounts(args).await,
+            "k8s_fleet_config" => self.t_k8s_fleet_config(args),
             "k8s_fleet_config_write" => self.t_k8s_fleet_write(args),
             other => anyhow::bail!("unknown tool {other:?}"),
         }
@@ -845,12 +870,35 @@ impl OabMcp {
         Ok(json!({ "service_accounts": service_accounts }))
     }
 
+    /// The declarative k8s fleet-binding config, read-only — the k8s
+    /// counterpart to `t_fleet_config`. Unlike AWS bindings, k8s bindings
+    /// aren't cached anywhere in `OabMcp`, so this loads fresh from disk each
+    /// call. Exists so a caller (the New Fleet wizard's k8s submit path) can
+    /// read the current `fleets-k8s.toml` text before computing an appended
+    /// block — `k8s_fleet_config_write` takes the whole file, no partial/
+    /// append primitive.
+    fn t_k8s_fleet_config(&self, _args: &Map<String, Value>) -> Result<Value> {
+        let path = scp::default_k8s_bindings_path();
+        let bindings = match &path {
+            Some(p) => scp::load_k8s_bindings(p).unwrap_or_default(),
+            None => scp::K8sFleetBindings::default(),
+        };
+        let text = match &path {
+            Some(p) => scp::read_bindings_text(p).unwrap_or_default(),
+            None => String::new(),
+        };
+        Ok(json!({
+            "path": path.map(|p| p.display().to_string()),
+            "fleets": k8s_fleets_json(&bindings),
+            "text": text,
+        }))
+    }
+
     /// Write tool: persist the whole `fleets-k8s.toml` from the editor's
     /// `text` after validating it parses, mirroring `t_fleet_write`'s
     /// AWS-side shape. Unlike AWS bindings, k8s bindings aren't cached
-    /// anywhere in `OabMcp` yet (nothing here dispatches provisioning to
-    /// `K8sDriver` yet either — that's a separate item), so this is a plain
-    /// validate-then-write with no in-memory state to invalidate.
+    /// anywhere in `OabMcp`, so this is a plain validate-then-write with no
+    /// in-memory state to invalidate.
     fn t_k8s_fleet_write(&self, args: &Map<String, Value>) -> Result<Value> {
         let text = args
             .get("text")
@@ -859,20 +907,9 @@ impl OabMcp {
         let path = scp::default_k8s_bindings_path()
             .ok_or_else(|| anyhow::anyhow!("no k8s fleet config path resolved; cannot write bindings"))?;
         let bindings = scp::save_k8s_bindings_text(&path, text)?;
-        let fleets: Vec<Value> = bindings
-            .fleets
-            .iter()
-            .map(|b| json!({
-                "name": b.name,
-                "context": b.context,
-                "namespace": b.namespace,
-                "members": b.members,
-                "expected_principal": b.expected_principal,
-            }))
-            .collect();
         Ok(json!({
             "path": path.display().to_string(),
-            "fleets": fleets,
+            "fleets": k8s_fleets_json(&bindings),
             "text": text,
         }))
     }
@@ -959,7 +996,7 @@ mod tests {
             .iter()
             .map(|t| t["name"].as_str().expect("tool has a name").to_string())
             .collect();
-        assert_eq!(names.len(), 16);
+        assert_eq!(names.len(), 17);
         for expected in [
             "deploy_list",
             "deploy_get",
@@ -976,6 +1013,7 @@ mod tests {
             "list_k8s_contexts",
             "list_namespaces",
             "list_service_accounts",
+            "k8s_fleet_config",
             "k8s_fleet_config_write",
         ] {
             assert!(names.contains(&expected.to_string()), "missing {expected}");

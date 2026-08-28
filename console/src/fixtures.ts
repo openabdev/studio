@@ -2,6 +2,7 @@ import type {
   AgentEndpointView,
   Deployment,
   FleetConfig,
+  K8sFleetConfig,
   RegistryConfig,
   FsCapability,
   FsEntry,
@@ -219,4 +220,14 @@ members = ["oab-prod-mira"]
 region = "ap-east-2"
 profile = "oab-fleet"
 `,
+};
+
+// Stand-in k8s fleet-binding config (studio#104) — empty, since no k8s fleet
+// exists yet in the demo fixtures; the browser build's New Fleet wizard still
+// exercises the k8s provider path (context/namespace pickers use their own
+// fixtures), just starting from a blank `fleets-k8s.toml`.
+export const FIXTURE_K8S_FLEET_CONFIG: K8sFleetConfig = {
+  path: "~/.config/oab-studio/fleets-k8s.toml",
+  fleets: [],
+  text: "",
 };
