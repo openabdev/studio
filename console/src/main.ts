@@ -120,6 +120,14 @@ document
   .getElementById("debug-close")
   ?.addEventListener("click", closeDebugDrawer);
 
+// Global entry point (top bar, right of "Check for updates") — opens the
+// same drawer the per-fleet `[⚙]` buttons do, scoped to whichever cluster is
+// currently active rather than a specific fleet, so it's reachable without
+// drilling into a fleet first.
+document.getElementById("global-debug-btn")?.addEventListener("click", () => {
+  openDebugDrawer(clusterLabel?.textContent || "studio");
+});
+
 const activity = logEl ? createPane(logEl, () => flag("log")) : null;
 const mcp = mcpEl ? createPane(mcpEl, () => flag("mcpio")) : null;
 

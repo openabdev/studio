@@ -176,6 +176,25 @@ body {
   border-color: var(--s-starting);
 }
 
+/* Global Debug drawer entry point — same icon as the per-fleet `[⚙]`
+   (`.fd-gear`), but always available regardless of which fleet (if any) is
+   selected, so debugging isn't gated on drilling into a fleet first. */
+.debug-btn-global {
+  appearance: none;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.debug-btn-global:hover {
+  color: var(--text);
+  border-color: var(--s-starting);
+}
+
 .content {
   display: flex;
   flex-direction: column;
