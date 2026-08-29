@@ -1086,21 +1086,26 @@ async fn provision_acp_auth_secret(
 /// networking from `oabctl::create::default_networking` (same discovery
 /// `oabctl create`'s CLI wizard uses, minus the interactive prompts),
 /// resources 256/512 (the CLI wizard's own default), `FARGATE`/`X86_64`
-/// (the schema's own `#[serde(default)]` values), no ingress. ACP defaults
-/// to enabled (studio#119 follow-up) — `secrets` carries the generated
-/// `OPENAB_ACP_AUTH_KEY` this needs, so it's no longer always empty.
+/// (the schema's own `#[serde(default)]` values), no ingress. `acp_enabled`
+/// (studio#119 follow-up, studio#128 made it caller-controlled instead of
+/// hardcoded — agy can't honor it) — when true, `secrets` carries the
+/// generated `OPENAB_ACP_AUTH_KEY` this needs; when false, no ACP secret is
+/// generated at all, nothing to clean up.
 async fn build_default_manifest(
     aws_config: &aws_config::SdkConfig,
     namespace: &str,
     name: &str,
     image: &str,
     bucket: &str,
+    acp_enabled: bool,
 ) -> anyhow::Result<oabctl::manifest::OABServiceManifest> {
     let net = oabctl::create::default_networking(aws_config, name).await?;
     let config_from = default_config_from_uri(bucket, namespace, name);
-    let acp_auth_ref = provision_acp_auth_secret(aws_config, namespace, name).await?;
     let mut secrets = std::collections::HashMap::new();
-    secrets.insert("OPENAB_ACP_AUTH_KEY".to_string(), acp_auth_ref);
+    if acp_enabled {
+        let acp_auth_ref = provision_acp_auth_secret(aws_config, namespace, name).await?;
+        secrets.insert("OPENAB_ACP_AUTH_KEY".to_string(), acp_auth_ref);
+    }
     Ok(oabctl::manifest::OABServiceManifest {
         api_version: "oab.dev/v2".to_string(),
         kind: "OABService".to_string(),
@@ -1130,7 +1135,7 @@ async fn build_default_manifest(
                 },
             }),
             ingress: None,
-            acp_enabled: Some(true),
+            acp_enabled: Some(acp_enabled),
         },
     })
 }
@@ -1210,7 +1215,11 @@ pub async fn provision_from_library(
             .await?
         }
         None => {
-            let mut manifest = build_default_manifest(aws_config, namespace, name, &image, &bucket).await?;
+            // studio#119's original default — always on — unchanged for this
+            // (compose-library) path; the caller-controlled toggle is
+            // studio#128's wizard-only `provision_agent`.
+            let mut manifest =
+                build_default_manifest(aws_config, namespace, name, &image, &bucket, true).await?;
             manifest.spec.bundle_from = Some(oabctl::studio_api::bundle_from_uri(&bucket, namespace, name));
             oabctl::studio_api::provision_manifest(aws_config, cluster, &manifest, &objects, Some(&bucket))
                 .await?
@@ -1253,6 +1262,13 @@ pub struct AgentWizardInput {
     pub chat_bot_token: Option<String>,
     /// LINE only.
     pub chat_channel_secret: Option<String>,
+    /// studio#128: caller-controlled, no reliance on `#[derive(Default)]`'s
+    /// `false` — the MCP tool layer defaults this to `true` when absent
+    /// from the caller's args (Brett: enable ACP by default), this struct
+    /// itself has no opinion. `provision_agent_k8s` still refuses a
+    /// non-empty `chat_platform` regardless of this field — unrelated
+    /// constraints.
+    pub acp_enabled: bool,
 }
 
 /// Stores [`AgentWizardInput`]'s secret-bearing fields in the same
@@ -1457,7 +1473,8 @@ pub async fn provision_agent(
             .await?
         }
         None => {
-            let mut manifest = build_default_manifest(aws_config, namespace, name, image, &bucket).await?;
+            let mut manifest =
+                build_default_manifest(aws_config, namespace, name, image, &bucket, input.acp_enabled).await?;
             manifest.spec.bundle_from = Some(oabctl::studio_api::bundle_from_uri(&bucket, namespace, name));
             oabctl::studio_api::provision_manifest(aws_config, cluster, &manifest, &objects, Some(&bucket))
                 .await?
@@ -1541,7 +1558,18 @@ pub async fn provision_agent_k8s(
             stored.spec.image = image.to_string();
             stored
         }
-        None => build_default_k8s_manifest(context, namespace, name, image, &bucket, expected_principal).await?,
+        None => {
+            build_default_k8s_manifest(
+                context,
+                namespace,
+                name,
+                image,
+                &bucket,
+                expected_principal,
+                input.acp_enabled,
+            )
+            .await?
+        }
     };
     manifest.spec.bundle_from = Some(oabctl::studio_api::bundle_from_uri(&bucket, namespace, name));
 
@@ -1635,11 +1663,14 @@ async fn build_default_k8s_manifest(
     image: &str,
     bucket: &str,
     expected_principal: Option<&str>,
+    acp_enabled: bool,
 ) -> anyhow::Result<oabctl::manifest::OABServiceManifest> {
     let config_from = default_config_from_uri(bucket, namespace, name);
-    let acp_auth_ref = provision_acp_auth_k8s_secret(context, namespace, name).await?;
     let mut secrets = std::collections::HashMap::new();
-    secrets.insert("OPENAB_ACP_AUTH_KEY".to_string(), acp_auth_ref);
+    if acp_enabled {
+        let acp_auth_ref = provision_acp_auth_k8s_secret(context, namespace, name).await?;
+        secrets.insert("OPENAB_ACP_AUTH_KEY".to_string(), acp_auth_ref);
+    }
     Ok(oabctl::manifest::OABServiceManifest {
         api_version: "oab.dev/v2".to_string(),
         kind: "OABService".to_string(),
@@ -1664,7 +1695,7 @@ async fn build_default_k8s_manifest(
                 tolerations: Vec::new(),
             }),
             ingress: None,
-            acp_enabled: Some(true),
+            acp_enabled: Some(acp_enabled),
         },
     })
 }
@@ -1729,7 +1760,13 @@ pub async fn provision_from_library_k8s(
             stored.spec.image = image.clone();
             stored
         }
-        None => build_default_k8s_manifest(context, namespace, name, &image, &bucket, expected_principal).await?,
+        // studio#119's original default — always on — unchanged for this
+        // (compose-library) path; the caller-controlled toggle is
+        // studio#128's wizard-only `provision_agent_k8s`.
+        None => {
+            build_default_k8s_manifest(context, namespace, name, &image, &bucket, expected_principal, true)
+                .await?
+        }
     };
     manifest.spec.bundle_from = Some(oabctl::studio_api::bundle_from_uri(&bucket, namespace, name));
 

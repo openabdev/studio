@@ -192,6 +192,7 @@ async fn deploy_provision_agent(
     chat_platform: Option<String>,
     chat_bot_token: Option<String>,
     chat_channel_secret: Option<String>,
+    acp_enabled: Option<bool>,
     cluster: Option<String>,
     provider: Option<String>,
     context: Option<String>,
@@ -224,6 +225,9 @@ async fn deploy_provision_agent(
     }
     if let Some(s) = chat_channel_secret.filter(|s| !s.is_empty()) {
         params["chat_channel_secret"] = json!(s);
+    }
+    if let Some(a) = acp_enabled {
+        params["acp_enabled"] = json!(a);
     }
     if let Some(p) = provider.filter(|s| !s.is_empty()) {
         params["provider"] = json!(p);

@@ -1,15 +1,18 @@
-// The deploy action panel (ADR #83 §7.5): `[+ New fleet]` (7.2) and `[+ Add
-// instance]` (7.3) both land here — the same compose→preview→deploy engine
-// (agent-deployment-templates.md, reused via `compose.ts`'s exported pure
-// helpers), differing only in whether a fleet-identity step runs first.
+// The deploy action panel (ADR #83 §7.5, redesigned per studio#128):
+// `[+ New fleet]` (7.2) and `[+ Add instance]` (7.3) both land here —
+// vendor + optional API key + optional chat platform + ACP toggle compose
+// config.toml server-side (`deploy_provision_agent`, studio-cp's
+// `generate_agent_config`) — differing only in whether a fleet-identity
+// step runs first. No compose library / template ⊕ overlay involved
+// anymore (that path — `compose.ts`, `deploy_provision` — still exists for
+// anything still using it, just not this wizard).
 //
-// After a successful `deploy_provision`, this module computes the updated
-// `fleets.toml` text (`fleetToml.ts`, pure) and persists it via
+// After a successful `deploy_provision_agent`, this module computes the
+// updated `fleets.toml` text (`fleetToml.ts`, pure) and persists it via
 // `source.writeFleetConfig` — per the ADR, `fleets.toml` is only ever mutated
 // after a confirmed successful provision, never before or speculatively.
 
 import type { Source } from "./source";
-import { libraryNames, renderPreviewHtml, type Library, type BundlePreview } from "./compose";
 import { appendMember, appendFleetBlock } from "./fleetToml";
 import { appendK8sFleetBlock } from "./fleetsK8sToml";
 
@@ -32,12 +35,6 @@ function escapeHtml(s: string): string {
     .replace(/"/g, "&quot;");
 }
 
-function fillOptions(sel: HTMLSelectElement, names: string[], keepNoneFirst: boolean): void {
-  const opts = keepNoneFirst ? ['<option value="">— none (bare template) —</option>'] : [];
-  for (const n of names) opts.push(`<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`);
-  sel.innerHTML = opts.join("");
-}
-
 // list_k8s_contexts / list_namespaces response shapes (oab-mcp, studio#104) —
 // kept minimal (just what this panel reads), not the tools' full contract.
 interface K8sContextsResponse {
@@ -49,6 +46,25 @@ interface K8sNamespacesResponse {
 }
 interface K8sServiceAccountsResponse {
   service_accounts: string[];
+}
+interface VendorImageTagsResponse {
+  beta: string | null;
+  stable: string | null;
+}
+
+// Vendors known to use an interactive device-auth login (`<cli> login
+// --device-auth`/`--use-device-flow`) rather than a static API key — can't
+// be completed from this wizard, has to happen after the agent is up.
+const DEVICE_AUTH_VENDORS = new Set(["codex", "kiro"]);
+
+// studio#128: pre-fills the Agent name field; still freely editable.
+const GREEK_GODS = [
+  "Zeus", "Hera", "Poseidon", "Demeter", "Athena", "Apollo", "Artemis", "Ares",
+  "Aphrodite", "Hephaestus", "Hermes", "Dionysus", "Hades", "Hestia", "Persephone",
+  "Hypnos", "Nike", "Iris", "Eros", "Pan",
+];
+function randomGreekName(): string {
+  return GREEK_GODS[Math.floor(Math.random() * GREEK_GODS.length)];
 }
 
 export type DeployMode = { kind: "new-fleet" } | { kind: "add-instance"; fleetName: string };
@@ -112,14 +128,20 @@ export function initDeployPanel(deps: DeployPanelDeps): DeployPanelHandle | null
   const identityStatusEl = document.getElementById("deploy-identity-status");
   const composeSection = document.getElementById("deploy-compose");
   const composeHeading = document.getElementById("deploy-compose-heading");
-  const tmplSel = document.getElementById("deploy-template") as HTMLSelectElement | null;
-  const ovlSel = document.getElementById("deploy-overlay") as HTMLSelectElement | null;
-  const previewForm = document.getElementById("deploy-form") as HTMLFormElement | null;
-  const previewOut = document.getElementById("deploy-preview");
-  const previewStatusEl = document.getElementById("deploy-status");
-  const deployForm = document.getElementById("deploy-deploy-form") as HTMLFormElement | null;
-  const agentNameInput = document.getElementById("deploy-name") as HTMLInputElement | null;
+  const deployForm = document.getElementById("deploy-agent-form") as HTMLFormElement | null;
+  const vendorSel = document.getElementById("deploy-vendor") as HTMLSelectElement | null;
   const imageInput = document.getElementById("deploy-image") as HTMLInputElement | null;
+  const apiKeyInput = document.getElementById("deploy-api-key") as HTMLInputElement | null;
+  const deviceAuthHint = document.getElementById("deploy-device-auth-hint");
+  const chatPlatformSel = document.getElementById("deploy-chat-platform") as HTMLSelectElement | null;
+  const chatTokenWrap = document.getElementById("deploy-chat-token-wrap");
+  const chatTokenInput = document.getElementById("deploy-chat-token") as HTMLInputElement | null;
+  const chatSecretWrap = document.getElementById("deploy-chat-secret-wrap");
+  const chatSecretInput = document.getElementById("deploy-chat-secret") as HTMLInputElement | null;
+  const acpCheckbox = document.getElementById("deploy-acp-enabled") as HTMLInputElement | null;
+  const acpAgyHint = document.getElementById("deploy-acp-agy-hint");
+  const agentNameInput = document.getElementById("deploy-name") as HTMLInputElement | null;
+  const agentNameShuffleBtn = document.getElementById("deploy-name-shuffle") as HTMLButtonElement | null;
   const deployBtn = document.getElementById("deploy-deploy-btn") as HTMLButtonElement | null;
   const deployStatusEl = document.getElementById("deploy-deploy-status");
 
@@ -140,19 +162,26 @@ export function initDeployPanel(deps: DeployPanelDeps): DeployPanelHandle | null
     !k8sNamespaceNewInput ||
     !k8sServiceAccountSel ||
     !composeSection ||
-    !tmplSel ||
-    !ovlSel ||
-    !previewForm ||
     !deployForm ||
-    !agentNameInput ||
+    !vendorSel ||
     !imageInput ||
+    !apiKeyInput ||
+    !deviceAuthHint ||
+    !chatPlatformSel ||
+    !chatTokenWrap ||
+    !chatTokenInput ||
+    !chatSecretWrap ||
+    !chatSecretInput ||
+    !acpCheckbox ||
+    !acpAgyHint ||
+    !agentNameInput ||
+    !agentNameShuffleBtn ||
     !deployBtn
   ) {
     return null;
   }
 
   let mode: DeployMode | null = null;
-  let library: Library | null = null;
 
   const setStatus = (el: HTMLElement | null, msg: string, cls = ""): void => {
     if (!el) return;
@@ -160,20 +189,70 @@ export function initDeployPanel(deps: DeployPanelDeps): DeployPanelHandle | null
     el.className = cls ? `compose-status ${cls}` : "compose-status";
   };
 
+  // studio#128: which chat-token field(s) apply depends on the platform —
+  // Discord/Telegram need just a bot token, LINE needs both a channel
+  // access token *and* a channel secret. "— none —" needs neither (ACP is
+  // the connection path).
+  const applyChatPlatformMode = (): void => {
+    const platform = chatPlatformSel.value;
+    chatTokenWrap.hidden = platform === "";
+    chatSecretWrap.hidden = platform !== "line";
+    if (platform === "") {
+      chatTokenInput.value = "";
+      chatSecretInput.value = "";
+    }
+  };
+
+  // studio#128: agy's bridge bypasses openab-gateway's /acp route entirely
+  // (confirmed by reading agy-acp/src/main.rs) — forced off, not just
+  // defaulted off, so a leftover checked state from a previous vendor can't
+  // silently carry through to a vendor that can't honor it. Device-auth
+  // vendors (codex/kiro) get an inline note since the API key field can't
+  // help them — that login has to happen after the agent is up.
+  const applyVendorMode = (): void => {
+    const vendor = vendorSel.value;
+    const isAgy = vendor === "antigravity";
+    acpCheckbox.disabled = isAgy;
+    acpAgyHint.hidden = !isAgy;
+    if (isAgy) acpCheckbox.checked = false;
+    deviceAuthHint.hidden = !DEVICE_AUTH_VENDORS.has(vendor);
+  };
+
+  // studio#128: pre-fills Image tag from GHCR's actually-published tags for
+  // the selected vendor — prefers Stable, falls back to Beta, and leaves
+  // the field for manual entry if neither resolved (a failed GHCR/GitHub
+  // call, or a vendor with no published image yet — never blocks the
+  // field, per Brett: "Image tag is allow to be manually input by user").
+  const loadVendorImage = async (): Promise<void> => {
+    const invoke = tauriInvoke();
+    if (!invoke) return;
+    const vendor = vendorSel.value;
+    imageInput.placeholder = "resolving…";
+    try {
+      const res = await invoke<VendorImageTagsResponse>("resolve_vendor_image_tags", { vendor });
+      const resolved = res.stable ?? res.beta;
+      if (resolved) imageInput.value = resolved;
+      imageInput.placeholder = resolved ?? "e.g. pre-beta-" + vendor;
+    } catch (e) {
+      imageInput.placeholder = "e.g. pre-beta-" + vendor;
+      setStatus(deployStatusEl, `image tag lookup unavailable: ${errText(e)}`, "err");
+    }
+  };
+
   const reset = (): void => {
     identityForm.reset();
-    previewForm.reset();
     deployForm.reset();
-    deployForm.hidden = true;
-    if (previewOut) previewOut.innerHTML = "";
     setStatus(identityStatusEl, "");
-    setStatus(previewStatusEl, "");
     setStatus(deployStatusEl, "");
     // identityForm.reset() puts <select id="deploy-provider"> back to its
     // `selected` default ("aws"), but doesn't touch the field-group `hidden`
     // attributes this panel manages by hand — sync those too.
     showProviderFields(providerSel.value);
     applyNamespaceMode();
+    applyChatPlatformMode();
+    applyVendorMode();
+    agentNameInput.value = randomGreekName();
+    void loadVendorImage();
   };
 
   // studio#119: the namespace <select>'s "+ Create new namespace…" sentinel
@@ -299,21 +378,14 @@ export function initDeployPanel(deps: DeployPanelDeps): DeployPanelHandle | null
   // tool call per character typed into the new-namespace field.
   k8sNamespaceNewInput.addEventListener("change", () => void loadK8sServiceAccounts());
 
-  const loadLibraryAndPickers = async (): Promise<void> => {
-    const invoke = tauriInvoke();
-    if (!invoke) {
-      setStatus(previewStatusEl, "browser build — deploy unavailable");
-      return;
-    }
-    try {
-      library = await invoke<Library>("compose_library_get");
-      const { templates, overlays } = libraryNames(library);
-      fillOptions(tmplSel, templates, false);
-      fillOptions(ovlSel, overlays, true);
-    } catch (e) {
-      setStatus(previewStatusEl, `library load failed: ${errText(e)}`, "err");
-    }
-  };
+  vendorSel.addEventListener("change", () => {
+    applyVendorMode();
+    void loadVendorImage();
+  });
+  chatPlatformSel.addEventListener("change", applyChatPlatformMode);
+  agentNameShuffleBtn.addEventListener("click", () => {
+    agentNameInput.value = randomGreekName();
+  });
 
   const open = (m: DeployMode): void => {
     mode = m;
@@ -331,7 +403,6 @@ export function initDeployPanel(deps: DeployPanelDeps): DeployPanelHandle | null
     if (configEl) configEl.hidden = true;
     if (fleetDetailEl) fleetDetailEl.hidden = true;
     wrap.hidden = false;
-    void loadLibraryAndPickers();
   };
 
   const close = (): void => {
@@ -356,55 +427,25 @@ export function initDeployPanel(deps: DeployPanelDeps): DeployPanelHandle | null
     if (composeHeading) composeHeading.textContent = "Step 2 — first instance";
   });
 
-  previewForm.addEventListener("submit", async (ev) => {
-    ev.preventDefault();
-    const invoke = tauriInvoke();
-    if (!invoke || !library) {
-      setStatus(previewStatusEl, "deploy unavailable", "err");
-      return;
-    }
-    const template = tmplSel.value;
-    if (!template) {
-      setStatus(previewStatusEl, "pick a template to preview", "err");
-      return;
-    }
-    const overlay = ovlSel.value || null;
-    setStatus(previewStatusEl, "composing…");
-    try {
-      const preview = await invoke<BundlePreview>("compose_preview", { library, template, overlay });
-      if (previewOut) previewOut.innerHTML = renderPreviewHtml(preview);
-      setStatus(previewStatusEl, `composed — ${preview.files.length} files`, "ok");
-      deployForm.hidden = false;
-      if (!agentNameInput.value) agentNameInput.value = overlay ?? template;
-      imageInput.placeholder = preview.image_tag;
-      setStatus(deployStatusEl, "");
-    } catch (e) {
-      if (previewOut) previewOut.innerHTML = "";
-      deployForm.hidden = true;
-      setStatus(previewStatusEl, `compose failed: ${errText(e)}`, "err");
-    }
-  });
-
-  // The failure rule from 7.5.1/7.5.2: if `deploy_provision` fails, stop — no
-  // `fleet_config_write` call, `fleets.toml` is untouched.
+  // The failure rule from 7.5.1/7.5.2: if `deploy_provision_agent` fails,
+  // stop — no `fleet_config_write` call, `fleets.toml` is untouched.
   deployForm.addEventListener("submit", async (ev) => {
     ev.preventDefault();
     const invoke = tauriInvoke();
-    if (!invoke || !library || !mode) {
+    if (!invoke || !mode) {
       setStatus(deployStatusEl, "deploy unavailable", "err");
       return;
     }
-    const template = tmplSel.value;
     const name = agentNameInput.value.trim();
-    if (!template) {
-      setStatus(deployStatusEl, "preview a template first", "err");
-      return;
-    }
     if (!name) {
       setStatus(deployStatusEl, "agent name is required", "err");
       return;
     }
-    const overlay = ovlSel.value || null;
+    const image = imageInput.value.trim();
+    if (!image) {
+      setStatus(deployStatusEl, "image tag is required", "err");
+      return;
+    }
     // Only "new-fleet" ever reaches provider "k8s" — identityForm (where the
     // provider <select> lives) is skipped for "add-instance", and reset()
     // (run on every open()) puts the <select> back to its "aws" default, so
@@ -415,24 +456,37 @@ export function initDeployPanel(deps: DeployPanelDeps): DeployPanelHandle | null
     const namespace = isK8s ? currentNamespace() || "default" : "default";
     const context = isK8s ? k8sContextSel.value || undefined : undefined;
     const serviceAccount = isK8s ? k8sServiceAccountSel.value : "";
-    // studio-cp's provision_from_library_k8s expects the full
+    // studio-cp's provision_agent_k8s expects the full
     // `system:serviceaccount:<ns>:<name>` form (it extracts the bare name
     // itself) — same shape as K8sFleetBinding.expected_principal.
     const expectedPrincipal = serviceAccount
       ? `system:serviceaccount:${namespace}:${serviceAccount}`
       : undefined;
-    const image = imageInput.value.trim() || null;
+    const chatPlatform = chatPlatformSel.value || undefined;
+    // k8s deploys refuse a chat platform server-side (config.toml secret
+    // resolution needs AWS credentials a k8s pod doesn't have) — check here
+    // too so the failure reads as a validation message, not a deploy error.
+    if (isK8s && chatPlatform) {
+      setStatus(
+        deployStatusEl,
+        "chat platform integration isn't available for k8s deploys yet — use ACP, or switch Provider to AWS",
+        "err",
+      );
+      return;
+    }
     deployBtn.disabled = true;
     setStatus(deployStatusEl, "deploying…");
     let res: { image?: string; digest?: string; objects?: number };
     try {
-      res = await invoke("deploy_provision", {
-        library,
-        template,
-        overlay,
+      res = await invoke("deploy_provision_agent", {
+        image,
         name,
         namespace,
-        image,
+        api_key: apiKeyInput.value.trim() || undefined,
+        chat_platform: chatPlatform,
+        chat_bot_token: chatTokenInput.value.trim() || undefined,
+        chat_channel_secret: chatSecretInput.value.trim() || undefined,
+        acp_enabled: acpCheckbox.checked,
         ...(isK8s ? { provider: "k8s", context, expected_principal: expectedPrincipal } : {}),
       });
     } catch (e) {
@@ -477,7 +531,7 @@ export function initDeployPanel(deps: DeployPanelDeps): DeployPanelHandle | null
       return;
     }
     deployBtn.disabled = false;
-    const info: DeployedInfo = { fleetName, service, image: res.image ?? image ?? template };
+    const info: DeployedInfo = { fleetName, service, image: res.image ?? image };
     close();
     await deps.onDeployed(info);
   });
