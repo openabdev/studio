@@ -51,6 +51,23 @@ pub(crate) fn parse_k8s_secret_uri(value: &str) -> Option<Result<(&str, &str)>> 
     })
 }
 
+/// Parse `k8s-configmap://<configmap-name>#<key>` into `(configmap_name,
+/// key)` — `spec.configFrom`'s k8s-native counterpart to `k8s-secret://`
+/// (studio#138). Same shape, same "pure parsing, no API call" contract: the
+/// ConfigMap itself must already exist in the target namespace by the time
+/// `k8s_driver::build_deployment` mounts it.
+pub(crate) fn parse_k8s_configmap_uri(value: &str) -> Option<Result<(&str, &str)>> {
+    let rest = value.strip_prefix("k8s-configmap://")?;
+    Some(match rest.rsplit_once('#') {
+        Some((config_map_name, key)) if !config_map_name.is_empty() && !key.is_empty() => {
+            Ok((config_map_name, key))
+        }
+        _ => Err(anyhow::anyhow!(
+            "invalid k8s-configmap:// ref '{value}' — expected k8s-configmap://<configmap-name>#<key>"
+        )),
+    })
+}
+
 /// Resolve a `spec.secrets` value into the ECS-native `valueFrom` format ECS
 /// actually requires. ECS's `valueFrom` requires the *full* ARN (not just a
 /// secret name) whenever a JSON-key suffix is present, so an `aws-sm://`
@@ -306,5 +323,31 @@ mod tests {
     fn parse_k8s_secret_uri_returns_none_for_other_schemes() {
         assert!(parse_k8s_secret_uri("aws-sm://oab/telegram/pahudxbot#TOKEN").is_none());
         assert!(parse_k8s_secret_uri("plain-secret-name").is_none());
+    }
+
+    #[test]
+    fn parse_k8s_configmap_uri_extracts_name_and_key() {
+        let (name, key) = parse_k8s_configmap_uri("k8s-configmap://oab-orca-config#config.toml")
+            .unwrap()
+            .unwrap();
+        assert_eq!(name, "oab-orca-config");
+        assert_eq!(key, "config.toml");
+    }
+
+    #[test]
+    fn parse_k8s_configmap_uri_rejects_missing_hash() {
+        assert!(parse_k8s_configmap_uri("k8s-configmap://oab-orca-config").unwrap().is_err());
+    }
+
+    #[test]
+    fn parse_k8s_configmap_uri_rejects_empty_parts() {
+        assert!(parse_k8s_configmap_uri("k8s-configmap://#config.toml").unwrap().is_err());
+        assert!(parse_k8s_configmap_uri("k8s-configmap://oab-orca-config#").unwrap().is_err());
+    }
+
+    #[test]
+    fn parse_k8s_configmap_uri_returns_none_for_other_schemes() {
+        assert!(parse_k8s_configmap_uri("s3://bucket/artifacts/prod/orca/config.toml").is_none());
+        assert!(parse_k8s_configmap_uri("k8s-secret://oab-orca#DISCORD_BOT_TOKEN").is_none());
     }
 }

@@ -1571,63 +1571,66 @@ pub async fn provision_agent_k8s(
              directly, or deploy this agent to ECS instead."
         );
     }
+    // `provision_agent_secrets` only ever touches AWS Secrets Manager when
+    // `input.api_key` is set (chat-platform secrets are unreachable here —
+    // the bail! above already refused those) — a no-op otherwise, so this
+    // stays harmless for the common "no vendor API key" k8s deploy.
     provision_agent_secrets(aws_config, namespace, name, &input).await?;
     let config_toml = generate_agent_config(namespace, name, &input).into_bytes();
     if let Some(folder) = local_config_folder {
         write_local_agent_config(folder, name, &config_toml)?;
     }
-    let mut bundle = studio_compose::Bundle {
+
+    // studio#138: k8s pods read config.toml from a mounted ConfigMap — the
+    // same pattern openab's own Helm chart already uses
+    // (`charts/openab/templates/configmap.yaml`), and the image's own
+    // default CMD already points at `/etc/openab/config.toml` unprompted
+    // (see `k8s_driver::build_deployment`) — instead of the S3
+    // bundle.zip + `hooks.pre_seed` carrier the AWS path uses. A k8s deploy
+    // now never touches S3, and the pod itself never needs AWS credentials
+    // just to boot.
+    let config_from = provision_config_k8s_configmap(context, namespace, name, &config_toml).await?;
+
+    // Content-address of what's actually being applied — reuses
+    // `studio_compose::Bundle::digest()`'s tested hashing rather than
+    // hand-rolling one, even though nothing here gets zipped/uploaded.
+    let digest = studio_compose::Bundle {
         image_tag: image.to_string(),
         files: std::collections::BTreeMap::from([("config.toml".to_string(), config_toml)]),
-    };
-
-    let bucket = oabctl::resolve_bucket(aws_config, None).await?;
-    let zip_uri = oabctl::studio_api::bundle_zip_uri(&bucket, namespace, name);
-    match bundle.files.get_mut("config.toml") {
-        Some(bytes) => *bytes = oabctl::studio_api::inject_pre_seed_hook(bytes, &zip_uri)?,
-        None => unreachable!("just inserted above"),
     }
+    .digest();
 
-    let mut objects = bundle.artifact_objects(namespace, name);
-    let zip_key = format!(
-        "{}/{}",
-        studio_compose::artifacts_prefix(namespace, name),
-        oabctl::studio_api::BUNDLE_ZIP_FILENAME
-    );
-    objects.push((zip_key, bundle.zip_bytes()));
+    // Always rebuilt fresh (no stored-manifest reuse, unlike the AWS path's
+    // redeploy()): every field `build_default_k8s_manifest` sets is already
+    // resent by the wizard on every submit (image, expected_principal,
+    // acp_enabled, acp_token), so there's nothing a prior stored manifest
+    // would preserve that this call doesn't already provide — and this is
+    // what lets the create-vs-redeploy check itself drop S3 (no
+    // `manifests/{ns}/{name}.yaml` lookup needed at all; `K8sDriver::apply`
+    // already reports Created-vs-Updated from the live Deployment).
+    let manifest = build_default_k8s_manifest(
+        context,
+        namespace,
+        name,
+        image,
+        &config_from,
+        expected_principal,
+        input.acp_enabled,
+        input.acp_token.as_deref(),
+    )
+    .await?;
 
-    let digest = bundle.digest();
-
-    let existing_manifest =
-        oabctl::studio_api::load_manifest(aws_config, namespace, name, Some(&bucket)).await?;
-    let mut manifest = match existing_manifest {
-        Some(mut stored) => {
-            stored.spec.image = image.to_string();
-            stored
-        }
-        None => {
-            build_default_k8s_manifest(
-                context,
-                namespace,
-                name,
-                image,
-                &bucket,
-                expected_principal,
-                input.acp_enabled,
-                input.acp_token.as_deref(),
-            )
-            .await?
-        }
+    let driver = oabctl::K8sDriver::from_context(context).await?;
+    let opts = oabctl::ProvisionOptions { control_plane_bucket: None, wait: false };
+    let report = {
+        use oabctl::ProvisionDriver;
+        driver.apply(std::slice::from_ref(&manifest), &opts).await?
     };
-    manifest.spec.bundle_from = Some(oabctl::studio_api::bundle_from_uri(&bucket, namespace, name));
-
-    let report =
-        oabctl::studio_api::provision_k8s(aws_config, context, &manifest, &objects, Some(&bucket)).await?;
 
     Ok(ProvisionOutcome {
         image: image.to_string(),
         digest,
-        objects: objects.len(),
+        objects: 0,
         services_applied: report.services.len(),
         action: report
             .services
@@ -1693,6 +1696,50 @@ async fn provision_acp_auth_k8s_secret(
     Ok(format!("k8s-secret://{secret_name}#OPENAB_ACP_AUTH_KEY"))
 }
 
+/// Server-side-applies `config.toml` into a k8s `ConfigMap` named
+/// `{name}-config` in `namespace` (studio#138 — Brett: "k8s does not need to
+/// fetch from s3"). Mirrors openab's own Helm chart pattern
+/// (`charts/openab/templates/configmap.yaml`, mounted at `/etc/openab`) —
+/// `k8s_driver::build_deployment` mounts this ConfigMap and leaves the
+/// image's own default CMD (`openab run -c /etc/openab/config.toml`,
+/// confirmed straight from every `Dockerfile.*`'s `CMD`) untouched, so no
+/// command override, no S3, no AWS credentials in the pod at all. Returns a
+/// `k8s-configmap://<name>#<key>` ref — same scheme shape `spec.secrets`'
+/// `k8s-secret://` refs already use — for `build_deployment` to parse back
+/// into a volume + mount. `Patch::Apply`, same idempotent-retry shape as
+/// [`provision_acp_auth_k8s_secret`].
+async fn provision_config_k8s_configmap(
+    context: Option<&str>,
+    namespace: &str,
+    name: &str,
+    config_toml: &[u8],
+) -> anyhow::Result<String> {
+    use k8s_openapi::api::core::v1::ConfigMap;
+    use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
+    use kube::api::{Api, Patch, PatchParams};
+
+    let client = k8s_client_for(context).await?;
+    let config_map_name = format!("{name}-config");
+    let text = String::from_utf8(config_toml.to_vec())
+        .map_err(|e| anyhow::anyhow!("config.toml must be valid UTF-8: {e}"))?;
+    let mut data = std::collections::BTreeMap::new();
+    data.insert("config.toml".to_string(), text);
+    let config_map = ConfigMap {
+        metadata: ObjectMeta {
+            name: Some(config_map_name.clone()),
+            namespace: Some(namespace.to_string()),
+            ..Default::default()
+        },
+        data: Some(data),
+        ..Default::default()
+    };
+    let api: Api<ConfigMap> = Api::namespaced(client, namespace);
+    api.patch(&config_map_name, &PatchParams::apply("studio-cp"), &Patch::Apply(&config_map))
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to create/apply k8s ConfigMap '{config_map_name}': {e}"))?;
+    Ok(format!("k8s-configmap://{config_map_name}#config.toml"))
+}
+
 /// Build a fresh k8s `OABServiceManifest` — the `Runtime::Kubernetes`
 /// counterpart to [`build_default_manifest`]. No VPC/subnet/security-group
 /// concept (that's ECS-specific networking); k8s's per-fleet placement is
@@ -1711,12 +1758,11 @@ async fn build_default_k8s_manifest(
     namespace: &str,
     name: &str,
     image: &str,
-    bucket: &str,
+    config_from: &str,
     expected_principal: Option<&str>,
     acp_enabled: bool,
     acp_token: Option<&str>,
 ) -> anyhow::Result<oabctl::manifest::OABServiceManifest> {
-    let config_from = default_config_from_uri(bucket, namespace, name);
     let mut secrets = std::collections::HashMap::new();
     if acp_enabled {
         let acp_auth_ref = provision_acp_auth_k8s_secret(context, namespace, name, acp_token).await?;
@@ -1736,7 +1782,7 @@ async fn build_default_k8s_manifest(
                 cpu: "256".to_string(),
                 memory: "512".to_string(),
             },
-            config_from,
+            config_from: config_from.to_string(),
             bundle_from: None,
             bootstrap_from: None,
             secrets,
@@ -1820,7 +1866,7 @@ pub async fn provision_from_library_k8s(
                 namespace,
                 name,
                 &image,
-                &bucket,
+                &default_config_from_uri(&bucket, namespace, name),
                 expected_principal,
                 true,
                 None,
