@@ -55,6 +55,11 @@ tauri-plugin-updater = "2"
 # commit rather than the floating `dev` branch for reproducibility.
 fix-path-env = { git = "https://github.com/tauri-apps/fix-path-env-rs", rev = "c4c45d503ea115a839aae718d02f79e7c7f0f673" }
 
+# Native folder-picker dialog (studio#128) — lets the operator choose the
+# local "Config folder" the New Fleet wizard mirrors generated config.toml
+# files into, instead of a hidden hardcoded path.
+tauri-plugin-dialog = "2"
+
 # Its own workspace so the desktop build stays out of the root workspace's
 # `cargo build --workspace` (kept to the small crates + CI).
 [workspace]

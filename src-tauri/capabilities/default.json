@@ -9,6 +9,7 @@
     "core:default",
     "shell:allow-stdin-write",
     "shell:allow-kill",
+    "dialog:allow-open",
     {
       "identifier": "shell:allow-spawn",
       "allow": [

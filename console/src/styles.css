@@ -1244,6 +1244,38 @@ button.act:disabled {
   color: var(--muted);
 }
 
+.config-folder {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 420px;
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+.config-folder > label {
+  font-size: 12px;
+  color: var(--muted);
+}
+.config-folder-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.config-folder-path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--text);
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+}
+
 /* Compose (agent-deployment ADR, slice 1): the deploy panel's bundle-preview
    step (`deploy.ts`'s `#deploy-compose`) — the standalone authoring tab this
    used to also style is gone, see compose.ts. */

@@ -273,6 +273,19 @@
               explicit auth error, not a silent drift.
             </p>
           </form>
+          <div class="config-folder">
+            <label>Config folder</label>
+            <div class="config-folder-row">
+              <span class="config-folder-path" id="config-folder-path">— not set —</span>
+              <button class="cfg-btn cfg-btn-ghost" id="config-folder-pick" type="button">Choose folder…</button>
+            </div>
+            <p class="config-hint">
+              Local folder the New Fleet wizard mirrors each agent's generated
+              config.toml into (<code>&lt;folder&gt;/&lt;agent-name&gt;/config.toml</code>),
+              alongside the S3 copy it deploys from — this is what "view an
+              agent's config" reads from, no S3 round-trip.
+            </p>
+          </div>
         </div>
       </aside>
     </main>
