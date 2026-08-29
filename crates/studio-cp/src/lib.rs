@@ -1417,6 +1417,27 @@ usercron_path = "cronjob.toml"
     )
 }
 
+/// Mirrors a wizard-generated config.toml into the operator's local "Config
+/// folder" (studio#135 — `<folder>/<name>/config.toml`), *before* anything
+/// touches S3. Brett's explicit ordering: "Wizard should write to local
+/// first, write to s3 if needed" — the only place that ordering can
+/// actually be guaranteed is here, inside the sidecar, since the sidecar
+/// (not the console) is what does the S3 upload; if the console wrote the
+/// local copy itself after the fact (from a config_toml value handed back
+/// in the response), S3 would always have already happened first no matter
+/// what. Written before `inject_pre_seed_hook` runs — that mutation wires
+/// in an S3 zip URI that's meaningless for a local reference copy, so the
+/// local file is the clean, human-authored text the operator actually
+/// configured, not an ECS/k8s-specific artifact.
+fn write_local_agent_config(folder: &str, name: &str, config_toml: &[u8]) -> anyhow::Result<()> {
+    let dir = std::path::Path::new(folder).join(name);
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| anyhow::anyhow!("failed to create {}: {e}", dir.display()))?;
+    let path = dir.join("config.toml");
+    std::fs::write(&path, config_toml)
+        .map_err(|e| anyhow::anyhow!("failed to write {}: {e}", path.display()))
+}
+
 /// [`provision_from_library`], but for the studio#128 wizard's direct path —
 /// no compose library, no `template ⊕ overlay`: builds config.toml itself
 /// from [`AgentWizardInput`] (via [`generate_agent_config`]) instead of
@@ -1432,9 +1453,13 @@ pub async fn provision_agent(
     name: &str,
     image: &str,
     input: AgentWizardInput,
+    local_config_folder: Option<&str>,
 ) -> anyhow::Result<ProvisionOutcome> {
     provision_agent_secrets(aws_config, namespace, name, &input).await?;
     let config_toml = generate_agent_config(namespace, name, &input).into_bytes();
+    if let Some(folder) = local_config_folder {
+        write_local_agent_config(folder, name, &config_toml)?;
+    }
     let mut bundle = studio_compose::Bundle {
         image_tag: image.to_string(),
         files: std::collections::BTreeMap::from([("config.toml".to_string(), config_toml)]),
@@ -1519,6 +1544,7 @@ pub async fn provision_agent_k8s(
     image: &str,
     input: AgentWizardInput,
     expected_principal: Option<&str>,
+    local_config_folder: Option<&str>,
 ) -> anyhow::Result<ProvisionOutcome> {
     if input.chat_platform.is_some() {
         anyhow::bail!(
@@ -1529,6 +1555,9 @@ pub async fn provision_agent_k8s(
     }
     provision_agent_secrets(aws_config, namespace, name, &input).await?;
     let config_toml = generate_agent_config(namespace, name, &input).into_bytes();
+    if let Some(folder) = local_config_folder {
+        write_local_agent_config(folder, name, &config_toml)?;
+    }
     let mut bundle = studio_compose::Bundle {
         image_tag: image.to_string(),
         files: std::collections::BTreeMap::from([("config.toml".to_string(), config_toml)]),
