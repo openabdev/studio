@@ -1571,6 +1571,7 @@ pub async fn provision_agent_k8s(
              directly, or deploy this agent to ECS instead."
         );
     }
+    ensure_namespace_k8s(context, namespace).await?;
     // `provision_agent_secrets` only ever touches AWS Secrets Manager when
     // `input.api_key` is set (chat-platform secrets are unreachable here —
     // the bail! above already refused those) — a no-op otherwise, so this
@@ -1694,6 +1695,34 @@ async fn provision_acp_auth_k8s_secret(
         .await
         .map_err(|e| anyhow::anyhow!("failed to create/apply k8s Secret '{secret_name}': {e}"))?;
     Ok(format!("k8s-secret://{secret_name}#OPENAB_ACP_AUTH_KEY"))
+}
+
+/// Server-side-applies a bare k8s `Namespace` object (Brett, studio#138
+/// follow-up: "if namespace input is not there, we should create it"). The
+/// New Fleet wizard's "+ Create new namespace…" field (studio#119) only ever
+/// *typed* a name into the deploy request — nothing actually created the
+/// namespace, so picking it 404'd the instant anything tried to apply into
+/// it (`ConfigMap`/`Secret`/`Deployment` alike). `Patch::Apply`, same
+/// idempotent shape as [`provision_acp_auth_k8s_secret`] — a no-op if the
+/// namespace already exists.
+async fn ensure_namespace_k8s(context: Option<&str>, namespace: &str) -> anyhow::Result<()> {
+    use k8s_openapi::api::core::v1::Namespace;
+    use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
+    use kube::api::{Api, Patch, PatchParams};
+
+    let client = k8s_client_for(context).await?;
+    let ns = Namespace {
+        metadata: ObjectMeta {
+            name: Some(namespace.to_string()),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let api: Api<Namespace> = Api::all(client);
+    api.patch(namespace, &PatchParams::apply("studio-cp"), &Patch::Apply(&ns))
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to create/apply k8s namespace '{namespace}': {e}"))?;
+    Ok(())
 }
 
 /// Server-side-applies `config.toml` into a k8s `ConfigMap` named
@@ -1823,6 +1852,7 @@ pub async fn provision_from_library_k8s(
     image_override: Option<&str>,
     expected_principal: Option<&str>,
 ) -> anyhow::Result<ProvisionOutcome> {
+    ensure_namespace_k8s(context, namespace).await?;
     let mut bundle = studio_compose::compose_named(library, template, overlay)
         .map_err(|e| anyhow::anyhow!("compose failed: {e}"))?;
     let image = image_override
