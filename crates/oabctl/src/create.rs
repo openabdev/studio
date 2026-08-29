@@ -189,7 +189,11 @@ fn prompt_secret(label: &str) -> Result<String> {
     Ok(val)
 }
 
-async fn store_secret(sm: &SmClient, name: &str, value: &str) -> Result<()> {
+/// `pub` (studio#119 follow-up): reused by the provision-from-scratch path
+/// (`studio-cp::build_default_manifest`) to store a generated
+/// `OPENAB_ACP_AUTH_KEY`, same create-or-update pattern this CLI wizard
+/// already uses for the Discord bot token.
+pub async fn store_secret(sm: &SmClient, name: &str, value: &str) -> Result<()> {
     match sm.create_secret().name(name).secret_string(value).send().await {
         Ok(_) => Ok(()),
         Err(_) => {

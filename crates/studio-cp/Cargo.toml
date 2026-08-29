@@ -29,3 +29,9 @@ gcp_auth = "0.12"
 # `secrecy` version (0.10.x) so the types actually unify — kube::config
 # doesn't re-export the type.
 secrecy = "0.10"
+# studio#119 follow-up: generates the OPENAB_ACP_AUTH_KEY value + the JSON
+# secret blob it's stored as (same convention `oabctl create`'s CLI wizard
+# uses for the Discord bot token).
+uuid = { version = "1", features = ["v4"] }
+serde_json = "1"
+aws-sdk-secretsmanager = "1"
