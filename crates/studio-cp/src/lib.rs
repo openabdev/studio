@@ -1230,6 +1230,141 @@ pub async fn provision_from_library(
     })
 }
 
+/// [`provision_from_library`], but for the studio#128 wizard's direct path —
+/// no compose library, no `template ⊕ overlay`: the caller (the New Fleet
+/// wizard) has already composed `config_toml` itself from its own inputs
+/// (vendor, chat platform, ACP toggle) and just wants it provisioned.
+/// Deliberately a near-duplicate of `provision_from_library` (from "resolve
+/// the bucket" onward) rather than a shared refactor of that already-landed
+/// function — same tradeoff `provision_from_library_k8s`'s own doc comment
+/// already made for the same reason.
+pub async fn provision_agent(
+    aws_config: &aws_config::SdkConfig,
+    cluster: &str,
+    namespace: &str,
+    name: &str,
+    image: &str,
+    config_toml: Vec<u8>,
+) -> anyhow::Result<ProvisionOutcome> {
+    let mut bundle = studio_compose::Bundle {
+        image_tag: image.to_string(),
+        files: std::collections::BTreeMap::from([("config.toml".to_string(), config_toml)]),
+    };
+
+    let bucket = oabctl::resolve_bucket(aws_config, None).await?;
+    let zip_uri = oabctl::studio_api::bundle_zip_uri(&bucket, namespace, name);
+    match bundle.files.get_mut("config.toml") {
+        Some(bytes) => *bytes = oabctl::studio_api::inject_pre_seed_hook(bytes, &zip_uri)?,
+        None => unreachable!("just inserted above"),
+    }
+
+    let mut objects = bundle.artifact_objects(namespace, name);
+    let zip_key = format!(
+        "{}/{}",
+        studio_compose::artifacts_prefix(namespace, name),
+        oabctl::studio_api::BUNDLE_ZIP_FILENAME
+    );
+    objects.push((zip_key, bundle.zip_bytes()));
+
+    let digest = bundle.digest();
+
+    let existing_manifest =
+        oabctl::studio_api::load_manifest(aws_config, namespace, name, Some(&bucket)).await?;
+    let report = match existing_manifest {
+        Some(_) => {
+            oabctl::studio_api::redeploy(
+                aws_config,
+                cluster,
+                namespace,
+                name,
+                Some(image),
+                &objects,
+                Some(&bucket),
+            )
+            .await?
+        }
+        None => {
+            let mut manifest = build_default_manifest(aws_config, namespace, name, image, &bucket).await?;
+            manifest.spec.bundle_from = Some(oabctl::studio_api::bundle_from_uri(&bucket, namespace, name));
+            oabctl::studio_api::provision_manifest(aws_config, cluster, &manifest, &objects, Some(&bucket))
+                .await?
+        }
+    };
+
+    Ok(ProvisionOutcome {
+        image: image.to_string(),
+        digest,
+        objects: objects.len(),
+        services_applied: report.services.len(),
+        action: report
+            .services
+            .first()
+            .map(|s| format!("{:?}", s.action))
+            .unwrap_or_default(),
+    })
+}
+
+/// [`provision_agent`], but for a k8s-driven fleet — the studio#128
+/// counterpart of `provision_from_library_k8s`, same relationship
+/// `provision_agent` has to `provision_from_library`.
+pub async fn provision_agent_k8s(
+    aws_config: &aws_config::SdkConfig,
+    context: Option<&str>,
+    namespace: &str,
+    name: &str,
+    image: &str,
+    config_toml: Vec<u8>,
+    expected_principal: Option<&str>,
+) -> anyhow::Result<ProvisionOutcome> {
+    let mut bundle = studio_compose::Bundle {
+        image_tag: image.to_string(),
+        files: std::collections::BTreeMap::from([("config.toml".to_string(), config_toml)]),
+    };
+
+    let bucket = oabctl::resolve_bucket(aws_config, None).await?;
+    let zip_uri = oabctl::studio_api::bundle_zip_uri(&bucket, namespace, name);
+    match bundle.files.get_mut("config.toml") {
+        Some(bytes) => *bytes = oabctl::studio_api::inject_pre_seed_hook(bytes, &zip_uri)?,
+        None => unreachable!("just inserted above"),
+    }
+
+    let mut objects = bundle.artifact_objects(namespace, name);
+    let zip_key = format!(
+        "{}/{}",
+        studio_compose::artifacts_prefix(namespace, name),
+        oabctl::studio_api::BUNDLE_ZIP_FILENAME
+    );
+    objects.push((zip_key, bundle.zip_bytes()));
+
+    let digest = bundle.digest();
+
+    let existing_manifest =
+        oabctl::studio_api::load_manifest(aws_config, namespace, name, Some(&bucket)).await?;
+    let mut manifest = match existing_manifest {
+        Some(mut stored) => {
+            stored.spec.image = image.to_string();
+            stored
+        }
+        None => build_default_k8s_manifest(context, namespace, name, image, &bucket, expected_principal).await?,
+    };
+    manifest.spec.bundle_from = Some(oabctl::studio_api::bundle_from_uri(&bucket, namespace, name));
+
+    let report =
+        oabctl::studio_api::provision_k8s(aws_config, context, &manifest, &objects, Some(&bucket)).await?;
+
+    Ok(ProvisionOutcome {
+        image: image.to_string(),
+        digest,
+        objects: objects.len(),
+        services_applied: report.services.len(),
+        action: report
+            .services
+            .first()
+            .map(|s| format!("{:?}", s.action))
+            .unwrap_or_default(),
+    })
+}
+
 /// Extract the bare service-account name from an `expected_principal` string
 /// in `system:serviceaccount:<namespace>:<name>` form — the format
 /// `K8sFleetBinding.expected_principal` holds when the "+ New fleet" wizard's

@@ -166,6 +166,25 @@ pub fn tools() -> Vec<Tool> {
             })),
         ),
         Tool::new(
+            "deploy_provision_agent",
+            "Provision an agent directly from a caller-supplied config.toml — no compose library, no template ⊕ overlay (studio#128: the New Fleet wizard's vendor/chat-platform/ACP flow composes config.toml itself and has no template to point at). Same create-vs-redeploy behavior as deploy_provision: patches an existing stored manifest's image/bundle if this agent already has one, otherwise builds a fresh manifest with sensible defaults. `provider` (default \"aws\") selects the target, same as deploy_provision.",
+            as_map(json!({
+                "type": "object",
+                "properties": {
+                    "config_toml": { "type": "string", "description": "Full config.toml text for the agent." },
+                    "image": { "type": "string", "description": "Container image (e.g. ghcr.io/openabdev/openab:<tag>-<vendor>)." },
+                    "name": { "type": "string", "description": "Agent / service name (service = oab-{namespace}-{name})." },
+                    "namespace": { "type": "string", "description": "Namespace (default \"default\")." },
+                    "provider": { "type": "string", "description": "\"aws\" (default) or \"k8s\" — which driver applies the result." },
+                    "fleet": { "type": "string", "description": "AWS only. Fleet name (see fleet_config): targets the fleet's cluster and managing credential; a write to a service outside the fleet's members is refused. Overrides the cluster arg." },
+                    "cluster": { "type": "string", "description": "AWS only. ECS cluster (defaults to the server's configured cluster)." },
+                    "context": { "type": "string", "description": "k8s only. Kubeconfig context to apply through. Omit to use the kubeconfig's current-context." },
+                    "expected_principal": { "type": "string", "description": "k8s only, optional. `system:serviceaccount:<namespace>:<name>` to set the pod's service account; unset uses the namespace's default." }
+                },
+                "required": ["config_toml", "image", "name"]
+            })),
+        ),
+        Tool::new(
             "deploy_delete",
             "Delete a control-plane resource (e.g. an OABService).",
             as_map(json!({
@@ -399,6 +418,7 @@ impl OabMcp {
             "deploy_events" => self.t_events(args).await,
             "deploy_apply" => self.t_apply(args).await,
             "deploy_provision" => self.t_provision(args).await,
+            "deploy_provision_agent" => self.t_provision_agent(args).await,
             "deploy_scale" => self.t_scale(args).await,
             "deploy_delete" => self.t_delete(args).await,
             "runtime_context" => self.t_runtime_context(args).await,
@@ -658,6 +678,84 @@ impl OabMcp {
             template,
             overlay,
             image,
+        )
+        .await?;
+        Ok(json!({
+            "ok": true,
+            "cluster": cluster,
+            "namespace": namespace,
+            "name": name,
+            "image": outcome.image,
+            "digest": outcome.digest,
+            "objects": outcome.objects,
+            "action": outcome.action,
+            "services_applied": outcome.services_applied,
+        }))
+    }
+
+    /// [`t_provision`], but for `deploy_provision_agent` (studio#128) — no
+    /// `library`/`template`/`overlay` args, `config_toml` is used as-is.
+    async fn t_provision_agent(&self, args: &Map<String, Value>) -> Result<Value> {
+        let namespace = args
+            .get("namespace")
+            .and_then(Value::as_str)
+            .unwrap_or("default");
+        let name = args
+            .get("name")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("missing required arg: name"))?;
+        let image = args
+            .get("image")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("missing required arg: image"))?;
+        let config_toml = args
+            .get("config_toml")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("missing required arg: config_toml"))?
+            .as_bytes()
+            .to_vec();
+
+        if args.get("provider").and_then(Value::as_str) == Some("k8s") {
+            let context = args.get("context").and_then(Value::as_str);
+            let expected_principal = args.get("expected_principal").and_then(Value::as_str);
+            let outcome = scp::provision_agent_k8s(
+                &self.aws,
+                context,
+                namespace,
+                name,
+                image,
+                config_toml,
+                expected_principal,
+            )
+            .await?;
+            return Ok(json!({
+                "ok": true,
+                "context": context,
+                "namespace": namespace,
+                "name": name,
+                "image": outcome.image,
+                "digest": outcome.digest,
+                "objects": outcome.objects,
+                "action": outcome.action,
+                "services_applied": outcome.services_applied,
+            }));
+        }
+
+        let t = self.target(args)?;
+        let cluster = t.cluster.clone();
+
+        let service_name = format!("oab-{namespace}-{name}");
+        if !t.includes(&service_name, name) {
+            anyhow::bail!("service {service_name:?} is not a member of the named fleet");
+        }
+
+        let outcome = scp::provision_agent(
+            &self.aws_for(&cluster).await,
+            &cluster,
+            namespace,
+            name,
+            image,
+            config_toml,
         )
         .await?;
         Ok(json!({
@@ -1005,7 +1103,7 @@ mod tests {
             .iter()
             .map(|t| t["name"].as_str().expect("tool has a name").to_string())
             .collect();
-        assert_eq!(names.len(), 17);
+        assert_eq!(names.len(), 18);
         for expected in [
             "deploy_list",
             "deploy_get",
@@ -1013,6 +1111,7 @@ mod tests {
             "deploy_events",
             "deploy_apply",
             "deploy_provision",
+            "deploy_provision_agent",
             "deploy_scale",
             "deploy_delete",
             "runtime_context",
