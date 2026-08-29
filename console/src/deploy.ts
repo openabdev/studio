@@ -140,6 +140,9 @@ export function initDeployPanel(deps: DeployPanelDeps): DeployPanelHandle | null
   const chatSecretInput = document.getElementById("deploy-chat-secret") as HTMLInputElement | null;
   const acpCheckbox = document.getElementById("deploy-acp-enabled") as HTMLInputElement | null;
   const acpAgyHint = document.getElementById("deploy-acp-agy-hint");
+  const acpTokenWrap = document.getElementById("deploy-acp-token-wrap");
+  const acpTokenInput = document.getElementById("deploy-acp-token") as HTMLInputElement | null;
+  const acpTokenGenerateBtn = document.getElementById("deploy-acp-token-generate") as HTMLButtonElement | null;
   const agentNameInput = document.getElementById("deploy-name") as HTMLInputElement | null;
   const agentNameShuffleBtn = document.getElementById("deploy-name-shuffle") as HTMLButtonElement | null;
   const deployBtn = document.getElementById("deploy-deploy-btn") as HTMLButtonElement | null;
@@ -174,6 +177,9 @@ export function initDeployPanel(deps: DeployPanelDeps): DeployPanelHandle | null
     !chatSecretInput ||
     !acpCheckbox ||
     !acpAgyHint ||
+    !acpTokenWrap ||
+    !acpTokenInput ||
+    !acpTokenGenerateBtn ||
     !agentNameInput ||
     !agentNameShuffleBtn ||
     !deployBtn
@@ -203,6 +209,16 @@ export function initDeployPanel(deps: DeployPanelDeps): DeployPanelHandle | null
     }
   };
 
+  // studio#136: the ACP token field only makes sense while ACP itself is
+  // on — hidden (not just left blank) when the checkbox is unchecked or
+  // disabled, same show/hide-on-selection pattern as the chat token
+  // fields above.
+  const applyAcpMode = (): void => {
+    const enabled = acpCheckbox.checked && !acpCheckbox.disabled;
+    acpTokenWrap.hidden = !enabled;
+    if (!enabled) acpTokenInput.value = "";
+  };
+
   // studio#128: agy's bridge bypasses openab-gateway's /acp route entirely
   // (confirmed by reading agy-acp/src/main.rs) — forced off, not just
   // defaulted off, so a leftover checked state from a previous vendor can't
@@ -215,6 +231,7 @@ export function initDeployPanel(deps: DeployPanelDeps): DeployPanelHandle | null
     acpCheckbox.disabled = isAgy;
     acpAgyHint.hidden = !isAgy;
     if (isAgy) acpCheckbox.checked = false;
+    applyAcpMode();
     deviceAuthHint.hidden = !DEVICE_AUTH_VENDORS.has(vendor);
   };
 
@@ -383,6 +400,14 @@ export function initDeployPanel(deps: DeployPanelDeps): DeployPanelHandle | null
     void loadVendorImage();
   });
   chatPlatformSel.addEventListener("change", applyChatPlatformMode);
+  acpCheckbox.addEventListener("change", applyAcpMode);
+  acpTokenGenerateBtn.addEventListener("click", () => {
+    // Same shape the sidecar generates itself (uuid v4) when this field is
+    // left blank — a convenience for operators who want to know the token
+    // before deploying (e.g. to hand it to a client ahead of time), not a
+    // requirement: an empty field still gets a server-generated one.
+    acpTokenInput.value = crypto.randomUUID();
+  });
   agentNameShuffleBtn.addEventListener("click", () => {
     agentNameInput.value = randomGreekName();
   });
@@ -487,6 +512,7 @@ export function initDeployPanel(deps: DeployPanelDeps): DeployPanelHandle | null
         chat_bot_token: chatTokenInput.value.trim() || undefined,
         chat_channel_secret: chatSecretInput.value.trim() || undefined,
         acp_enabled: acpCheckbox.checked,
+        acp_token: acpCheckbox.checked ? acpTokenInput.value.trim() || undefined : undefined,
         ...(isK8s ? { provider: "k8s", context, expected_principal: expectedPrincipal } : {}),
       });
     } catch (e) {

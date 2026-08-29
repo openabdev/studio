@@ -1058,11 +1058,13 @@ fn default_config_from_uri(bucket: &str, namespace: &str, name: &str) -> String 
     format!("s3://{bucket}/{}/config.toml", studio_compose::artifacts_prefix(namespace, name))
 }
 
-/// Generates a random `OPENAB_ACP_AUTH_KEY` and stores it in Secrets
-/// Manager under the same `oab/{namespace}/{name}` convention `oabctl
-/// create`'s CLI wizard uses for the Discord bot token (studio#119
-/// follow-up — Studio-deployed agents default to ACP enabled). Fresh JSON
-/// blob rather than a read-merge-write: this only ever runs from
+/// Stores an `OPENAB_ACP_AUTH_KEY` in Secrets Manager under the same
+/// `oab/{namespace}/{name}` convention `oabctl create`'s CLI wizard uses
+/// for the Discord bot token (studio#119 follow-up — Studio-deployed
+/// agents default to ACP enabled). Uses `token` if the caller supplied one
+/// (studio#136 — the wizard's "Generate" button / operator-typed value),
+/// otherwise generates a fresh one. Fresh JSON blob rather than a
+/// read-merge-write: this only ever runs from
 /// `build_default_manifest`/`build_default_k8s_manifest`, both exclusively
 /// on the first-ever-deploy path, so nothing else has written to this
 /// secret name yet at this point in the flow.
@@ -1070,10 +1072,11 @@ async fn provision_acp_auth_secret(
     aws_config: &aws_config::SdkConfig,
     namespace: &str,
     name: &str,
+    token: Option<&str>,
 ) -> anyhow::Result<String> {
     let sm = aws_sdk_secretsmanager::Client::new(aws_config);
     let secret_name = format!("oab/{namespace}/{name}");
-    let key = uuid::Uuid::new_v4().to_string();
+    let key = token.map(str::to_string).unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let secret_obj = serde_json::json!({ "OPENAB_ACP_AUTH_KEY": key });
     oabctl::create::store_secret(&sm, &secret_name, &secret_obj.to_string()).await?;
     Ok(format!("aws-sm://{secret_name}#OPENAB_ACP_AUTH_KEY"))
@@ -1098,12 +1101,13 @@ async fn build_default_manifest(
     image: &str,
     bucket: &str,
     acp_enabled: bool,
+    acp_token: Option<&str>,
 ) -> anyhow::Result<oabctl::manifest::OABServiceManifest> {
     let net = oabctl::create::default_networking(aws_config, name).await?;
     let config_from = default_config_from_uri(bucket, namespace, name);
     let mut secrets = std::collections::HashMap::new();
     if acp_enabled {
-        let acp_auth_ref = provision_acp_auth_secret(aws_config, namespace, name).await?;
+        let acp_auth_ref = provision_acp_auth_secret(aws_config, namespace, name, acp_token).await?;
         secrets.insert("OPENAB_ACP_AUTH_KEY".to_string(), acp_auth_ref);
     }
     Ok(oabctl::manifest::OABServiceManifest {
@@ -1219,7 +1223,7 @@ pub async fn provision_from_library(
             // (compose-library) path; the caller-controlled toggle is
             // studio#128's wizard-only `provision_agent`.
             let mut manifest =
-                build_default_manifest(aws_config, namespace, name, &image, &bucket, true).await?;
+                build_default_manifest(aws_config, namespace, name, &image, &bucket, true, None).await?;
             manifest.spec.bundle_from = Some(oabctl::studio_api::bundle_from_uri(&bucket, namespace, name));
             oabctl::studio_api::provision_manifest(aws_config, cluster, &manifest, &objects, Some(&bucket))
                 .await?
@@ -1269,6 +1273,12 @@ pub struct AgentWizardInput {
     /// non-empty `chat_platform` regardless of this field — unrelated
     /// constraints.
     pub acp_enabled: bool,
+    /// studio#136: operator-supplied ACP auth key, wired through when
+    /// `acp_enabled` is true (ignored otherwise). `None`/empty falls back
+    /// to a freshly generated one, same as before this field existed —
+    /// this is a convenience for an operator who wants to know the token
+    /// ahead of deploy, not a requirement.
+    pub acp_token: Option<String>,
 }
 
 /// Stores [`AgentWizardInput`]'s secret-bearing fields in the same
@@ -1473,8 +1483,16 @@ pub async fn provision_agent(
             .await?
         }
         None => {
-            let mut manifest =
-                build_default_manifest(aws_config, namespace, name, image, &bucket, input.acp_enabled).await?;
+            let mut manifest = build_default_manifest(
+                aws_config,
+                namespace,
+                name,
+                image,
+                &bucket,
+                input.acp_enabled,
+                input.acp_token.as_deref(),
+            )
+            .await?;
             manifest.spec.bundle_from = Some(oabctl::studio_api::bundle_from_uri(&bucket, namespace, name));
             oabctl::studio_api::provision_manifest(aws_config, cluster, &manifest, &objects, Some(&bucket))
                 .await?
@@ -1567,6 +1585,7 @@ pub async fn provision_agent_k8s(
                 &bucket,
                 expected_principal,
                 input.acp_enabled,
+                input.acp_token.as_deref(),
             )
             .await?
         }
@@ -1605,9 +1624,10 @@ fn k8s_service_account_from_principal(expected_principal: Option<&str>) -> Optio
         .map(|(_namespace, name)| name.to_string())
 }
 
-/// Generates a random `OPENAB_ACP_AUTH_KEY` and server-side-applies it into
-/// a k8s `Secret` named `{name}-acp` in `namespace` (studio#119 follow-up —
-/// k8s counterpart of [`provision_acp_auth_secret`]). `Patch::Apply` rather
+/// Server-side-applies an `OPENAB_ACP_AUTH_KEY` into a k8s `Secret` named
+/// `{name}-acp` in `namespace` (studio#119 follow-up — k8s counterpart of
+/// [`provision_acp_auth_secret`]). Uses `token` if the caller supplied one
+/// (studio#136), otherwise generates a fresh one. `Patch::Apply` rather
 /// than a plain `create()`: this only ever runs from
 /// `build_default_k8s_manifest` on the first-ever-deploy path, so a fresh
 /// object is expected, but apply is idempotent if a retried deploy attempt
@@ -1617,6 +1637,7 @@ async fn provision_acp_auth_k8s_secret(
     context: Option<&str>,
     namespace: &str,
     name: &str,
+    token: Option<&str>,
 ) -> anyhow::Result<String> {
     use k8s_openapi::api::core::v1::Secret;
     use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
@@ -1624,7 +1645,7 @@ async fn provision_acp_auth_k8s_secret(
 
     let client = k8s_client_for(context).await?;
     let secret_name = format!("{name}-acp");
-    let key = uuid::Uuid::new_v4().to_string();
+    let key = token.map(str::to_string).unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let mut string_data = std::collections::BTreeMap::new();
     string_data.insert("OPENAB_ACP_AUTH_KEY".to_string(), key);
     let secret = Secret {
@@ -1664,11 +1685,12 @@ async fn build_default_k8s_manifest(
     bucket: &str,
     expected_principal: Option<&str>,
     acp_enabled: bool,
+    acp_token: Option<&str>,
 ) -> anyhow::Result<oabctl::manifest::OABServiceManifest> {
     let config_from = default_config_from_uri(bucket, namespace, name);
     let mut secrets = std::collections::HashMap::new();
     if acp_enabled {
-        let acp_auth_ref = provision_acp_auth_k8s_secret(context, namespace, name).await?;
+        let acp_auth_ref = provision_acp_auth_k8s_secret(context, namespace, name, acp_token).await?;
         secrets.insert("OPENAB_ACP_AUTH_KEY".to_string(), acp_auth_ref);
     }
     Ok(oabctl::manifest::OABServiceManifest {
@@ -1764,8 +1786,17 @@ pub async fn provision_from_library_k8s(
         // (compose-library) path; the caller-controlled toggle is
         // studio#128's wizard-only `provision_agent_k8s`.
         None => {
-            build_default_k8s_manifest(context, namespace, name, &image, &bucket, expected_principal, true)
-                .await?
+            build_default_k8s_manifest(
+                context,
+                namespace,
+                name,
+                &image,
+                &bucket,
+                expected_principal,
+                true,
+                None,
+            )
+            .await?
         }
     };
     manifest.spec.bundle_from = Some(oabctl::studio_api::bundle_from_uri(&bucket, namespace, name));

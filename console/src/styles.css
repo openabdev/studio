@@ -1328,6 +1328,15 @@ button.act:disabled {
   font-size: 12px;
   color: var(--muted);
 }
+/* studio#128/#136 bug (Brett caught live): `.compose-form label`'s own
+   `display: flex` has equal-or-higher specificity than the UA stylesheet's
+   `[hidden] { display: none }`, so toggling `.hidden` on a <label> inside
+   `.compose-form` (chat token/secret wraps) did nothing — same CSS gotcha
+   already hit once in studio#83's implementation (see that memory). Force
+   the override explicitly rather than relying on cascade order. */
+.compose-form label[hidden] {
+  display: none;
+}
 .compose-select {
   padding: 6px 8px;
   border: 1px solid var(--border);
@@ -1490,6 +1499,11 @@ button.act:disabled {
   gap: 4px;
   font-size: 12px;
   color: var(--muted);
+}
+/* Same specificity gotcha as `.compose-form label[hidden]` above — applies
+   here too (the k8s "new namespace" field). */
+.deploy-identity label[hidden] {
+  display: none;
 }
 .deploy-compose-head {
   font-size: 12px;
