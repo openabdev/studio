@@ -27,6 +27,22 @@ function errText(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
+// studio#135: same localStorage key main.ts's Config-folder setting uses
+// (kept as a duplicated literal, not a shared export — every module in
+// this console reads its own localStorage keys independently, matching
+// the existing theme/log-level/config-folder settings' own pattern).
+// Brett's explicit ordering ("write to local first, write to s3 if
+// needed") can only actually be guaranteed inside the sidecar — passing
+// the folder through lets provision_agent[_k8s] write it before touching
+// S3 at all, rather than the console writing a copy after the fact.
+function localConfigFolder(): string | undefined {
+  try {
+    return localStorage.getItem("oab-studio.configFolder") ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function escapeHtml(s: string): string {
   return s
     .replace(/&/g, "&amp;")
@@ -513,6 +529,7 @@ export function initDeployPanel(deps: DeployPanelDeps): DeployPanelHandle | null
         chat_channel_secret: chatSecretInput.value.trim() || undefined,
         acp_enabled: acpCheckbox.checked,
         acp_token: acpCheckbox.checked ? acpTokenInput.value.trim() || undefined : undefined,
+        local_config_folder: localConfigFolder(),
         ...(isK8s ? { provider: "k8s", context, expected_principal: expectedPrincipal } : {}),
       });
     } catch (e) {

@@ -180,6 +180,7 @@ pub fn tools() -> Vec<Tool> {
                     "chat_channel_secret": { "type": "string", "description": "LINE only." },
                     "acp_enabled": { "type": "boolean", "description": "Enable the reverse-MCP-over-ACP tunnel on this agent. Defaults to true when omitted (studio#119: Studio-deployed agents default to ACP on). Not honorable for every vendor — the caller is responsible for not setting this true for a vendor that can't support it (e.g. agy, whose bridge bypasses /acp entirely)." },
                     "acp_token": { "type": "string", "description": "Optional (studio#136), only meaningful when acp_enabled is true. The OPENAB_ACP_AUTH_KEY to use, instead of generating a random one." },
+                    "local_config_folder": { "type": "string", "description": "Optional local directory (studio#135) — when set, config.toml is written to <local_config_folder>/<name>/config.toml *before* anything touches S3. Omit to skip the local mirror entirely." },
                     "provider": { "type": "string", "description": "\"aws\" (default) or \"k8s\" — which driver applies the result." },
                     "fleet": { "type": "string", "description": "AWS only. Fleet name (see fleet_config): targets the fleet's cluster and managing credential; a write to a service outside the fleet's members is refused. Overrides the cluster arg." },
                     "cluster": { "type": "string", "description": "AWS only. ECS cluster (defaults to the server's configured cluster)." },
@@ -739,6 +740,11 @@ impl OabMcp {
             acp_enabled: args.get("acp_enabled").and_then(Value::as_bool).unwrap_or(true),
             acp_token: args.get("acp_token").and_then(Value::as_str).map(str::to_string),
         };
+        // studio#135: Brett's explicit ordering — write local first, S3
+        // (via provision_agent[_k8s]'s existing upload) after. Optional:
+        // the console only ever sends this when the operator has a local
+        // Config folder set at all (its own opt-in setting).
+        let local_config_folder = args.get("local_config_folder").and_then(Value::as_str);
 
         if args.get("provider").and_then(Value::as_str) == Some("k8s") {
             let context = args.get("context").and_then(Value::as_str);
@@ -751,6 +757,7 @@ impl OabMcp {
                 image,
                 input,
                 expected_principal,
+                local_config_folder,
             )
             .await?;
             return Ok(json!({
@@ -781,6 +788,7 @@ impl OabMcp {
             name,
             image,
             input,
+            local_config_folder,
         )
         .await?;
         Ok(json!({
