@@ -1776,6 +1776,15 @@ pub async fn delete_deployment(
     oabctl::studio_api::delete(aws_config, resource, name, cluster, namespace, None).await
 }
 
+/// Resolves `vendor`'s real, currently-published Stable/Beta image tags on
+/// GHCR (studio#128 — backs the New Fleet wizard's Vendor + Image tag
+/// fields). No `aws_config` needed: this is pure GHCR/GitHub API access,
+/// unauthenticated (see `oabctl::vendor_images` for why that's safe for a
+/// public package).
+pub async fn resolve_vendor_image_tags(vendor: &str) -> oabctl::vendor_images::VendorImageTags {
+    oabctl::vendor_images::resolve_vendor_image_tags(vendor).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

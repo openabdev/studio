@@ -63,6 +63,7 @@ mod scale;
 mod secrets;
 pub mod status;
 pub mod studio_api;
+pub mod vendor_images;
 
 pub use apply::{
     apply_manifests, AppliedService, ApplyAction, ApplyError, ApplyErrorKind, ApplyOptions,
