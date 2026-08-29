@@ -441,6 +441,39 @@ async fn resolve_vendor_image_tags(core: tauri::State<'_, Core>, vendor: String)
     }
 }
 
+/// Lists agent names under the local "Config folder" (studio#128) that
+/// have a `config.toml` — backs the Debug drawer's "Agent configs" tab.
+/// Pure local filesystem, no sidecar/AWS/k8s involved at all: the local
+/// folder is Studio's own mirror the New Fleet wizard writes alongside its
+/// S3 upload, not a read-through to the S3 source of truth (Brett:
+/// "forget about s3 now" for this feature — see the Config folder
+/// setting's own doc comment for the full reasoning).
+#[tauri::command]
+fn list_local_agent_configs(folder: String) -> Result<Vec<String>, String> {
+    let entries = std::fs::read_dir(&folder).map_err(|e| format!("read {folder}: {e}"))?;
+    let mut names = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let path = entry.path();
+        if path.is_dir() && path.join("config.toml").is_file() {
+            if let Some(name) = entry.file_name().to_str() {
+                names.push(name.to_string());
+            }
+        }
+    }
+    names.sort();
+    Ok(names)
+}
+
+/// Reads one agent's `config.toml` from the local "Config folder" —
+/// `<folder>/<agent>/config.toml`, the same layout
+/// `list_local_agent_configs` scans.
+#[tauri::command]
+fn read_local_agent_config(folder: String, agent: String) -> Result<String, String> {
+    let path = std::path::Path::new(&folder).join(&agent).join("config.toml");
+    std::fs::read_to_string(&path).map_err(|e| format!("read {}: {e}", path.display()))
+}
+
 /// Bridge command: namespaces in a kubeconfig context (studio#104), via the
 /// sidecar's `list_namespaces` tool — backs the New Fleet wizard's namespace
 /// field's autocomplete.
@@ -830,6 +863,8 @@ pub fn run() {
             list_aws_profiles,
             list_k8s_contexts,
             resolve_vendor_image_tags,
+            list_local_agent_configs,
+            read_local_agent_config,
             list_namespaces,
             list_service_accounts,
             k8s_fleet_config,

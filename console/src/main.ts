@@ -215,6 +215,80 @@ const mcp = mcpEl ? createPane(mcpEl, () => flag("mcpio")) : null;
   });
 })();
 
+// "Agent configs" Debug drawer tab (studio#128) — reads purely from the
+// local Config folder set above, no S3 (Brett: "forget about s3 now").
+// Whatever an admin agent (or the New Fleet wizard) writes into that same
+// folder shows up here on the next Refresh / tab switch, no separate sync
+// mechanism needed — it's just reading a directory.
+(function setupAgentConfigsTab(): void {
+  const selectEl = document.getElementById("agent-configs-select") as HTMLSelectElement | null;
+  const refreshBtn = document.getElementById("agent-configs-refresh");
+  const statusEl = document.getElementById("agent-configs-status");
+  const contentEl = document.getElementById("agent-configs-content");
+  const tabBtn = document.querySelector<HTMLButtonElement>('[data-target="debug-agent-configs"]');
+  if (!selectEl || !refreshBtn || !statusEl || !contentEl) return;
+  const FOLDER_KEY = "oab-studio.configFolder";
+
+  const currentFolder = (): string | null => {
+    try {
+      return localStorage.getItem(FOLDER_KEY);
+    } catch {
+      return null;
+    }
+  };
+
+  const showContent = async (agent: string, folder: string): Promise<void> => {
+    const invoke = tauriInvoke();
+    if (!invoke) return;
+    try {
+      const text = await invoke<string>("read_local_agent_config", { folder, agent });
+      contentEl.textContent = text;
+      statusEl.textContent = "";
+    } catch (e) {
+      contentEl.textContent = "";
+      statusEl.textContent = `read failed: ${errText(e)}`;
+    }
+  };
+
+  const refresh = async (): Promise<void> => {
+    const invoke = tauriInvoke();
+    const folder = currentFolder();
+    contentEl.textContent = "";
+    selectEl.innerHTML = "";
+    if (!invoke) return;
+    if (!folder) {
+      statusEl.textContent = "set a Config folder first (Config tab)";
+      return;
+    }
+    try {
+      const agents = await invoke<string[]>("list_local_agent_configs", { folder });
+      if (agents.length === 0) {
+        statusEl.textContent = "no agent configs found in this folder yet";
+        return;
+      }
+      // DOM construction, not innerHTML — agent names come from local
+      // directory listings, not worth trusting as HTML.
+      for (const agent of agents) {
+        const opt = document.createElement("option");
+        opt.value = agent;
+        opt.textContent = agent;
+        selectEl.appendChild(opt);
+      }
+      statusEl.textContent = "";
+      void showContent(selectEl.value, folder);
+    } catch (e) {
+      statusEl.textContent = `list failed: ${errText(e)}`;
+    }
+  };
+
+  refreshBtn.addEventListener("click", () => void refresh());
+  selectEl.addEventListener("change", () => {
+    const folder = currentFolder();
+    if (folder) void showContent(selectEl.value, folder);
+  });
+  tabBtn?.addEventListener("click", () => void refresh());
+})();
+
 // Build stamp (injected by vite) — shown under the brand and logged on launch,
 // so it's obvious which commit this build is.
 const BUILD = `v${__APP_VERSION__} · ${__BUILD_SHA__}`;
