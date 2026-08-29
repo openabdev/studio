@@ -641,6 +641,18 @@ async fn apply_ecs(
                 .build(),
         );
     }
+    // studio#119 follow-up: openab-gateway's own default for this is *off*
+    // when unset, so only ever push it when the manifest explicitly opts in
+    // — never push "false", which would just be noise (absence already
+    // means off).
+    if m.spec.acp_enabled == Some(true) {
+        env_vars.push(
+            KeyValuePair::builder()
+                .name("OPENAB_ACP_ENABLED")
+                .value("true")
+                .build(),
+        );
+    }
 
     // 3. Build secrets from map. Values can be either the ECS-native
     //    `valueFrom` format directly (a Secrets Manager ARN, optionally with

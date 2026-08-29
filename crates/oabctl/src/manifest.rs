@@ -139,6 +139,12 @@ impl OABFleetManifest {
                         .ingress
                         .clone()
                         .or_else(|| self.spec.template.ingress.clone()),
+                    // Fleets have no per-agent/template ACP concept yet —
+                    // unaffected by studio#119's default-on behavior, which
+                    // only applies to the "+ New fleet" single-agent wizard
+                    // path (build_default_manifest/build_default_k8s_manifest
+                    // in studio-cp).
+                    acp_enabled: None,
                 },
             }
         }).collect()
@@ -177,6 +183,17 @@ pub struct Spec {
     /// resources are created. This keeps existing deployments unchanged.
     #[serde(default)]
     pub ingress: Option<Ingress>,
+    /// Sets `OPENAB_ACP_ENABLED` in the container's environment, turning on
+    /// the reverse-MCP-over-ACP tunnel (`/acp`). `openab-gateway`'s own
+    /// runtime default is *off* when this env var is unset, so this field
+    /// has no serde default either — omitted (`None`) preserves that
+    /// existing behavior for manifests that don't set it (including
+    /// `oabctl create`'s CLI wizard). `Some(true)` requires a matching
+    /// `OPENAB_ACP_AUTH_KEY` entry in `secrets`, since the default
+    /// `0.0.0.0` bind ECS/k8s tasks use is not loopback — the fail-open
+    /// (keyless) exception only applies to a loopback bind.
+    #[serde(default)]
+    pub acp_enabled: Option<bool>,
 }
 
 /// Inbound HTTPS ingress for webhook-based platforms (Telegram, LINE, ...).

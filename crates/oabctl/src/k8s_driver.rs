@@ -175,6 +175,15 @@ fn build_deployment(m: &OABServiceManifest) -> Result<Deployment> {
             ..Default::default()
         });
     }
+    // studio#119 follow-up: same as EcsDriver (apply.rs) — only ever push
+    // "true", absence already means off (openab-gateway's own default).
+    if m.spec.acp_enabled == Some(true) {
+        env.push(EnvVar {
+            name: "OPENAB_ACP_ENABLED".to_string(),
+            value: Some("true".to_string()),
+            ..Default::default()
+        });
+    }
     env.extend(secret_env_vars(m)?);
 
     // Same convention as EcsDriver (apply.rs): the image's default CMD points
@@ -349,6 +358,7 @@ mod tests {
                     tolerations: Vec::new(),
                 }),
                 ingress: None,
+                acp_enabled: None,
             },
         }
     }

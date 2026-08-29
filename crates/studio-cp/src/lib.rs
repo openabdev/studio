@@ -1058,6 +1058,27 @@ fn default_config_from_uri(bucket: &str, namespace: &str, name: &str) -> String 
     format!("s3://{bucket}/{}/config.toml", studio_compose::artifacts_prefix(namespace, name))
 }
 
+/// Generates a random `OPENAB_ACP_AUTH_KEY` and stores it in Secrets
+/// Manager under the same `oab/{namespace}/{name}` convention `oabctl
+/// create`'s CLI wizard uses for the Discord bot token (studio#119
+/// follow-up — Studio-deployed agents default to ACP enabled). Fresh JSON
+/// blob rather than a read-merge-write: this only ever runs from
+/// `build_default_manifest`/`build_default_k8s_manifest`, both exclusively
+/// on the first-ever-deploy path, so nothing else has written to this
+/// secret name yet at this point in the flow.
+async fn provision_acp_auth_secret(
+    aws_config: &aws_config::SdkConfig,
+    namespace: &str,
+    name: &str,
+) -> anyhow::Result<String> {
+    let sm = aws_sdk_secretsmanager::Client::new(aws_config);
+    let secret_name = format!("oab/{namespace}/{name}");
+    let key = uuid::Uuid::new_v4().to_string();
+    let secret_obj = serde_json::json!({ "OPENAB_ACP_AUTH_KEY": key });
+    oabctl::create::store_secret(&sm, &secret_name, &secret_obj.to_string()).await?;
+    Ok(format!("aws-sm://{secret_name}#OPENAB_ACP_AUTH_KEY"))
+}
+
 /// Build a fresh `OABServiceManifest` for an agent that has never been
 /// provisioned before — `redeploy()` can only patch an *already-stored*
 /// manifest (studio#111: it has no "create the first one" path). Fields not
@@ -1065,10 +1086,9 @@ fn default_config_from_uri(bucket: &str, namespace: &str, name: &str) -> String 
 /// networking from `oabctl::create::default_networking` (same discovery
 /// `oabctl create`'s CLI wizard uses, minus the interactive prompts),
 /// resources 256/512 (the CLI wizard's own default), `FARGATE`/`X86_64`
-/// (the schema's own `#[serde(default)]` values), empty `secrets` (valid —
-/// no ECS-level Secrets Manager env injection; whatever the template's own
-/// config.toml needs is the operator's concern, unchanged from how
-/// `oabctl create` already works), no ingress.
+/// (the schema's own `#[serde(default)]` values), no ingress. ACP defaults
+/// to enabled (studio#119 follow-up) — `secrets` carries the generated
+/// `OPENAB_ACP_AUTH_KEY` this needs, so it's no longer always empty.
 async fn build_default_manifest(
     aws_config: &aws_config::SdkConfig,
     namespace: &str,
@@ -1078,6 +1098,9 @@ async fn build_default_manifest(
 ) -> anyhow::Result<oabctl::manifest::OABServiceManifest> {
     let net = oabctl::create::default_networking(aws_config, name).await?;
     let config_from = default_config_from_uri(bucket, namespace, name);
+    let acp_auth_ref = provision_acp_auth_secret(aws_config, namespace, name).await?;
+    let mut secrets = std::collections::HashMap::new();
+    secrets.insert("OPENAB_ACP_AUTH_KEY".to_string(), acp_auth_ref);
     Ok(oabctl::manifest::OABServiceManifest {
         api_version: "oab.dev/v2".to_string(),
         kind: "OABService".to_string(),
@@ -1095,7 +1118,7 @@ async fn build_default_manifest(
             config_from,
             bundle_from: None,
             bootstrap_from: None,
-            secrets: std::collections::HashMap::new(),
+            secrets,
             runtime: oabctl::manifest::Runtime::Ecs(oabctl::manifest::EcsRuntime {
                 capacity_provider: "FARGATE".to_string(),
                 architecture: "X86_64".to_string(),
@@ -1107,6 +1130,7 @@ async fn build_default_manifest(
                 },
             }),
             ingress: None,
+            acp_enabled: Some(true),
         },
     })
 }
@@ -1222,18 +1246,59 @@ fn k8s_service_account_from_principal(expected_principal: Option<&str>) -> Optio
         .map(|(_namespace, name)| name.to_string())
 }
 
+/// Generates a random `OPENAB_ACP_AUTH_KEY` and server-side-applies it into
+/// a k8s `Secret` named `{name}-acp` in `namespace` (studio#119 follow-up —
+/// k8s counterpart of [`provision_acp_auth_secret`]). `Patch::Apply` rather
+/// than a plain `create()`: this only ever runs from
+/// `build_default_k8s_manifest` on the first-ever-deploy path, so a fresh
+/// object is expected, but apply is idempotent if a retried deploy attempt
+/// runs this twice — a plain `create()` would fail closed on the second
+/// attempt with a 409 instead.
+async fn provision_acp_auth_k8s_secret(
+    context: Option<&str>,
+    namespace: &str,
+    name: &str,
+) -> anyhow::Result<String> {
+    use k8s_openapi::api::core::v1::Secret;
+    use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
+    use kube::api::{Api, Patch, PatchParams};
+
+    let client = k8s_client_for(context).await?;
+    let secret_name = format!("{name}-acp");
+    let key = uuid::Uuid::new_v4().to_string();
+    let mut string_data = std::collections::BTreeMap::new();
+    string_data.insert("OPENAB_ACP_AUTH_KEY".to_string(), key);
+    let secret = Secret {
+        metadata: ObjectMeta {
+            name: Some(secret_name.clone()),
+            namespace: Some(namespace.to_string()),
+            ..Default::default()
+        },
+        string_data: Some(string_data),
+        ..Default::default()
+    };
+    let api: Api<Secret> = Api::namespaced(client, namespace);
+    api.patch(&secret_name, &PatchParams::apply("studio-cp"), &Patch::Apply(&secret))
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to create/apply k8s Secret '{secret_name}': {e}"))?;
+    Ok(format!("k8s-secret://{secret_name}#OPENAB_ACP_AUTH_KEY"))
+}
+
 /// Build a fresh k8s `OABServiceManifest` — the `Runtime::Kubernetes`
 /// counterpart to [`build_default_manifest`]. No VPC/subnet/security-group
 /// concept (that's ECS-specific networking); k8s's per-fleet placement is
 /// `context` (which cluster) and `namespace` (both already resolved by the
-/// caller from `K8sFleetBinding`, not part of the manifest itself — mirrors
-/// how AWS's `cluster` is a driver-construction parameter, not a manifest
-/// field). `node_selector`/`tolerations` default empty; `service_account`
-/// comes from `expected_principal` when it names one, else the namespace's
-/// default applies (same "unset = use default" contract `default_security_group`-
+/// caller from `K8sFleetBinding`) — `context` is threaded through here only
+/// to create the ACP auth Secret (studio#119 follow-up) below, it's still
+/// not stored on the manifest itself, mirroring how AWS's `cluster` is a
+/// driver-construction parameter, not a manifest field. `node_selector`/
+/// `tolerations` default empty; `service_account` comes from
+/// `expected_principal` when it names one, else the namespace's default
+/// applies (same "unset = use default" contract `default_security_group`-
 /// style AWS defaults don't have an equivalent of, since k8s already has one
 /// built in).
 async fn build_default_k8s_manifest(
+    context: Option<&str>,
     namespace: &str,
     name: &str,
     image: &str,
@@ -1241,6 +1306,9 @@ async fn build_default_k8s_manifest(
     expected_principal: Option<&str>,
 ) -> anyhow::Result<oabctl::manifest::OABServiceManifest> {
     let config_from = default_config_from_uri(bucket, namespace, name);
+    let acp_auth_ref = provision_acp_auth_k8s_secret(context, namespace, name).await?;
+    let mut secrets = std::collections::HashMap::new();
+    secrets.insert("OPENAB_ACP_AUTH_KEY".to_string(), acp_auth_ref);
     Ok(oabctl::manifest::OABServiceManifest {
         api_version: "oab.dev/v2".to_string(),
         kind: "OABService".to_string(),
@@ -1258,13 +1326,14 @@ async fn build_default_k8s_manifest(
             config_from,
             bundle_from: None,
             bootstrap_from: None,
-            secrets: std::collections::HashMap::new(),
+            secrets,
             runtime: oabctl::manifest::Runtime::Kubernetes(oabctl::manifest::KubernetesRuntime {
                 node_selector: std::collections::HashMap::new(),
                 service_account: k8s_service_account_from_principal(expected_principal),
                 tolerations: Vec::new(),
             }),
             ingress: None,
+            acp_enabled: Some(true),
         },
     })
 }
@@ -1329,7 +1398,7 @@ pub async fn provision_from_library_k8s(
             stored.spec.image = image.clone();
             stored
         }
-        None => build_default_k8s_manifest(namespace, name, &image, &bucket, expected_principal).await?,
+        None => build_default_k8s_manifest(context, namespace, name, &image, &bucket, expected_principal).await?,
     };
     manifest.spec.bundle_from = Some(oabctl::studio_api::bundle_from_uri(&bucket, namespace, name));
 
