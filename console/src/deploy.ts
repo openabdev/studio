@@ -146,7 +146,9 @@ export function initDeployPanel(deps: DeployPanelDeps): DeployPanelHandle | null
   const composeHeading = document.getElementById("deploy-compose-heading");
   const deployForm = document.getElementById("deploy-agent-form") as HTMLFormElement | null;
   const vendorSel = document.getElementById("deploy-vendor") as HTMLSelectElement | null;
-  const imageInput = document.getElementById("deploy-image") as HTMLInputElement | null;
+  const imageSelectEl = document.getElementById("deploy-image-select") as HTMLSelectElement | null;
+  const imageCustomWrap = document.getElementById("deploy-image-custom-wrap");
+  const imageCustomInput = document.getElementById("deploy-image-custom") as HTMLInputElement | null;
   const apiKeyInput = document.getElementById("deploy-api-key") as HTMLInputElement | null;
   const deviceAuthHint = document.getElementById("deploy-device-auth-hint");
   const chatPlatformSel = document.getElementById("deploy-chat-platform") as HTMLSelectElement | null;
@@ -183,7 +185,9 @@ export function initDeployPanel(deps: DeployPanelDeps): DeployPanelHandle | null
     !composeSection ||
     !deployForm ||
     !vendorSel ||
-    !imageInput ||
+    !imageSelectEl ||
+    !imageCustomWrap ||
+    !imageCustomInput ||
     !apiKeyInput ||
     !deviceAuthHint ||
     !chatPlatformSel ||
@@ -251,25 +255,51 @@ export function initDeployPanel(deps: DeployPanelDeps): DeployPanelHandle | null
     deviceAuthHint.hidden = !DEVICE_AUTH_VENDORS.has(vendor);
   };
 
-  // studio#128: pre-fills Image tag from GHCR's actually-published tags for
-  // the selected vendor — prefers Stable, falls back to Beta, and leaves
-  // the field for manual entry if neither resolved (a failed GHCR/GitHub
-  // call, or a vendor with no published image yet — never blocks the
-  // field, per Brett: "Image tag is allow to be manually input by user").
+  const IMAGE_CUSTOM_SENTINEL = "__custom__";
+
+  // studio#136: which value is actually in play — a resolved Stable/Beta
+  // <option> (its value is the real image tag directly) or the free-text
+  // Custom field.
+  const currentImage = (): string =>
+    imageSelectEl.value === IMAGE_CUSTOM_SENTINEL ? imageCustomInput.value.trim() : imageSelectEl.value;
+
+  const applyImageMode = (): void => {
+    const isCustom = imageSelectEl.value === IMAGE_CUSTOM_SENTINEL;
+    imageCustomWrap.hidden = !isCustom;
+    if (isCustom) imageCustomInput.focus();
+  };
+
+  // studio#128/#136: a real <select> of GHCR's actually-published tags for
+  // the selected vendor (Stable/Beta, whichever resolved) plus a "Custom…"
+  // escape hatch — rebuilding the option list on every vendor change (not
+  // silently mutating one text field's value) is what makes "the image tag
+  // changed" visibly obvious, per Brett's report that a plain text field's
+  // value quietly updating read as "nothing happened".
   const loadVendorImage = async (): Promise<void> => {
     const invoke = tauriInvoke();
-    if (!invoke) return;
     const vendor = vendorSel.value;
-    imageInput.placeholder = "resolving…";
-    try {
-      const res = await invoke<VendorImageTagsResponse>("resolve_vendor_image_tags", { vendor });
-      const resolved = res.stable ?? res.beta;
-      if (resolved) imageInput.value = resolved;
-      imageInput.placeholder = resolved ?? "e.g. pre-beta-" + vendor;
-    } catch (e) {
-      imageInput.placeholder = "e.g. pre-beta-" + vendor;
-      setStatus(deployStatusEl, `image tag lookup unavailable: ${errText(e)}`, "err");
+    const opts: { value: string; label: string }[] = [];
+    if (invoke) {
+      try {
+        const res = await invoke<VendorImageTagsResponse>("resolve_vendor_image_tags", { vendor });
+        if (res.stable) opts.push({ value: res.stable, label: `Stable (${res.stable})` });
+        if (res.beta) opts.push({ value: res.beta, label: `Beta (${res.beta})` });
+      } catch (e) {
+        setStatus(deployStatusEl, `image tag lookup unavailable: ${errText(e)}`, "err");
+      }
     }
+    opts.push({ value: IMAGE_CUSTOM_SENTINEL, label: "Custom…" });
+    imageSelectEl.innerHTML = "";
+    for (const o of opts) {
+      const opt = document.createElement("option");
+      opt.value = o.value;
+      opt.textContent = o.label;
+      imageSelectEl.appendChild(opt);
+    }
+    // No selected-attribute set above, so the browser defaults to the first
+    // option — Stable if it resolved, else Beta, else Custom (never stuck
+    // on a meaningless blank selection).
+    applyImageMode();
   };
 
   const reset = (): void => {
@@ -415,6 +445,7 @@ export function initDeployPanel(deps: DeployPanelDeps): DeployPanelHandle | null
     applyVendorMode();
     void loadVendorImage();
   });
+  imageSelectEl.addEventListener("change", applyImageMode);
   chatPlatformSel.addEventListener("change", applyChatPlatformMode);
   acpCheckbox.addEventListener("change", applyAcpMode);
   acpTokenGenerateBtn.addEventListener("click", () => {
@@ -482,7 +513,7 @@ export function initDeployPanel(deps: DeployPanelDeps): DeployPanelHandle | null
       setStatus(deployStatusEl, "agent name is required", "err");
       return;
     }
-    const image = imageInput.value.trim();
+    const image = currentImage();
     if (!image) {
       setStatus(deployStatusEl, "image tag is required", "err");
       return;
