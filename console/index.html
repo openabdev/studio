@@ -120,8 +120,11 @@
                 </label>
                 <label
                   >Namespace
-                  <input id="deploy-k8s-namespace" class="compose-input" type="text" list="deploy-k8s-namespace-options" placeholder="pick existing or type a new one" spellcheck="false" />
-                  <datalist id="deploy-k8s-namespace-options"></datalist>
+                  <select id="deploy-k8s-namespace" class="compose-select"></select>
+                </label>
+                <label id="deploy-k8s-namespace-new-wrap" hidden
+                  >New namespace name
+                  <input id="deploy-k8s-namespace-new" class="compose-input" type="text" placeholder="e.g. my-namespace" spellcheck="false" />
                 </label>
                 <label
                   >Service account (optional)

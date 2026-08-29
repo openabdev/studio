@@ -96,11 +96,15 @@ export function initDeployPanel(deps: DeployPanelDeps): DeployPanelHandle | null
   const principalInput = document.getElementById("deploy-principal") as HTMLInputElement | null;
   const k8sFieldsEl = document.getElementById("deploy-k8s-fields");
   const k8sContextSel = document.getElementById("deploy-k8s-context") as HTMLSelectElement | null;
-  // Namespace is a text input with a <datalist> of what already exists (not a
-  // <select>) — per studio#104's design, a brand-new namespace is a valid
-  // choice and a plain select can't express "not in this list yet".
-  const k8sNamespaceInput = document.getElementById("deploy-k8s-namespace") as HTMLInputElement | null;
-  const k8sNamespaceOptions = document.getElementById("deploy-k8s-namespace-options") as HTMLDataListElement | null;
+  // Namespace is a <select> of what already exists, plus a sentinel
+  // "+ Create new namespace…" option (studio#119 — the original free-text
+  // <input>+<datalist> didn't read as "selectable" per Brett) that reveals a
+  // plain text field for the not-yet-existing case a select alone can't
+  // express.
+  const k8sNamespaceSel = document.getElementById("deploy-k8s-namespace") as HTMLSelectElement | null;
+  const k8sNamespaceNewWrap = document.getElementById("deploy-k8s-namespace-new-wrap");
+  const k8sNamespaceNewInput = document.getElementById("deploy-k8s-namespace-new") as HTMLInputElement | null;
+  const NAMESPACE_NEW_SENTINEL = "__new__";
   // Service account, unlike namespace, must already exist for k8s to accept
   // it as a pod's serviceAccountName — so (unlike namespace) a plain <select>
   // is the right shape here, no free-text escape hatch needed.
@@ -131,8 +135,9 @@ export function initDeployPanel(deps: DeployPanelDeps): DeployPanelHandle | null
     !principalInput ||
     !k8sFieldsEl ||
     !k8sContextSel ||
-    !k8sNamespaceInput ||
-    !k8sNamespaceOptions ||
+    !k8sNamespaceSel ||
+    !k8sNamespaceNewWrap ||
+    !k8sNamespaceNewInput ||
     !k8sServiceAccountSel ||
     !composeSection ||
     !tmplSel ||
@@ -168,7 +173,23 @@ export function initDeployPanel(deps: DeployPanelDeps): DeployPanelHandle | null
     // `selected` default ("aws"), but doesn't touch the field-group `hidden`
     // attributes this panel manages by hand — sync those too.
     showProviderFields(providerSel.value);
+    applyNamespaceMode();
   };
+
+  // studio#119: the namespace <select>'s "+ Create new namespace…" sentinel
+  // reveals a plain text field for the not-yet-existing case (a <select>
+  // alone can only offer what list_namespaces already returned).
+  const applyNamespaceMode = (): void => {
+    const isNew = k8sNamespaceSel.value === NAMESPACE_NEW_SENTINEL;
+    k8sNamespaceNewWrap.hidden = !isNew;
+    if (isNew) k8sNamespaceNewInput.focus();
+    else k8sNamespaceNewInput.value = "";
+  };
+
+  const currentNamespace = (): string =>
+    k8sNamespaceSel.value === NAMESPACE_NEW_SENTINEL
+      ? k8sNamespaceNewInput.value.trim()
+      : k8sNamespaceSel.value;
 
   // Toggle the AWS/k8s field groups per studio#104's design: switching
   // providers resets which group is visible; field *values* aren't cleared
@@ -188,16 +209,25 @@ export function initDeployPanel(deps: DeployPanelDeps): DeployPanelHandle | null
         "list_namespaces",
         context ? { context } : {},
       );
-      k8sNamespaceOptions.innerHTML = res.namespaces
-        .map((n) => `<option value="${escapeHtml(n)}"></option>`)
-        .join("");
+      const previous = k8sNamespaceSel.value;
+      const opts = [
+        '<option value="">— pick a namespace —</option>',
+        ...res.namespaces.map((n) => `<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`),
+        `<option value="${NAMESPACE_NEW_SENTINEL}">+ Create new namespace…</option>`,
+      ];
+      k8sNamespaceSel.innerHTML = opts.join("");
+      // innerHTML replacement always resets selection to the first option —
+      // restore it if the previously-selected namespace is still in the
+      // refreshed list (e.g. reloading against the same context).
+      if (previous && Array.from(k8sNamespaceSel.options).some((o) => o.value === previous)) {
+        k8sNamespaceSel.value = previous;
+      }
+      applyNamespaceMode();
       // studio#119: a prior failed attempt (e.g. before switching context)
       // can leave its error text on screen — clear it once a load actually
       // succeeds, otherwise a stale error outlives the state it described.
       setStatus(identityStatusEl, "");
     } catch (e) {
-      // Non-fatal: the namespace field is a free-text input either way (list_
-      // namespaces failing just means no autocomplete suggestions).
       setStatus(identityStatusEl, `namespace list unavailable: ${errText(e)}`, "err");
     }
   };
@@ -210,7 +240,7 @@ export function initDeployPanel(deps: DeployPanelDeps): DeployPanelHandle | null
   const loadK8sServiceAccounts = async (): Promise<void> => {
     const defaultOption = '<option value="">— namespace default —</option>';
     const invoke = tauriInvoke();
-    const namespace = k8sNamespaceInput.value.trim();
+    const namespace = currentNamespace();
     if (!invoke || !namespace) {
       k8sServiceAccountSel.innerHTML = defaultOption;
       return;
@@ -261,9 +291,13 @@ export function initDeployPanel(deps: DeployPanelDeps): DeployPanelHandle | null
     void loadK8sNamespaces();
     void loadK8sServiceAccounts();
   });
+  k8sNamespaceSel.addEventListener("change", () => {
+    applyNamespaceMode();
+    void loadK8sServiceAccounts();
+  });
   // "change" (fires on commit/blur), not "input" (every keystroke) — avoids a
-  // tool call per character typed into the namespace field.
-  k8sNamespaceInput.addEventListener("change", () => void loadK8sServiceAccounts());
+  // tool call per character typed into the new-namespace field.
+  k8sNamespaceNewInput.addEventListener("change", () => void loadK8sServiceAccounts());
 
   const loadLibraryAndPickers = async (): Promise<void> => {
     const invoke = tauriInvoke();
@@ -378,7 +412,7 @@ export function initDeployPanel(deps: DeployPanelDeps): DeployPanelHandle | null
     // it's adding to. Adding an instance to an *existing* k8s fleet isn't
     // wired through this wizard yet.
     const isK8s = mode.kind === "new-fleet" && providerSel.value === "k8s";
-    const namespace = isK8s ? k8sNamespaceInput.value.trim() || "default" : "default";
+    const namespace = isK8s ? currentNamespace() || "default" : "default";
     const context = isK8s ? k8sContextSel.value || undefined : undefined;
     const serviceAccount = isK8s ? k8sServiceAccountSel.value : "";
     // studio-cp's provision_from_library_k8s expects the full
