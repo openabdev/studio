@@ -156,7 +156,11 @@
                 </label>
                 <label
                   >Image tag
-                  <input id="deploy-image" class="compose-input" type="text" placeholder="resolving…" spellcheck="false" />
+                  <select id="deploy-image-select" class="compose-select"></select>
+                </label>
+                <label id="deploy-image-custom-wrap" hidden
+                  >Custom image
+                  <input id="deploy-image-custom" class="compose-input" type="text" placeholder="e.g. ghcr.io/openabdev/openab:0.9.0-claude" spellcheck="false" />
                 </label>
                 <label
                   >API key (optional)
