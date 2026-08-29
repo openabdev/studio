@@ -249,6 +249,17 @@ pub fn tools() -> Vec<Tool> {
             })),
         ),
         Tool::new(
+            "resolve_vendor_image_tags",
+            "Resolve a vendor's real, currently-published Stable/Beta image tags on ghcr.io/openabdev/openab (studio#128 — backs the New Fleet wizard's Vendor + Image tag fields). \"Beta\" is the hourly rolling pre-beta-<vendor> build; \"Stable\" is the newest openab release whose matching <version>-<vendor> image is confirmed to actually exist (a release existing doesn't guarantee a matching image was ever built — the build workflow is a manual, disconnected step). Anonymous GHCR/GitHub access, no auth needed (public package/repo). Either or both fields come back null if nothing verified — not an error; the caller should fall back to a plain editable text field.",
+            as_map(json!({
+                "type": "object",
+                "properties": {
+                    "vendor": { "type": "string", "description": "Vendor name, e.g. \"claude\", \"codex\", \"cursor\", \"kiro\", \"antigravity\"." }
+                },
+                "required": ["vendor"]
+            })),
+        ),
+        Tool::new(
             "list_namespaces",
             "List namespaces in the cluster a kubeconfig context resolves to. Read-only; backs the New Fleet wizard's namespace <select> (with a manual-entry fallback for a namespace that doesn't exist yet — this can only list what's already there).",
             as_map(json!({
@@ -422,6 +433,7 @@ impl OabMcp {
             "deploy_apply" => self.t_apply(args).await,
             "deploy_provision" => self.t_provision(args).await,
             "deploy_provision_agent" => self.t_provision_agent(args).await,
+            "resolve_vendor_image_tags" => self.t_resolve_vendor_image_tags(args).await,
             "deploy_scale" => self.t_scale(args).await,
             "deploy_delete" => self.t_delete(args).await,
             "runtime_context" => self.t_runtime_context(args).await,
@@ -777,6 +789,17 @@ impl OabMcp {
         }))
     }
 
+    /// `resolve_vendor_image_tags` (studio#128) — no fleet/cluster/AWS
+    /// credential resolution at all, this is pure GHCR/GitHub read access.
+    async fn t_resolve_vendor_image_tags(&self, args: &Map<String, Value>) -> Result<Value> {
+        let vendor = args
+            .get("vendor")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("missing required arg: vendor"))?;
+        let tags = scp::resolve_vendor_image_tags(vendor).await;
+        Ok(json!({ "beta": tags.beta, "stable": tags.stable }))
+    }
+
     async fn t_apply(&self, args: &Map<String, Value>) -> Result<Value> {
         let cluster = self.target(args)?.cluster;
         let manifest = args
@@ -1109,7 +1132,7 @@ mod tests {
             .iter()
             .map(|t| t["name"].as_str().expect("tool has a name").to_string())
             .collect();
-        assert_eq!(names.len(), 18);
+        assert_eq!(names.len(), 19);
         for expected in [
             "deploy_list",
             "deploy_get",
@@ -1118,6 +1141,7 @@ mod tests {
             "deploy_apply",
             "deploy_provision",
             "deploy_provision_agent",
+            "resolve_vendor_image_tags",
             "deploy_scale",
             "deploy_delete",
             "runtime_context",

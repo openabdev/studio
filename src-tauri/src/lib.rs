@@ -413,6 +413,30 @@ async fn list_k8s_contexts(core: tauri::State<'_, Core>) -> Result<Value, String
     }
 }
 
+/// Bridge command: a vendor's real, currently-published Stable/Beta image
+/// tags on GHCR (studio#128), via the sidecar's `resolve_vendor_image_tags`
+/// tool — backs the New Fleet wizard's Vendor + Image tag fields.
+#[tauri::command]
+async fn resolve_vendor_image_tags(core: tauri::State<'_, Core>, vendor: String) -> Result<Value, String> {
+    let client = {
+        let guard = core.0.lock().await;
+        guard
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| "core not started yet".to_string())?
+    };
+    match client
+        .call_tool("resolve_vendor_image_tags", json!({ "vendor": vendor }))
+        .await
+    {
+        Ok(v) => Ok(v),
+        Err(e) => {
+            client.log("error", &format!("resolve_vendor_image_tags: {e}"));
+            Err(e)
+        }
+    }
+}
+
 /// Bridge command: namespaces in a kubeconfig context (studio#104), via the
 /// sidecar's `list_namespaces` tool — backs the New Fleet wizard's namespace
 /// field's autocomplete.
@@ -801,6 +825,7 @@ pub fn run() {
             fleet_config_write,
             list_aws_profiles,
             list_k8s_contexts,
+            resolve_vendor_image_tags,
             list_namespaces,
             list_service_accounts,
             k8s_fleet_config,
