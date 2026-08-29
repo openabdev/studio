@@ -167,21 +167,24 @@ pub fn tools() -> Vec<Tool> {
         ),
         Tool::new(
             "deploy_provision_agent",
-            "Provision an agent directly from a caller-supplied config.toml — no compose library, no template ⊕ overlay (studio#128: the New Fleet wizard's vendor/chat-platform/ACP flow composes config.toml itself and has no template to point at). Same create-vs-redeploy behavior as deploy_provision: patches an existing stored manifest's image/bundle if this agent already has one, otherwise builds a fresh manifest with sensible defaults. `provider` (default \"aws\") selects the target, same as deploy_provision.",
+            "Provision an agent directly from structured inputs — no compose library, no template ⊕ overlay (studio#128: the New Fleet wizard's vendor/chat-platform/ACP flow has no template to point at). config.toml is rendered server-side from these fields (the single source of truth — any caller, wizard or otherwise, that sends the same fields gets byte-identical config.toml, no drift between generators). Same create-vs-redeploy behavior as deploy_provision: patches an existing stored manifest's image/bundle if this agent already has one, otherwise builds a fresh manifest with sensible defaults. `provider` (default \"aws\") selects the target, same as deploy_provision. k8s deploys refuse a non-empty `chat_platform`: config.toml's secret resolution only supports aws-sm:// (AWS Secrets Manager), which a k8s pod has no credential chain to reach — ACP is the k8s connection path today.",
             as_map(json!({
                 "type": "object",
                 "properties": {
-                    "config_toml": { "type": "string", "description": "Full config.toml text for the agent." },
                     "image": { "type": "string", "description": "Container image (e.g. ghcr.io/openabdev/openab:<tag>-<vendor>)." },
                     "name": { "type": "string", "description": "Agent / service name (service = oab-{namespace}-{name})." },
                     "namespace": { "type": "string", "description": "Namespace (default \"default\")." },
+                    "api_key": { "type": "string", "description": "Optional vendor API key. Captured and stored as a secret; not yet wired into config.toml (which env var a given vendor's CLI expects it under needs vendor-specific follow-up)." },
+                    "chat_platform": { "type": "string", "description": "Optional: \"discord\" | \"telegram\" | \"line\". Omit for no chat platform (connect via ACP directly). AWS only — refused for k8s deploys." },
+                    "chat_bot_token": { "type": "string", "description": "Discord/Telegram bot token, or LINE's channel access token." },
+                    "chat_channel_secret": { "type": "string", "description": "LINE only." },
                     "provider": { "type": "string", "description": "\"aws\" (default) or \"k8s\" — which driver applies the result." },
                     "fleet": { "type": "string", "description": "AWS only. Fleet name (see fleet_config): targets the fleet's cluster and managing credential; a write to a service outside the fleet's members is refused. Overrides the cluster arg." },
                     "cluster": { "type": "string", "description": "AWS only. ECS cluster (defaults to the server's configured cluster)." },
                     "context": { "type": "string", "description": "k8s only. Kubeconfig context to apply through. Omit to use the kubeconfig's current-context." },
                     "expected_principal": { "type": "string", "description": "k8s only, optional. `system:serviceaccount:<namespace>:<name>` to set the pod's service account; unset uses the namespace's default." }
                 },
-                "required": ["config_toml", "image", "name"]
+                "required": ["image", "name"]
             })),
         ),
         Tool::new(
@@ -708,12 +711,15 @@ impl OabMcp {
             .get("image")
             .and_then(Value::as_str)
             .ok_or_else(|| anyhow::anyhow!("missing required arg: image"))?;
-        let config_toml = args
-            .get("config_toml")
-            .and_then(Value::as_str)
-            .ok_or_else(|| anyhow::anyhow!("missing required arg: config_toml"))?
-            .as_bytes()
-            .to_vec();
+        let input = scp::AgentWizardInput {
+            api_key: args.get("api_key").and_then(Value::as_str).map(str::to_string),
+            chat_platform: args.get("chat_platform").and_then(Value::as_str).map(str::to_string),
+            chat_bot_token: args.get("chat_bot_token").and_then(Value::as_str).map(str::to_string),
+            chat_channel_secret: args
+                .get("chat_channel_secret")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+        };
 
         if args.get("provider").and_then(Value::as_str) == Some("k8s") {
             let context = args.get("context").and_then(Value::as_str);
@@ -724,7 +730,7 @@ impl OabMcp {
                 namespace,
                 name,
                 image,
-                config_toml,
+                input,
                 expected_principal,
             )
             .await?;
@@ -755,7 +761,7 @@ impl OabMcp {
             namespace,
             name,
             image,
-            config_toml,
+            input,
         )
         .await?;
         Ok(json!({

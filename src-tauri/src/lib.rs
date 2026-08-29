@@ -179,15 +179,19 @@ async fn deploy_provision(
 }
 
 /// [`deploy_provision`], but for `deploy_provision_agent` (studio#128) — the
-/// New Fleet wizard's direct path (vendor/chat-platform/ACP composed into
-/// `config_toml` client-side, no compose library involved).
+/// New Fleet wizard's direct path. Structured fields, not a pre-rendered
+/// `config_toml` — the sidecar renders it server-side (see the MCP tool's
+/// own doc comment for why: single source of truth regardless of caller).
 #[tauri::command]
 async fn deploy_provision_agent(
     core: tauri::State<'_, Core>,
-    config_toml: String,
     image: String,
     name: String,
     namespace: Option<String>,
+    api_key: Option<String>,
+    chat_platform: Option<String>,
+    chat_bot_token: Option<String>,
+    chat_channel_secret: Option<String>,
     cluster: Option<String>,
     provider: Option<String>,
     context: Option<String>,
@@ -202,13 +206,24 @@ async fn deploy_provision_agent(
             .ok_or_else(|| "core not started yet".to_string())?
     };
     let mut params = json!({
-        "config_toml": config_toml,
         "image": image,
         "name": name,
         "cluster": cluster,
     });
     if let Some(ns) = namespace {
         params["namespace"] = json!(ns);
+    }
+    if let Some(k) = api_key.filter(|s| !s.is_empty()) {
+        params["api_key"] = json!(k);
+    }
+    if let Some(p) = chat_platform.filter(|s| !s.is_empty()) {
+        params["chat_platform"] = json!(p);
+    }
+    if let Some(t) = chat_bot_token.filter(|s| !s.is_empty()) {
+        params["chat_bot_token"] = json!(t);
+    }
+    if let Some(s) = chat_channel_secret.filter(|s| !s.is_empty()) {
+        params["chat_channel_secret"] = json!(s);
     }
     if let Some(p) = provider.filter(|s| !s.is_empty()) {
         params["provider"] = json!(p);

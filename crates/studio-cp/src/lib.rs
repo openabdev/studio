@@ -1230,22 +1230,195 @@ pub async fn provision_from_library(
     })
 }
 
+/// New Fleet wizard inputs (studio#128) that determine the generated
+/// config.toml + which secrets get provisioned alongside it. Deliberately
+/// its own UI-facing shape, not the manifest/Bundle types — those are the
+/// on-disk/API contract, this is what the wizard actually collects.
+///
+/// `api_key` is captured and stored as a secret, but **not yet wired into
+/// config.toml** — which env var name a given vendor's CLI actually expects
+/// its API key under (`ANTHROPIC_API_KEY`? something else?) needs
+/// vendor-specific research this round didn't do (matches the "no generic
+/// auth-flow abstraction exists yet" scoping already agreed for vendor auth
+/// v1). Fabricating a config key nothing reads would be silently worse than
+/// not wiring it at all, so: captured, not yet consumed. Follow-up.
+#[derive(Debug, Clone, Default)]
+pub struct AgentWizardInput {
+    pub api_key: Option<String>,
+    /// "discord" | "telegram" | "line"; `None` (or any other value) means no
+    /// chat platform — ACP is the connection path (Brett: "we can use acp
+    /// to do connection directly").
+    pub chat_platform: Option<String>,
+    /// Discord/Telegram bot token, or LINE's channel access token.
+    pub chat_bot_token: Option<String>,
+    /// LINE only.
+    pub chat_channel_secret: Option<String>,
+}
+
+/// Stores [`AgentWizardInput`]'s secret-bearing fields in the same
+/// `oab/{namespace}/{name}` Secrets Manager convention `oabctl create`'s
+/// CLI wizard already uses for the Discord bot token (studio#128) — reuses
+/// `oabctl::create::store_secret`, a single fresh JSON blob for the same
+/// "first deploy, nothing else has written here yet" reason
+/// `provision_acp_auth_secret` (studio#119) documents. A **separate**
+/// secret from the ACP auth key: that one is a container-level env var the
+/// gateway reads directly, this one feeds config.toml's `[secrets.refs]` →
+/// `${secrets.x}` substitution, openab's own resolution mechanism — two
+/// different delivery paths, kept as two different secrets rather than
+/// conflating them into one.
+async fn provision_agent_secrets(
+    aws_config: &aws_config::SdkConfig,
+    namespace: &str,
+    name: &str,
+    input: &AgentWizardInput,
+) -> anyhow::Result<()> {
+    let mut obj = serde_json::Map::new();
+    if let Some(key) = &input.api_key {
+        obj.insert("VENDOR_API_KEY".to_string(), serde_json::Value::String(key.clone()));
+    }
+    match input.chat_platform.as_deref() {
+        Some("discord") => {
+            if let Some(t) = &input.chat_bot_token {
+                obj.insert("DISCORD_BOT_TOKEN".to_string(), serde_json::Value::String(t.clone()));
+            }
+        }
+        Some("telegram") => {
+            if let Some(t) = &input.chat_bot_token {
+                obj.insert("TELEGRAM_BOT_TOKEN".to_string(), serde_json::Value::String(t.clone()));
+            }
+        }
+        Some("line") => {
+            if let Some(t) = &input.chat_bot_token {
+                obj.insert(
+                    "LINE_CHANNEL_ACCESS_TOKEN".to_string(),
+                    serde_json::Value::String(t.clone()),
+                );
+            }
+            if let Some(s) = &input.chat_channel_secret {
+                obj.insert("LINE_CHANNEL_SECRET".to_string(), serde_json::Value::String(s.clone()));
+            }
+        }
+        _ => {}
+    }
+    if obj.is_empty() {
+        return Ok(());
+    }
+    let sm = aws_sdk_secretsmanager::Client::new(aws_config);
+    let secret_name = format!("oab/{namespace}/{name}");
+    oabctl::create::store_secret(&sm, &secret_name, &serde_json::Value::Object(obj).to_string()).await?;
+    Ok(())
+}
+
+/// Renders config.toml for a wizard-composed agent (studio#128) — the
+/// structured-input counterpart of `oabctl create`'s `generate_config`,
+/// generalized from Discord-only to any of the wizard's chat platforms (or
+/// none — ACP-only). Doesn't touch ACP: that's `Spec.acp_enabled`, a
+/// container-level env var, not a config.toml key (studio#119 confirmed
+/// openab-gateway reads `OPENAB_ACP_ENABLED` from process env only).
+///
+/// Single source of truth by construction, not just convention: this is the
+/// *only* place that ever renders this text — the console wizard and any
+/// other MCP caller (an "admin agent") both go through `deploy_provision_agent`,
+/// which calls this, so the same structured input always produces the same
+/// file regardless of who's driving.
+fn generate_agent_config(namespace: &str, name: &str, input: &AgentWizardInput) -> String {
+    let secret_ref = |key: &str| format!("aws-sm://oab/{namespace}/{name}#{key}");
+    let mut secrets_refs = String::new();
+    let mut platform_section = String::new();
+
+    match input.chat_platform.as_deref() {
+        Some("discord") => {
+            secrets_refs.push_str(&format!(
+                "discord_bot_token = \"{}\"\n",
+                secret_ref("DISCORD_BOT_TOKEN")
+            ));
+            platform_section = r#"
+[discord]
+bot_token = "${secrets.discord_bot_token}"
+allow_all_channels = true
+allow_all_users = true
+allowed_channels = []
+allowed_users = []
+allow_bot_messages = "mentions"
+max_bot_turns = 1000
+message_processing_mode = "per-thread"
+"#
+            .to_string();
+        }
+        Some("telegram") => {
+            secrets_refs.push_str(&format!(
+                "telegram_bot_token = \"{}\"\n",
+                secret_ref("TELEGRAM_BOT_TOKEN")
+            ));
+            platform_section = r#"
+[telegram]
+bot_token = "${secrets.telegram_bot_token}"
+"#
+            .to_string();
+        }
+        Some("line") => {
+            secrets_refs.push_str(&format!(
+                "line_channel_access_token = \"{}\"\n",
+                secret_ref("LINE_CHANNEL_ACCESS_TOKEN")
+            ));
+            secrets_refs.push_str(&format!(
+                "line_channel_secret = \"{}\"\n",
+                secret_ref("LINE_CHANNEL_SECRET")
+            ));
+            platform_section = r#"
+[line]
+channel_access_token = "${secrets.line_channel_access_token}"
+channel_secret = "${secrets.line_channel_secret}"
+"#
+            .to_string();
+        }
+        _ => {}
+    }
+
+    let secrets_block = if secrets_refs.is_empty() {
+        String::new()
+    } else {
+        format!("[secrets.refs]\n{secrets_refs}\n")
+    };
+
+    format!(
+        r#"{secrets_block}{platform_section}
+[agent]
+inherit_env = ["AWS_CONTAINER_CREDENTIALS_RELATIVE_URI", "AWS_DEFAULT_REGION", "AWS_EXECUTION_ENV", "AWS_REGION"]
+
+[pool]
+max_sessions = 5
+session_ttl_hours = 1
+
+[reactions]
+enabled = true
+remove_after_reply = false
+
+[cron]
+usercron_enabled = true
+usercron_path = "cronjob.toml"
+"#
+    )
+}
+
 /// [`provision_from_library`], but for the studio#128 wizard's direct path —
-/// no compose library, no `template ⊕ overlay`: the caller (the New Fleet
-/// wizard) has already composed `config_toml` itself from its own inputs
-/// (vendor, chat platform, ACP toggle) and just wants it provisioned.
-/// Deliberately a near-duplicate of `provision_from_library` (from "resolve
-/// the bucket" onward) rather than a shared refactor of that already-landed
-/// function — same tradeoff `provision_from_library_k8s`'s own doc comment
-/// already made for the same reason.
+/// no compose library, no `template ⊕ overlay`: builds config.toml itself
+/// from [`AgentWizardInput`] (via [`generate_agent_config`]) instead of
+/// composing `template ⊕ overlay`. Deliberately a near-duplicate of
+/// `provision_from_library` (from "resolve the bucket" onward) rather than
+/// a shared refactor of that already-landed function — same tradeoff
+/// `provision_from_library_k8s`'s own doc comment already made for the same
+/// reason.
 pub async fn provision_agent(
     aws_config: &aws_config::SdkConfig,
     cluster: &str,
     namespace: &str,
     name: &str,
     image: &str,
-    config_toml: Vec<u8>,
+    input: AgentWizardInput,
 ) -> anyhow::Result<ProvisionOutcome> {
+    provision_agent_secrets(aws_config, namespace, name, &input).await?;
+    let config_toml = generate_agent_config(namespace, name, &input).into_bytes();
     let mut bundle = studio_compose::Bundle {
         image_tag: image.to_string(),
         files: std::collections::BTreeMap::from([("config.toml".to_string(), config_toml)]),
@@ -1307,15 +1480,38 @@ pub async fn provision_agent(
 /// [`provision_agent`], but for a k8s-driven fleet — the studio#128
 /// counterpart of `provision_from_library_k8s`, same relationship
 /// `provision_agent` has to `provision_from_library`.
+///
+/// **`chat_platform` is refused, not silently dropped.** config.toml's
+/// `[secrets.refs]` only understands `aws-sm://` (and `exec://`) —
+/// `crates/openab-core/src/secrets.rs`'s own resolver — and a k8s pod
+/// (confirmed: `k8s_driver.rs::build_deployment` injects no AWS
+/// credentials/region at all, unlike the ECS path's `AWS_REGION` +
+/// task-role-via-`AWS_CONTAINER_CREDENTIALS_RELATIVE_URI`) has no AWS
+/// credential chain to resolve that URI with at runtime. Wiring a chat
+/// platform token through `[secrets.refs]` for a k8s deploy would compose
+/// and deploy "successfully" and then fail silently inside the running
+/// container — worse than refusing up front. ACP-only k8s deploys are
+/// unaffected (that key is delivered as a container-level env var via
+/// `spec.secrets`/`k8s-secret://`, a completely different, already-working
+/// mechanism — see `provision_acp_auth_k8s_secret`).
 pub async fn provision_agent_k8s(
     aws_config: &aws_config::SdkConfig,
     context: Option<&str>,
     namespace: &str,
     name: &str,
     image: &str,
-    config_toml: Vec<u8>,
+    input: AgentWizardInput,
     expected_principal: Option<&str>,
 ) -> anyhow::Result<ProvisionOutcome> {
+    if input.chat_platform.is_some() {
+        anyhow::bail!(
+            "chat platform integration isn't available for k8s deploys yet — config.toml's \
+             secret resolution needs AWS credentials the pod doesn't have. Use ACP to connect \
+             directly, or deploy this agent to ECS instead."
+        );
+    }
+    provision_agent_secrets(aws_config, namespace, name, &input).await?;
+    let config_toml = generate_agent_config(namespace, name, &input).into_bytes();
     let mut bundle = studio_compose::Bundle {
         image_tag: image.to_string(),
         files: std::collections::BTreeMap::from([("config.toml".to_string(), config_toml)]),
