@@ -174,6 +174,47 @@ const mcp = mcpEl ? createPane(mcpEl, () => flag("mcpio")) : null;
   });
 })();
 
+// Local "Config folder" (studio#128) — where the New Fleet wizard mirrors
+// each agent's generated config.toml (alongside the S3 copy it deploys
+// from) and where the "view an agent's config" screen reads from, no S3
+// round-trip. Persisted like the theme/log-level settings above
+// (localStorage), not Tauri's app-config-dir — this setting *points at*
+// other local files, storing it in the hidden config dir would just be an
+// extra layer of indirection for no reason.
+(function setupConfigFolder(): void {
+  const pathEl = document.getElementById("config-folder-path");
+  const pickBtn = document.getElementById("config-folder-pick");
+  if (!pathEl || !pickBtn) return;
+  const KEY = "oab-studio.configFolder";
+
+  const render = (): void => {
+    let saved: string | null = null;
+    try {
+      saved = localStorage.getItem(KEY);
+    } catch {
+      /* storage unavailable — falls through to the placeholder */
+    }
+    pathEl.textContent = saved || "— not set —";
+  };
+  render();
+
+  pickBtn.addEventListener("click", () => {
+    const invoke = tauriInvoke();
+    if (!invoke) return;
+    invoke<string | null>("plugin:dialog|open", { options: { directory: true } })
+      .then((path) => {
+        if (!path) return;
+        try {
+          localStorage.setItem(KEY, path);
+        } catch {
+          /* storage unavailable — the choice still applies this session */
+        }
+        render();
+      })
+      .catch((e) => note("error", `config folder pick failed: ${errText(e)}`));
+  });
+})();
+
 // Build stamp (injected by vite) — shown under the brand and logged on launch,
 // so it's obvious which commit this build is.
 const BUILD = `v${__APP_VERSION__} · ${__BUILD_SHA__}`;
