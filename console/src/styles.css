@@ -1189,6 +1189,37 @@ button.act:disabled {
   padding: 16px;
   overflow: auto;
 }
+/* Agent configs tab (studio#128) — local-folder-only view of a deployed
+   agent's config.toml (mirrors the log panes' monospace/scroll shape). */
+.pane.agent-configs {
+  padding: 16px;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.agent-configs-row {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+.agent-configs-row .compose-select {
+  flex: 1;
+}
+.agent-configs-content {
+  margin: 0;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow: auto;
+  min-height: 120px;
+}
 .config-form {
   display: flex;
   flex-direction: column;

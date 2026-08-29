@@ -253,6 +253,7 @@
           <button class="tab is-active" data-target="log">Activity</button>
           <button class="tab" data-target="mcpio">MCP · oab-mcp</button>
           <button class="tab" data-target="debug-config">Config</button>
+          <button class="tab" data-target="debug-agent-configs">Agent configs</button>
           <span class="tabs-spacer"></span>
           <button class="tab-filter" id="log-download" type="button" title="Download the active tab's log as a text file">Download</button>
           <button class="tab-filter" id="log-level" type="button" title="Activity verbosity — INFO+ hides DEBUG (e.g. keepalives); click for DEBUG+">INFO+</button>
@@ -315,6 +316,14 @@
               agent's config" reads from, no S3 round-trip.
             </p>
           </div>
+        </div>
+        <div id="debug-agent-configs" class="pane agent-configs" hidden>
+          <div class="agent-configs-row">
+            <select id="agent-configs-select" class="compose-select"></select>
+            <button class="cfg-btn cfg-btn-ghost" id="agent-configs-refresh" type="button">Refresh</button>
+          </div>
+          <p class="config-hint" id="agent-configs-status"></p>
+          <pre id="agent-configs-content" class="agent-configs-content"></pre>
         </div>
       </aside>
     </main>
