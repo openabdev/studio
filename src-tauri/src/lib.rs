@@ -178,6 +178,71 @@ async fn deploy_provision(
     }
 }
 
+/// [`deploy_provision`], but for `deploy_provision_agent` (studio#128) — the
+/// New Fleet wizard's direct path. Structured fields, not a pre-rendered
+/// `config_toml` — the sidecar renders it server-side (see the MCP tool's
+/// own doc comment for why: single source of truth regardless of caller).
+#[tauri::command]
+async fn deploy_provision_agent(
+    core: tauri::State<'_, Core>,
+    image: String,
+    name: String,
+    namespace: Option<String>,
+    api_key: Option<String>,
+    chat_platform: Option<String>,
+    chat_bot_token: Option<String>,
+    chat_channel_secret: Option<String>,
+    cluster: Option<String>,
+    provider: Option<String>,
+    context: Option<String>,
+    expected_principal: Option<String>,
+) -> Result<Value, String> {
+    let cluster = cluster.unwrap_or_else(default_cluster);
+    let client = {
+        let guard = core.0.lock().await;
+        guard
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| "core not started yet".to_string())?
+    };
+    let mut params = json!({
+        "image": image,
+        "name": name,
+        "cluster": cluster,
+    });
+    if let Some(ns) = namespace {
+        params["namespace"] = json!(ns);
+    }
+    if let Some(k) = api_key.filter(|s| !s.is_empty()) {
+        params["api_key"] = json!(k);
+    }
+    if let Some(p) = chat_platform.filter(|s| !s.is_empty()) {
+        params["chat_platform"] = json!(p);
+    }
+    if let Some(t) = chat_bot_token.filter(|s| !s.is_empty()) {
+        params["chat_bot_token"] = json!(t);
+    }
+    if let Some(s) = chat_channel_secret.filter(|s| !s.is_empty()) {
+        params["chat_channel_secret"] = json!(s);
+    }
+    if let Some(p) = provider.filter(|s| !s.is_empty()) {
+        params["provider"] = json!(p);
+    }
+    if let Some(c) = context.filter(|s| !s.is_empty()) {
+        params["context"] = json!(c);
+    }
+    if let Some(ep) = expected_principal.filter(|s| !s.is_empty()) {
+        params["expected_principal"] = json!(ep);
+    }
+    match client.call_tool("deploy_provision_agent", params).await {
+        Ok(v) => Ok(v),
+        Err(e) => {
+            client.log("error", &format!("deploy_provision_agent: {e}"));
+            Err(e)
+        }
+    }
+}
+
 /// List services (`deploy_list`) then fetch each one's per-instance 6-state
 /// (`deploy_get`), all over MCP — the two-step the in-process bridge used,
 /// now over the wire. Console view-model shape is unchanged.
@@ -728,6 +793,7 @@ pub fn run() {
             compose_library_set,
             compose_preview,
             deploy_provision,
+            deploy_provision_agent,
             deploy_list,
             runtime_context,
             fleet_config,
