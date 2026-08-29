@@ -178,6 +178,7 @@ pub fn tools() -> Vec<Tool> {
                     "chat_platform": { "type": "string", "description": "Optional: \"discord\" | \"telegram\" | \"line\". Omit for no chat platform (connect via ACP directly). AWS only — refused for k8s deploys." },
                     "chat_bot_token": { "type": "string", "description": "Discord/Telegram bot token, or LINE's channel access token." },
                     "chat_channel_secret": { "type": "string", "description": "LINE only." },
+                    "acp_enabled": { "type": "boolean", "description": "Enable the reverse-MCP-over-ACP tunnel on this agent. Defaults to true when omitted (studio#119: Studio-deployed agents default to ACP on). Not honorable for every vendor — the caller is responsible for not setting this true for a vendor that can't support it (e.g. agy, whose bridge bypasses /acp entirely)." },
                     "provider": { "type": "string", "description": "\"aws\" (default) or \"k8s\" — which driver applies the result." },
                     "fleet": { "type": "string", "description": "AWS only. Fleet name (see fleet_config): targets the fleet's cluster and managing credential; a write to a service outside the fleet's members is refused. Overrides the cluster arg." },
                     "cluster": { "type": "string", "description": "AWS only. ECS cluster (defaults to the server's configured cluster)." },
@@ -731,6 +732,10 @@ impl OabMcp {
                 .get("chat_channel_secret")
                 .and_then(Value::as_str)
                 .map(str::to_string),
+            // studio#119: default on when the caller doesn't say — matches
+            // build_default_manifest's original hardcoded behavior before
+            // studio#128 made it caller-controlled.
+            acp_enabled: args.get("acp_enabled").and_then(Value::as_bool).unwrap_or(true),
         };
 
         if args.get("provider").and_then(Value::as_str) == Some("k8s") {

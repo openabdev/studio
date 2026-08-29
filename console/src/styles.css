@@ -1305,6 +1305,18 @@ button.act:disabled {
   color: var(--text);
   font: inherit;
 }
+.compose-form label.compose-checkbox-row {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+}
+.compose-name-row {
+  display: flex;
+  gap: 8px;
+}
+.compose-name-row .compose-input {
+  flex: 1;
+}
 .compose-actions button {
   padding: 6px 12px;
   border: 1px solid var(--border);

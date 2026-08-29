@@ -139,33 +139,62 @@
               </div>
             </form>
             <div id="deploy-compose" class="deploy-compose" hidden>
-              <div class="deploy-compose-head" id="deploy-compose-heading">Compose</div>
-              <form id="deploy-form" class="compose-form" autocomplete="off">
+              <div class="deploy-compose-head" id="deploy-compose-heading">Step 2 — first instance</div>
+              <form id="deploy-agent-form" class="compose-form" autocomplete="off">
                 <label
-                  >Template
-                  <select id="deploy-template" class="compose-select"></select>
-                </label>
-                <label
-                  >Overlay
-                  <select id="deploy-overlay" class="compose-select">
-                    <option value="">— none (bare template) —</option>
+                  >Vendor
+                  <select id="deploy-vendor" class="compose-select">
+                    <option value="claude">Claude</option>
+                    <option value="codex">codex</option>
+                    <!-- "antigravity" is the GHCR image variant / resolve_vendor_image_tags
+                         key (Dockerfile.package's build target name) — "agy" is only the
+                         display label here, per Brett's vendor naming. -->
+                    <option value="antigravity">agy</option>
+                    <option value="cursor">cursor</option>
+                    <option value="kiro">kiro</option>
                   </select>
-                </label>
-                <div class="compose-actions">
-                  <button type="submit" id="deploy-preview-btn">Preview bundle</button>
-                  <span class="compose-status" id="deploy-status"></span>
-                </div>
-              </form>
-              <div id="deploy-preview" class="compose-preview"></div>
-              <form id="deploy-deploy-form" class="compose-deploy" autocomplete="off" hidden>
-                <div class="compose-deploy-head">Deploy to ECS</div>
-                <label
-                  >Agent name
-                  <input id="deploy-name" class="compose-input" type="text" placeholder="e.g. agent-3" spellcheck="false" />
                 </label>
                 <label
                   >Image tag
-                  <input id="deploy-image" class="compose-input" type="text" placeholder="(bundle default)" spellcheck="false" />
+                  <input id="deploy-image" class="compose-input" type="text" placeholder="resolving…" spellcheck="false" />
+                </label>
+                <label
+                  >API key (optional)
+                  <input id="deploy-api-key" class="compose-input" type="password" placeholder="vendor API key" spellcheck="false" autocomplete="off" />
+                </label>
+                <p class="config-hint" id="deploy-device-auth-hint" hidden>
+                  This vendor uses device-auth login — finish it after the agent is up.
+                </p>
+                <label
+                  >Chat platform (optional)
+                  <select id="deploy-chat-platform" class="compose-select">
+                    <option value="">— none (use ACP directly) —</option>
+                    <option value="discord">Discord</option>
+                    <option value="telegram">Telegram</option>
+                    <option value="line">LINE</option>
+                  </select>
+                </label>
+                <label id="deploy-chat-token-wrap" hidden
+                  >Bot token
+                  <input id="deploy-chat-token" class="compose-input" type="password" spellcheck="false" autocomplete="off" />
+                </label>
+                <label id="deploy-chat-secret-wrap" hidden
+                  >Channel secret
+                  <input id="deploy-chat-secret" class="compose-input" type="password" spellcheck="false" autocomplete="off" />
+                </label>
+                <label class="compose-checkbox-row"
+                  ><input id="deploy-acp-enabled" type="checkbox" checked />
+                  Enable ACP
+                </label>
+                <p class="config-hint" id="deploy-acp-agy-hint" hidden>
+                  agy doesn't support ACP — disabled for this vendor.
+                </p>
+                <label
+                  >Agent name
+                  <span class="compose-name-row">
+                    <input id="deploy-name" class="compose-input" type="text" spellcheck="false" />
+                    <button type="button" id="deploy-name-shuffle" class="cfg-btn cfg-btn-ghost" title="Shuffle name">🔀</button>
+                  </span>
                 </label>
                 <div class="compose-actions">
                   <button type="submit" id="deploy-deploy-btn">Deploy</button>
