@@ -11,16 +11,27 @@
 //! `aws-sm://`/raw-ARN values in a k8s-runtime manifest fail loudly at apply
 //! time — a manifest error, not a silent no-op.
 //!
-//! `spec.bundleFrom` needs no k8s-specific handling at all (sub-slice 3c
-//! turned out to be a non-issue): the actual bundle restore happens via
-//! `openab`'s own `hooks.pre_seed` feature, wired into the composed
-//! `config.toml`'s content at provisioning time
-//! (`oabctl::studio_api::inject_pre_seed_hook`) — orchestrator-agnostic by
-//! construction, since `pre_seed` is just "S3 GetObject + extract," it
-//! doesn't know or care whether the booting process is an ECS task or a k8s
-//! pod. `build_deployment` already points the container's command at
-//! `configFrom`, same as ECS, so this Just Works without any driver code
-//! here reading `bundleFrom` at all.
+//! `spec.configFrom` for k8s (studio#138 — Brett: "k8s does not need to
+//! fetch from s3") is `k8s-configmap://<name>#<key>`: `build_deployment`
+//! mounts that ConfigMap at `/etc/openab` and leaves the container command
+//! unset entirely, so the image's own baked-in default CMD
+//! (`openab run -c /etc/openab/config.toml`, confirmed straight from every
+//! `Dockerfile.*` in openabdev/openab) does the reading — no S3, no AWS
+//! credentials needed in the pod at all. This reverses the original
+//! sub-slice 3c decision (which reused the S3-backed `hooks.pre_seed`
+//! carrier verbatim from the ECS path, "orchestrator-agnostic by
+//! construction") — that path remains supported for backward compatibility
+//! (a `configFrom` still carrying a legacy `s3://`/`http(s)://` URI keeps
+//! getting the command-override treatment) but is no longer what fresh k8s
+//! deploys produce. `spec.bundleFrom` itself is still unused either way.
+//!
+//! There is no create-vs-redeploy manifest lookup for k8s (unlike ECS's
+//! `redeploy()`, which reuses a stored desired-state YAML) — every field
+//! `studio-cp::build_default_k8s_manifest` sets is already resent by its one
+//! caller (the wizard) on every call, so a fresh manifest is rebuilt from
+//! scratch every time; `apply()` below still reports Created-vs-Updated
+//! correctly from the live Deployment's own existence, no stored manifest
+//! needed for that either.
 //!
 //! Observing k8s state into the canonical 6-state (the `apply`/`scale`
 //! counterpart to `status.rs`'s ECS `service_status`/`instance_status`) is
@@ -36,8 +47,8 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use k8s_openapi::api::apps::v1::{Deployment, DeploymentSpec};
 use k8s_openapi::api::core::v1::{
-    Container, EnvVar, EnvVarSource, PodSpec, PodTemplateSpec, ResourceRequirements,
-    SecretKeySelector, Toleration,
+    ConfigMapVolumeSource, Container, EnvVar, EnvVarSource, PodSpec, PodTemplateSpec,
+    ResourceRequirements, SecretKeySelector, Toleration, Volume, VolumeMount,
 };
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{LabelSelector, ObjectMeta};
@@ -186,17 +197,51 @@ fn build_deployment(m: &OABServiceManifest) -> Result<Deployment> {
     }
     env.extend(secret_env_vars(m)?);
 
-    // Same convention as EcsDriver (apply.rs): the image's default CMD points
-    // at a config.toml nothing populates, so override it to load configFrom
-    // directly via openab's own s3:// support — no download step needed.
-    let command = (!m.spec.config_from.is_empty()).then(|| {
-        vec![
-            "openab".to_string(),
-            "run".to_string(),
-            "-c".to_string(),
-            m.spec.config_from.clone(),
-        ]
-    });
+    // studio#138: a `k8s-configmap://<name>#<key>` configFrom mounts that
+    // ConfigMap at /etc/openab and leaves the container command unset — the
+    // image's own default CMD already reads /etc/openab/config.toml, so no
+    // override, no S3, no AWS credentials needed in the pod. Anything else
+    // non-empty (a legacy s3://... or http(s)://... configFrom) keeps the
+    // old override-the-command behavior, same convention EcsDriver
+    // (apply.rs) uses for its own s3:// support.
+    let configmap_ref = match crate::secrets::parse_k8s_configmap_uri(&m.spec.config_from) {
+        None => None,
+        Some(Ok(v)) => Some(v),
+        // Bake the agent name into the same message as the parse error —
+        // anyhow's Display only surfaces the outermost `.with_context()`
+        // frame, so a separate wrapper here would silently swallow the
+        // parser's own detail (which scheme, which malformed part).
+        Some(Err(e)) => {
+            anyhow::bail!("{e} — manifest '{}/{}'", m.metadata.namespace, m.metadata.name)
+        }
+    };
+    let (command, volumes, volume_mounts) = if let Some((config_map_name, _key)) = configmap_ref {
+        let volume = Volume {
+            name: "config".to_string(),
+            config_map: Some(ConfigMapVolumeSource {
+                name: config_map_name.to_string(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mount = VolumeMount {
+            name: "config".to_string(),
+            mount_path: "/etc/openab".to_string(),
+            read_only: Some(true),
+            ..Default::default()
+        };
+        (None, Some(vec![volume]), Some(vec![mount]))
+    } else {
+        let command = (!m.spec.config_from.is_empty()).then(|| {
+            vec![
+                "openab".to_string(),
+                "run".to_string(),
+                "-c".to_string(),
+                m.spec.config_from.clone(),
+            ]
+        });
+        (command, None, None)
+    };
 
     let tolerations: Vec<Toleration> = k8s_rt
         .tolerations
@@ -213,6 +258,7 @@ fn build_deployment(m: &OABServiceManifest) -> Result<Deployment> {
         command,
         env: Some(env),
         resources: Some(resource_requirements(&m.spec.resources)),
+        volume_mounts,
         ..Default::default()
     };
 
@@ -222,6 +268,7 @@ fn build_deployment(m: &OABServiceManifest) -> Result<Deployment> {
         node_selector: (!k8s_rt.node_selector.is_empty())
             .then(|| k8s_rt.node_selector.clone().into_iter().collect()),
         tolerations: (!tolerations.is_empty()).then_some(tolerations),
+        volumes,
         ..Default::default()
     };
 
@@ -410,6 +457,39 @@ mod tests {
         let err = build_deployment(&m).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("DISCORD_BOT_TOKEN"), "must name the env var: {msg}");
+        assert!(msg.contains("prod/orca"), "must name the agent: {msg}");
+    }
+
+    #[test]
+    fn build_deployment_mounts_k8s_native_configmap_and_skips_command_override() {
+        let mut m = k8s_manifest(None, &[]);
+        m.spec.config_from = "k8s-configmap://orca-config#config.toml".to_string();
+        let dep = build_deployment(&m).unwrap();
+        let pod = dep.spec.unwrap().template.spec.unwrap();
+
+        // No command override — the image's own default CMD reads the
+        // mounted /etc/openab/config.toml, no S3 involved.
+        assert_eq!(pod.containers[0].command, None);
+
+        let volumes = pod.volumes.unwrap();
+        assert_eq!(volumes.len(), 1);
+        assert_eq!(volumes[0].name, "config");
+        assert_eq!(volumes[0].config_map.as_ref().unwrap().name, "orca-config");
+
+        let mounts = pod.containers[0].volume_mounts.as_ref().unwrap();
+        assert_eq!(mounts.len(), 1);
+        assert_eq!(mounts[0].name, "config");
+        assert_eq!(mounts[0].mount_path, "/etc/openab");
+        assert_eq!(mounts[0].read_only, Some(true));
+    }
+
+    #[test]
+    fn build_deployment_rejects_malformed_k8s_configmap_ref() {
+        let mut m = k8s_manifest(None, &[]);
+        m.spec.config_from = "k8s-configmap://orca-config".to_string(); // missing #key
+        let err = build_deployment(&m).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("k8s-configmap://"), "must name the scheme: {msg}");
         assert!(msg.contains("prod/orca"), "must name the agent: {msg}");
     }
 
