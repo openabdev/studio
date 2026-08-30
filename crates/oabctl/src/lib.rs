@@ -78,7 +78,7 @@ pub use manifest::{
 pub use control_plane::resolve_bucket;
 pub use driver::{EcsDriver, ProvisionDriver, ProvisionOptions};
 pub use events::{fetch_ecs_events, EcsEvent, DEFAULT_EVENTS_LOG_GROUP};
-pub use k8s_driver::{k8s_deployment_name, K8sDriver};
+pub use k8s_driver::{k8s_deployment_name, k8s_safe_name, K8sDriver};
 pub use status::{instance_status, service_status, InstanceStatus, ServiceStatus};
 
 #[doc(hidden)]

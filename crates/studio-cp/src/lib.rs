@@ -1571,6 +1571,14 @@ pub async fn provision_agent_k8s(
              directly, or deploy this agent to ECS instead."
         );
     }
+    // Normalized once, up front, and shadowed for the rest of this function —
+    // every k8s object placed below (the namespace itself, the ConfigMap, the
+    // ACP Secret, the Deployment) must agree on the same slugified value, or
+    // `ensure_namespace_k8s` would create one namespace while everything else
+    // tries to apply into a differently-cased one that was never created.
+    // The wizard's "+ Create new namespace…" field is free text, same as the
+    // Agent name field ("Persephone-config" 422'd for the same reason).
+    let namespace = &oabctl::k8s_safe_name(namespace);
     ensure_namespace_k8s(context, namespace).await?;
     // `provision_agent_secrets` only ever touches AWS Secrets Manager when
     // `input.api_key` is set (chat-platform secrets are unreachable here —
@@ -1677,7 +1685,7 @@ async fn provision_acp_auth_k8s_secret(
     use kube::api::{Api, Patch, PatchParams};
 
     let client = k8s_client_for(context).await?;
-    let secret_name = format!("{name}-acp");
+    let secret_name = format!("{}-acp", oabctl::k8s_safe_name(name));
     let key = token.map(str::to_string).unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let mut string_data = std::collections::BTreeMap::new();
     string_data.insert("OPENAB_ACP_AUTH_KEY".to_string(), key);
@@ -1748,7 +1756,7 @@ async fn provision_config_k8s_configmap(
     use kube::api::{Api, Patch, PatchParams};
 
     let client = k8s_client_for(context).await?;
-    let config_map_name = format!("{name}-config");
+    let config_map_name = format!("{}-config", oabctl::k8s_safe_name(name));
     let text = String::from_utf8(config_toml.to_vec())
         .map_err(|e| anyhow::anyhow!("config.toml must be valid UTF-8: {e}"))?;
     let mut data = std::collections::BTreeMap::new();
@@ -1852,6 +1860,10 @@ pub async fn provision_from_library_k8s(
     image_override: Option<&str>,
     expected_principal: Option<&str>,
 ) -> anyhow::Result<ProvisionOutcome> {
+    // Same normalize-once-up-front reasoning as `provision_agent_k8s` — keep
+    // `ensure_namespace_k8s`'s created namespace consistent with every other
+    // k8s object placed into it below.
+    let namespace = &oabctl::k8s_safe_name(namespace);
     ensure_namespace_k8s(context, namespace).await?;
     let mut bundle = studio_compose::compose_named(library, template, overlay)
         .map_err(|e| anyhow::anyhow!("compose failed: {e}"))?;

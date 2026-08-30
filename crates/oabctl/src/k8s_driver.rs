@@ -56,6 +56,24 @@ use kube::api::{Api, DeleteParams, Patch, PatchParams};
 use kube::{Client, Config};
 use std::collections::BTreeMap;
 
+/// Slugify an OAB agent name into a valid k8s object name (RFC 1123 lowercase
+/// subdomain — `[a-z0-9]([-a-z0-9]*[a-z0-9])?`). The Agent name field is free
+/// text (and its "suggest a Greek god name" default capitalizes — Brett hit
+/// this directly: "Persephone-config" 422'd), so nothing upstream guarantees
+/// it's already k8s-safe the way an ECS service name doesn't need to be.
+/// Lowercases and maps any character outside `[a-z0-9-]` to `-`, then trims
+/// leading/trailing `-` so the result still starts/ends alphanumeric (a
+/// dash run in the middle is valid per the RFC, so no need to collapse
+/// those).
+pub fn k8s_safe_name(name: &str) -> String {
+    name.to_lowercase()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '-' })
+        .collect::<String>()
+        .trim_matches('-')
+        .to_string()
+}
+
 /// The k8s Deployment name for an OAB agent. OAB's own `metadata.namespace`
 /// maps directly to the k8s namespace (a k8s namespace is already an
 /// isolation/grouping boundary, same job OAB's `namespace` does for ECS
@@ -63,7 +81,7 @@ use std::collections::BTreeMap;
 /// flat because ECS has no per-namespace boundary), the Deployment only needs
 /// `oab-{name}` within that namespace.
 pub fn k8s_deployment_name(name: &str) -> String {
-    format!("oab-{name}")
+    format!("oab-{}", k8s_safe_name(name))
 }
 
 /// The k8s implementation. Bound to one kubeconfig context (and therefore one
@@ -413,6 +431,24 @@ mod tests {
     #[test]
     fn deployment_name_is_oab_prefixed_without_namespace() {
         assert_eq!(k8s_deployment_name("orca"), "oab-orca");
+    }
+
+    #[test]
+    fn deployment_name_lowercases_a_capitalized_agent_name() {
+        // Brett hit this live: the Agent name field's "suggest a Greek god
+        // name" default capitalizes ("Persephone"), which 422'd every k8s
+        // object derived from it.
+        assert_eq!(k8s_deployment_name("Persephone"), "oab-persephone");
+    }
+
+    #[test]
+    fn k8s_safe_name_maps_invalid_characters_to_hyphens() {
+        assert_eq!(k8s_safe_name("My Agent!"), "my-agent");
+    }
+
+    #[test]
+    fn k8s_safe_name_trims_leading_and_trailing_hyphens() {
+        assert_eq!(k8s_safe_name("-orca-"), "orca");
     }
 
     #[test]
