@@ -1816,8 +1816,14 @@ async fn build_default_k8s_manifest(
         spec: oabctl::manifest::Spec {
             image: image.to_string(),
             resources: oabctl::manifest::Resources {
-                cpu: "256".to_string(),
-                memory: "512".to_string(),
+                // K8s `Quantity` has no ECS-style bare-number convention —
+                // unsuffixed "256"/"512" (the ECS Fargate CPU-unit/MiB
+                // values `build_default_manifest` uses) parse as 256 whole
+                // cores / 512 bytes here, which no node can ever schedule.
+                // Use k8s-native units instead, sized to the same ~0.25
+                // vCPU / 512Mi as the Fargate default.
+                cpu: "250m".to_string(),
+                memory: "512Mi".to_string(),
             },
             config_from: config_from.to_string(),
             bundle_from: None,
@@ -2478,5 +2484,39 @@ aws_access_key_id = AKIA...
         // the namespace's default service account" — not an error.
         assert_eq!(k8s_service_account_from_principal(Some("brett.chien")), None);
         assert_eq!(k8s_service_account_from_principal(None), None);
+    }
+
+    #[tokio::test]
+    async fn k8s_manifest_resources_carry_k8s_unit_suffixes() {
+        // Regression: build_default_k8s_manifest previously reused
+        // build_default_manifest's bare ECS Fargate CPU-unit/MiB values
+        // ("256"/"512"). k8s_driver's resource_requirements() feeds these
+        // straight into a k8s Quantity with no ECS-aware conversion, so an
+        // unsuffixed "256" means 256 whole cores (not 0.25 vCPU) and "512"
+        // means 512 bytes (not 512Mi) — unschedulable on any real node,
+        // which left a live Hera pod stuck Pending forever.
+        let manifest = build_default_k8s_manifest(
+            None,
+            "openab-studio",
+            "hera",
+            "ghcr.io/openabdev/openab:0.9.0-claude",
+            "s3://bucket/artifacts/openab-studio/hera/config.toml",
+            None,
+            false, // acp_enabled=false: skip the k8s secret provisioning call
+            None,
+        )
+        .await
+        .expect("build_default_k8s_manifest");
+
+        assert!(
+            manifest.spec.resources.cpu.ends_with('m'),
+            "k8s cpu quantity must carry a unit suffix (e.g. \"250m\"), got {:?}",
+            manifest.spec.resources.cpu
+        );
+        assert!(
+            manifest.spec.resources.memory.ends_with("Mi"),
+            "k8s memory quantity must carry a unit suffix (e.g. \"512Mi\"), got {:?}",
+            manifest.spec.resources.memory
+        );
     }
 }
