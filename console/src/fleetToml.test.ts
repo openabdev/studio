@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { appendMember, appendFleetBlock } from "./fleetToml";
+import { appendMember, appendFleetBlock, fleetBlockExists } from "./fleetToml";
 
 describe("appendMember", () => {
   const text = `default_cluster = "oab"
@@ -48,6 +48,26 @@ members = ["oab-default-mira-1"]
     const out = appendMember(noMembers, "empty-fleet", "oab-default-a1");
     expect(out).toContain('members = ["oab-default-a1"]');
     expect(out).toContain('region = "ap-east-2"');
+  });
+});
+
+describe("fleetBlockExists", () => {
+  const text = `default_cluster = "oab"
+
+[fleet.oab-prod-orca]
+members = ["oab-default-agent-1"]
+`;
+
+  it("is true when a [fleet.<name>] block is present", () => {
+    expect(fleetBlockExists(text, "oab-prod-orca")).toBe(true);
+  });
+
+  it("is false when the name isn't present", () => {
+    expect(fleetBlockExists(text, "no-such-fleet")).toBe(false);
+  });
+
+  it("is false against an empty file", () => {
+    expect(fleetBlockExists("", "oab-prod-orca")).toBe(false);
   });
 });
 

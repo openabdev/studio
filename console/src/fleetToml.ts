@@ -32,6 +32,16 @@ function findFleetBlock(
   return { start, end, headerEnd };
 }
 
+// Whether a `[fleet.<name>]` block already exists — used by the "New fleet"
+// wizard (deploy.ts) to reject a colliding name *before* provisioning an
+// instance, rather than discovering the collision only when appendFleetBlock/
+// appendK8sFleetBlock's blind append produces a second `[fleet.<name>]`
+// header and the resulting TOML fails to parse (studio: duplicate-key crash
+// after the instance was already deployed).
+export function fleetBlockExists(text: string, name: string): boolean {
+  return findFleetBlock(text, name) !== null;
+}
+
 // Append `member` to an existing fleet's `members = [...]` array (single-line
 // TOML array — the only form fleets.toml is written in today, per the ADR's
 // mockups). A no-op if the member is already listed or the fleet isn't found.
