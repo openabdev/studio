@@ -13,7 +13,7 @@
 // after a confirmed successful provision, never before or speculatively.
 
 import type { Source } from "./source";
-import { appendMember, appendFleetBlock } from "./fleetToml";
+import { appendMember, appendFleetBlock, fleetBlockExists } from "./fleetToml";
 import { appendK8sFleetBlock } from "./fleetsK8sToml";
 
 type Invoke = <T>(cmd: string, args?: Record<string, unknown>) => Promise<T>;
@@ -488,10 +488,33 @@ export function initDeployPanel(deps: DeployPanelDeps): DeployPanelHandle | null
 
   // Step 1 (new-fleet only): collect the fleet identity, then reveal the
   // shared Compose step — 7.5.1's "Next: first instance →".
-  identityForm.addEventListener("submit", (ev) => {
+  identityForm.addEventListener("submit", async (ev) => {
     ev.preventDefault();
-    if (!nameInput.value.trim()) {
+    const fleetName = nameInput.value.trim();
+    if (!fleetName) {
       setStatus(identityStatusEl, "fleet name is required", "err");
+      return;
+    }
+    // Reject a colliding name here, before Step 2 provisions anything —
+    // appendFleetBlock/appendK8sFleetBlock always append a brand-new
+    // `[fleet.<name>]` block, so reusing an existing name would otherwise
+    // only surface as a duplicate-key TOML parse error *after* the instance
+    // was already deployed (it has no partial/merge fallback; "add instance
+    // to an existing k8s fleet" isn't wired through this wizard yet either —
+    // see the isK8s check in the deploy submit handler below).
+    const isK8s = providerSel.value === "k8s";
+    try {
+      const current = await (isK8s ? deps.source.k8sFleetConfig() : deps.source.fleetConfig());
+      if (fleetBlockExists(current.text, fleetName)) {
+        setStatus(
+          identityStatusEl,
+          `a fleet named "${fleetName}" already exists — use "Add instance" on that fleet instead`,
+          "err",
+        );
+        return;
+      }
+    } catch (e) {
+      setStatus(identityStatusEl, `fleet name check unavailable: ${errText(e)}`, "err");
       return;
     }
     identityForm.hidden = true;
