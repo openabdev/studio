@@ -453,8 +453,13 @@ impl OabMcp {
                 let known: Vec<&str> = guard.fleets.iter().map(|f| f.name.as_str()).collect();
                 anyhow::anyhow!("unknown fleet {name:?}; configured fleets: [{}]", known.join(", "))
             })?;
+            let cluster = binding.cluster.clone().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "fleet {name:?} is a k8s-runtime fleet; this tool only supports ecs fleets"
+                )
+            })?;
             return Ok(Target {
-                cluster: binding.cluster.clone(),
+                cluster,
                 binding: Some(binding),
             });
         }
@@ -1090,7 +1095,7 @@ mod tests {
             .iter()
             .map(|t| t["name"].as_str().expect("tool has a name").to_string())
             .collect();
-        assert_eq!(names.len(), 19);
+        assert_eq!(names.len(), 17);
         for expected in [
             "deploy_list",
             "deploy_get",
