@@ -73,6 +73,16 @@ interface VendorImageTagsResponse {
 // be completed from this wizard, has to happen after the agent is up.
 const DEVICE_AUTH_VENDORS = new Set(["codex", "kiro"]);
 
+// `resolve_vendor_image_tags` (vendor_images.rs) only resolves bare GHCR
+// tags (e.g. "0.9.0-claude") — it has no opinion on registry/repo, it's
+// just answering "does this tag exist". `deploy_provision_agent`/k8s's
+// `build_default_k8s_manifest` write whatever `image` this panel sends
+// straight into the ECS task def / pod spec with no normalization, so a
+// bare tag becomes a literal image *name* to the container runtime —
+// Docker Hub's `library/<tag>` — not a GHCR pull. Full ref has to be
+// built here, once, before it ever leaves this panel.
+const IMAGE_REPO = "ghcr.io/openabdev/openab";
+
 // studio#128: pre-fills the Agent name field; still freely editable.
 const GREEK_GODS = [
   "Zeus", "Hera", "Poseidon", "Demeter", "Athena", "Apollo", "Artemis", "Ares",
@@ -258,8 +268,9 @@ export function initDeployPanel(deps: DeployPanelDeps): DeployPanelHandle | null
   const IMAGE_CUSTOM_SENTINEL = "__custom__";
 
   // studio#136: which value is actually in play — a resolved Stable/Beta
-  // <option> (its value is the real image tag directly) or the free-text
-  // Custom field.
+  // <option> (its value is already the full `ghcr.io/...` ref, built in
+  // `loadVendorImage` below) or the free-text Custom field, where the user
+  // is expected to type the full ref themselves.
   const currentImage = (): string =>
     imageSelectEl.value === IMAGE_CUSTOM_SENTINEL ? imageCustomInput.value.trim() : imageSelectEl.value;
 
@@ -282,8 +293,11 @@ export function initDeployPanel(deps: DeployPanelDeps): DeployPanelHandle | null
     if (invoke) {
       try {
         const res = await invoke<VendorImageTagsResponse>("resolve_vendor_image_tags", { vendor });
-        if (res.stable) opts.push({ value: res.stable, label: `Stable (${res.stable})` });
-        if (res.beta) opts.push({ value: res.beta, label: `Beta (${res.beta})` });
+        // `res.stable`/`res.beta` are bare tags (see IMAGE_REPO above) —
+        // the label keeps the short tag for readability, the value carries
+        // the full ref that actually gets pulled.
+        if (res.stable) opts.push({ value: `${IMAGE_REPO}:${res.stable}`, label: `Stable (${res.stable})` });
+        if (res.beta) opts.push({ value: `${IMAGE_REPO}:${res.beta}`, label: `Beta (${res.beta})` });
       } catch (e) {
         setStatus(deployStatusEl, `image tag lookup unavailable: ${errText(e)}`, "err");
       }
