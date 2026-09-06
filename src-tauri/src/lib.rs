@@ -339,8 +339,10 @@ async fn runtime_context(
 }
 
 /// Bridge command: the declarative fleet-binding config (ADR #19), sourced
-/// through the bundled `oab-mcp` sidecar's `fleet_config` tool. The console
-/// renders the configured fleets and lets the operator switch the active one.
+/// through the bundled `oab-mcp` sidecar's `fleet_config` tool. Covers both
+/// `ecs` and `k8s` runtime fleets (2026-09-06 unification — one `fleets.toml`,
+/// not a separate k8s file/tool). The console renders the configured fleets
+/// and lets the operator switch the active one.
 #[tauri::command]
 async fn fleet_config(core: tauri::State<'_, Core>) -> Result<Value, String> {
     let client = {
@@ -540,52 +542,6 @@ async fn list_service_accounts(
     }
 }
 
-/// Bridge command: the declarative k8s fleet-binding config (studio#104, k8s
-/// counterpart to `fleet_config`), sourced through the sidecar's
-/// `k8s_fleet_config` tool. The New Fleet wizard's k8s submit path reads this
-/// first to compute an appended `fleets-k8s.toml` block, since the write tool
-/// takes the whole file's text.
-#[tauri::command]
-async fn k8s_fleet_config(core: tauri::State<'_, Core>) -> Result<Value, String> {
-    let client = {
-        let guard = core.0.lock().await;
-        guard
-            .as_ref()
-            .cloned()
-            .ok_or_else(|| "core not started yet".to_string())?
-    };
-    match client.call_tool("k8s_fleet_config", json!({})).await {
-        Ok(v) => Ok(v),
-        Err(e) => {
-            client.log("error", &format!("k8s_fleet_config: {e}"));
-            Err(e)
-        }
-    }
-}
-
-/// Bridge command: persist the edited `fleets-k8s.toml` text (studio#104,
-/// k8s counterpart to `fleet_config_write`) via the sidecar's
-/// `k8s_fleet_config_write` tool.
-#[tauri::command]
-async fn k8s_fleet_config_write(core: tauri::State<'_, Core>, text: String) -> Result<Value, String> {
-    let client = {
-        let guard = core.0.lock().await;
-        guard
-            .as_ref()
-            .cloned()
-            .ok_or_else(|| "core not started yet".to_string())?
-    };
-    match client
-        .call_tool("k8s_fleet_config_write", json!({ "text": text }))
-        .await
-    {
-        Ok(v) => Ok(v),
-        Err(e) => {
-            client.log("error", &format!("k8s_fleet_config_write: {e}"));
-            Err(e)
-        }
-    }
-}
 
 /// Bridge command: start (size 1) / stop (size 0) a deployment via the sidecar's
 /// `deploy_scale` tool (ADR-2 write model — stop = scale→0, start = scale→1; the
@@ -875,8 +831,6 @@ pub fn run() {
             read_local_agent_config,
             list_namespaces,
             list_service_accounts,
-            k8s_fleet_config,
-            k8s_fleet_config_write,
             deploy_scale,
             remote_config,
             remote_agents,
