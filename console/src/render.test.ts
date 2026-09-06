@@ -157,10 +157,13 @@ describe("fleetConfigHtml", () => {
   });
 
   it("switches by fleet identity, not cluster (two fleets share a cluster)", () => {
-    // Both fixture fleets are on cluster "oab" — the switch key must be the name.
-    expect(FIXTURE_FLEET_CONFIG.fleets.every((f) => f.cluster === "oab")).toBe(
-      true,
-    );
+    // orca and mira are both on cluster "oab" — the switch key must be the
+    // name. (hephaestus is the fixture's k8s fleet, no cluster at all.)
+    expect(
+      ["orca", "mira"].every(
+        (name) => FIXTURE_FLEET_CONFIG.fleets.find((f) => f.name === name)?.cluster === "oab",
+      ),
+    ).toBe(true);
     const html = fleetConfigHtml(FIXTURE_FLEET_CONFIG, "mira");
     const active = html.match(/cfg-fleet is-active/g) ?? [];
     expect(active.length).toBe(1);

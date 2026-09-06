@@ -449,6 +449,18 @@ function selectFleet(name: string): void {
   if (!name || name === activeFleet) return;
   const fleet = fleetConfig?.fleets.find((f) => f.name === name);
   if (!fleet) return;
+  // k8s fleets have no ECS cluster to point reads at — listDeployments/
+  // runtimeContext/tick are all cluster-keyed and ecs-only today (a separate,
+  // larger gap: k8s fleets have no roster/observe UI yet, tracked apart from
+  // this schema unification). Don't pretend a switch worked when reads would
+  // silently break against an empty cluster string.
+  if (fleet.runtime === "k8s" || fleet.cluster === null) {
+    note(
+      "info",
+      `fleet "${name}" is a k8s fleet — switching the roster view to it isn't wired up yet`,
+    );
+    return;
+  }
   closeOpenAgentConsole();
   activeFleet = name;
   activeCluster = fleet.cluster;

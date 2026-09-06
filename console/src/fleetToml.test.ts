@@ -72,42 +72,67 @@ members = ["oab-default-agent-1"]
 });
 
 describe("appendFleetBlock", () => {
-  it("appends a new [fleet.<name>] block with the given fields", () => {
+  it("appends a new ecs [fleet.<name>] block with the given fields", () => {
     const out = appendFleetBlock("default_cluster = \"oab\"\n", {
       name: "support-fleet",
       member: "oab-default-support-bot-1",
-      region: "ap-east-2",
-      profile: "oab-fleet",
       expectedPrincipal: "arn:aws:iam::123:role/oab-fleet",
+      runtime: { kind: "ecs", region: "ap-east-2", profile: "oab-fleet" },
     });
     expect(out).toContain("[fleet.support-fleet]");
+    expect(out).toContain('runtime = "ecs"');
     expect(out).toContain('members = ["oab-default-support-bot-1"]');
     expect(out).toContain('region = "ap-east-2"');
     expect(out).toContain('profile = "oab-fleet"');
     expect(out).toContain('expected_principal = "arn:aws:iam::123:role/oab-fleet"');
   });
 
-  it("omits optional fields that weren't provided", () => {
+  it("appends a new k8s [fleet.<name>] block with context, namespace, members, expected_principal", () => {
+    const out = appendFleetBlock('default_cluster = "oab"\n', {
+      name: "orbstack-dev",
+      member: "oab-dev-scratch-agent",
+      expectedPrincipal: "system:serviceaccount:dev:oab-agent",
+      runtime: { kind: "k8s", context: "orbstack", namespace: "dev" },
+    });
+    expect(out).toContain("[fleet.orbstack-dev]");
+    expect(out).toContain('runtime = "k8s"');
+    expect(out).toContain('context = "orbstack"');
+    expect(out).toContain('namespace = "dev"');
+    expect(out).toContain('members = ["oab-dev-scratch-agent"]');
+    expect(out).toContain('expected_principal = "system:serviceaccount:dev:oab-agent"');
+  });
+
+  it("omits optional ecs fields that weren't provided", () => {
     const out = appendFleetBlock("", {
       name: "support-fleet",
       member: "oab-default-support-bot-1",
-      region: null,
-      profile: null,
       expectedPrincipal: null,
+      runtime: { kind: "ecs", region: null, profile: null },
     });
     expect(out).not.toContain("region =");
     expect(out).not.toContain("profile =");
     expect(out).not.toContain("expected_principal =");
   });
 
+  it("omits context but always writes namespace for k8s", () => {
+    const out = appendFleetBlock("", {
+      name: "orca-k8s",
+      member: "oab-prod-orca",
+      expectedPrincipal: null,
+      runtime: { kind: "k8s", context: null, namespace: "prod" },
+    });
+    expect(out).not.toContain("context =");
+    expect(out).not.toContain("expected_principal =");
+    expect(out).toContain('namespace = "prod"');
+  });
+
   it("separates the new block from existing content with exactly one blank line", () => {
     const out = appendFleetBlock('default_cluster = "oab"\n', {
       name: "x",
       member: "m",
-      region: null,
-      profile: null,
       expectedPrincipal: null,
+      runtime: { kind: "ecs", region: null, profile: null },
     });
-    expect(out).toBe('default_cluster = "oab"\n\n[fleet.x]\nmembers = ["m"]\n');
+    expect(out).toBe('default_cluster = "oab"\n\n[fleet.x]\nruntime = "ecs"\nmembers = ["m"]\n');
   });
 });

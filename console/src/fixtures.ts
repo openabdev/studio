@@ -2,7 +2,6 @@ import type {
   AgentEndpointView,
   Deployment,
   FleetConfig,
-  K8sFleetConfig,
   RegistryConfig,
   FsCapability,
   FsEntry,
@@ -177,37 +176,57 @@ export const FIXTURE_RUNTIME_CONTEXT: RuntimeContext = {
 };
 
 // Stand-in fleet-binding config so the browser build renders the config panel
-// without a core. Two fleets that **share the `oab` cluster** (and one
-// credential) but list different `members` — the exact "group by usage, not by
+// without a core. Two `ecs` fleets that **share the `oab` cluster** (and one
+// credential) but list different `members` — the "group by usage, not by
 // cluster" shape the panel lets the operator switch between and filter the
-// roster by.
+// roster by — plus one `k8s` fleet, so the browser build's config panel
+// exercises both runtimes (2026-09-06 unification: one `fleets.toml`, not a
+// separate `fleets-k8s.toml`/`K8sFleetConfig`).
 export const FIXTURE_FLEET_CONFIG: FleetConfig = {
   path: "~/.config/oab-studio/fleets.toml",
   default_cluster: "oab",
   fleets: [
     {
       name: "orca",
+      runtime: "ecs",
       cluster: "oab",
       members: ["oab-prod-orca"],
       region: "ap-east-2",
       profile: "oab-fleet",
+      context: null,
+      namespace: null,
       expected_principal:
         "arn:aws:iam::504190915686:role/openab-orca-task-role",
     },
     {
       name: "mira",
+      runtime: "ecs",
       cluster: "oab",
       members: ["oab-prod-mira"],
       region: "ap-east-2",
       profile: "oab-fleet",
+      context: null,
+      namespace: null,
+      expected_principal: null,
+    },
+    {
+      name: "hephaestus",
+      runtime: "k8s",
+      cluster: null,
+      members: ["hera"],
+      region: null,
+      profile: null,
+      context: "orbstack",
+      namespace: "openab-studio",
       expected_principal: null,
     },
   ],
-  text: `# OAB Studio fleet bindings — which credential manages which fleet.
+  text: `# OAB Studio fleet bindings — which credential/context manages which fleet.
 # A fleet is a usage-based group: orca and mira share the oab cluster (one
-# credential) but list different members.
+# credential) but list different members. hephaestus is a k8s fleet.
 
 [fleet.orca]
+runtime = "ecs"
 cluster = "oab"
 members = ["oab-prod-orca"]
 region = "ap-east-2"
@@ -215,19 +234,16 @@ profile = "oab-fleet"
 expected_principal = "arn:aws:iam::504190915686:role/openab-orca-task-role"
 
 [fleet.mira]
+runtime = "ecs"
 cluster = "oab"
 members = ["oab-prod-mira"]
 region = "ap-east-2"
 profile = "oab-fleet"
-`,
-};
 
-// Stand-in k8s fleet-binding config (studio#104) — empty, since no k8s fleet
-// exists yet in the demo fixtures; the browser build's New Fleet wizard still
-// exercises the k8s provider path (context/namespace pickers use their own
-// fixtures), just starting from a blank `fleets-k8s.toml`.
-export const FIXTURE_K8S_FLEET_CONFIG: K8sFleetConfig = {
-  path: "~/.config/oab-studio/fleets-k8s.toml",
-  fleets: [],
-  text: "",
+[fleet.hephaestus]
+runtime = "k8s"
+context = "orbstack"
+namespace = "openab-studio"
+members = ["hera"]
+`,
 };
