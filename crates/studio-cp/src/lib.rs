@@ -592,39 +592,83 @@ pub async fn list_service_accounts(context: Option<&str>, namespace: &str) -> an
 
 // ---- Fleet → managing-credential binding (ADR: Per-Fleet managing identity) --
 //
-// The *declarative* side of the loop: which credential should manage which
-// fleet/cluster. Operator config, deliberately separate from the Fleet Store
+// The *declarative* side of the loop: which credential/context should manage
+// which fleet. Operator config, deliberately separate from the Fleet Store
 // (observed membership/lease state); the two may fold together later. Selecting
 // a binding is credential *selection*, not per-caller authz.
+//
+// One binding, one runtime — `runtime` picks which of the ECS-only
+// (`cluster`/`region`/`profile`) or k8s-only (`context`/`namespace`) fields
+// apply, mirroring `oabctl::manifest::Runtime`'s tagged-variant shape (one
+// manifest schema, runtime is a variant — not two parallel structs). Brett
+// 2026-09-06: previously `FleetBinding`/`K8sFleetBinding` were two independent
+// types backed by two files (`fleets.toml`/`fleets-k8s.toml`), which is the
+// same anti-pattern flagged in the 2026-08-18 openab-pty discussion ("one
+// control plane, multiple kinds" — a new runtime should be a new variant of
+// the existing schema, not a parallel one). `fleets-k8s.toml` is migrated into
+// `fleets.toml` once at startup — see `migrate_legacy_k8s_bindings`.
 
-/// A declarative binding of a managed fleet to the credential that should manage
-/// it, plus the fleet's members. Profile-first (assume-role is later work).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FleetRuntime {
+    Ecs,
+    K8s,
+}
+
+impl Default for FleetRuntime {
+    fn default() -> Self {
+        FleetRuntime::Ecs
+    }
+}
+
+/// A declarative binding of a managed fleet to the credential/context that
+/// should manage it, plus the fleet's members. Profile-first for ECS
+/// (assume-role is later work); `context`+`namespace` stand in for k8s (no AWS
+/// account/region there).
 ///
-/// A fleet groups agents by *usage*, decoupled from the physical cluster: two
-/// fleets may share a `cluster` (and one credential) while listing different
-/// `members`. `members` empty ⇒ the fleet covers the whole cluster (back-compat
-/// with the old cluster-granular binding).
-#[derive(Debug, Clone, serde::Deserialize)]
+/// A fleet groups agents by *usage*, decoupled from the physical
+/// cluster/namespace: two fleets may share a `cluster` (and one credential)
+/// while listing different `members`. `members` empty ⇒ the fleet covers the
+/// whole cluster/namespace (back-compat with the old cluster-granular
+/// binding).
+#[derive(Debug, Clone, Default, serde::Deserialize)]
 pub struct FleetBinding {
     /// Fleet name — its identity (the `[fleet.<name>]` key, or the `name` field
     /// of a legacy `[[fleet]]` entry).
     #[serde(default)]
     pub name: String,
-    /// ECS cluster this fleet's members live in (drives the managing credential;
-    /// credential resolution stays cluster/account-granular).
-    pub cluster: String,
-    /// Service names in this fleet (e.g. `oab-prod-orca`). Empty ⇒ the whole
-    /// cluster (legacy behavior).
+    /// Which driver manages this fleet. Defaults to `ecs` — every binding
+    /// written before this field existed is an ECS binding.
     #[serde(default)]
-    pub members: Vec<String>,
-    /// Region to pin for this fleet.
+    pub runtime: FleetRuntime,
+    /// ECS cluster this fleet's members live in (drives the managing credential;
+    /// credential resolution stays cluster/account-granular). `runtime: ecs` only.
+    #[serde(default)]
+    pub cluster: Option<String>,
+    /// Region to pin for this fleet. `runtime: ecs` only.
     #[serde(default)]
     pub region: Option<String>,
     /// Named AWS profile that supplies the managing credential (profile-first).
+    /// `runtime: ecs` only.
     #[serde(default)]
     pub profile: Option<String>,
-    /// Expected effective principal ARN — reconciled against the resolved
-    /// identity later (IdentityMismatch). Optional.
+    /// Kubeconfig context name. `None` = the kubeconfig's current-context —
+    /// same "ambient default, explicit override" shape `K8sDriver::from_context`
+    /// and `observe_k8s_identity` already use. `runtime: k8s` only.
+    #[serde(default)]
+    pub context: Option<String>,
+    /// k8s namespace this fleet's members live in. `runtime: k8s` only.
+    #[serde(default)]
+    pub namespace: Option<String>,
+    /// Service/agent names in this fleet (e.g. `oab-prod-orca`, or a k8s agent
+    /// name). Empty ⇒ the whole cluster/namespace (legacy behavior).
+    #[serde(default)]
+    pub members: Vec<String>,
+    /// Expected effective principal — reconciled against the resolved identity
+    /// later (IdentityMismatch). Optional. Same field/semantics for both
+    /// runtimes, just compared against a different identity source
+    /// (`observe_identity`'s STS caller ARN for ECS, `observe_k8s_identity`'s
+    /// `SelfSubjectReview`-derived principal for k8s).
     #[serde(default)]
     pub expected_principal: Option<String>,
 }
@@ -633,8 +677,8 @@ impl FleetBinding {
     /// Whether a service belongs to this fleet, matched by **either** its full
     /// ECS name (`oab-{ns}-{name}`) or its short agent name — mirroring
     /// [`resolve_service`], which accepts both forms. An **empty** member list ⇒
-    /// the fleet covers the whole cluster (legacy semantics), so everything
-    /// matches.
+    /// the fleet covers the whole cluster/namespace (legacy semantics), so
+    /// everything matches.
     pub fn includes(&self, service_name: &str, short_name: &str) -> bool {
         self.members.is_empty()
             || self
@@ -648,13 +692,20 @@ impl FleetBinding {
 /// `name`, which is the table key.
 #[derive(Debug, Clone, serde::Deserialize)]
 struct FleetBody {
-    cluster: String,
+    #[serde(default)]
+    runtime: FleetRuntime,
+    #[serde(default)]
+    cluster: Option<String>,
     #[serde(default)]
     members: Vec<String>,
     #[serde(default)]
     region: Option<String>,
     #[serde(default)]
     profile: Option<String>,
+    #[serde(default)]
+    context: Option<String>,
+    #[serde(default)]
+    namespace: Option<String>,
     #[serde(default)]
     expected_principal: Option<String>,
 }
@@ -683,10 +734,13 @@ impl From<FleetsDoc> for FleetBindings {
                 .into_iter()
                 .map(|(name, b)| FleetBinding {
                     name,
+                    runtime: b.runtime,
                     cluster: b.cluster,
                     members: b.members,
                     region: b.region,
                     profile: b.profile,
+                    context: b.context,
+                    namespace: b.namespace,
                     expected_principal: b.expected_principal,
                 })
                 .collect(),
@@ -705,10 +759,13 @@ pub struct FleetBindings {
 }
 
 impl FleetBindings {
-    /// The fleet governing `cluster`, if any (first match) — used for credential
-    /// resolution, which stays cluster/account-granular.
+    /// The ECS fleet governing `cluster`, if any (first match) — used for
+    /// credential resolution, which stays cluster/account-granular. k8s
+    /// bindings never match (they have no `cluster`).
     pub fn for_cluster(&self, cluster: &str) -> Option<&FleetBinding> {
-        self.fleets.iter().find(|b| b.cluster == cluster)
+        self.fleets
+            .iter()
+            .find(|b| b.runtime == FleetRuntime::Ecs && b.cluster.as_deref() == Some(cluster))
     }
 
     /// The fleet whose explicit `members` contain `service`, if any.
@@ -801,66 +858,29 @@ fn role_identity(arn: &str) -> Option<(String, String)> {
     Some((account, name))
 }
 
-// ---- K8s fleet binding (ADR #63 slice 3f) --------------------------------
+// ---- Legacy `fleets-k8s.toml` migration (ADR #63 slice 3f, pre-2026-09-06) --
 //
-// Parallel, additive config surface for k8s-driven fleets — a **separate
-// file** (`fleets-k8s.toml`, not a second table in `fleets.toml`). Kept
-// separate deliberately: `save_bindings_text`/`save_k8s_bindings_text` are
-// both whole-file verbatim writes, so if AWS and k8s bindings shared one
-// file, saving either one from the console would silently clobber the
-// other's edits (e.g. a k8s-only save wiping Brett's existing prod
-// `[fleet.*]` entries). One file per driver makes that class of bug
-// structurally impossible instead of relying on callers to merge carefully.
-//
-// A fleet is either AWS-driven (`FleetBinding`, `fleets.toml`) or k8s-driven
-// (`K8sFleetBinding`, `fleets-k8s.toml`); nothing infers one from the other,
-// and nothing here reads or writes `fleets.toml`.
+// Before the runtime-tagged `FleetBinding` above, k8s fleets lived in a
+// wholly separate file/type (`fleets-k8s.toml`/`K8sFleetBinding`). This
+// section only exists to read that legacy file once and fold it into
+// `fleets.toml` — see `migrate_legacy_k8s_bindings`. Nothing else should
+// depend on these types; new code uses `FleetBinding{runtime: K8s, ..}`.
 
-/// A declarative binding of a k8s-driven fleet to the kubeconfig context that
-/// should manage it, plus the fleet's members. `context`+`namespace` stand in
-/// for `FleetBinding`'s `cluster`+`profile` — there's no AWS account/region
-/// here, just "which kubeconfig context, and which namespace within it"
-/// (namespace is OAB's own `namespace`, which maps directly onto the k8s
-/// namespace — see `k8s_driver`'s module docs upstream in `oabctl`).
 #[derive(Debug, Clone, serde::Deserialize)]
-pub struct K8sFleetBinding {
-    /// Fleet name — the `[fleet.<name>]` key.
+struct LegacyK8sFleetBinding {
     #[serde(default)]
-    pub name: String,
-    /// Kubeconfig context name. `None` = the kubeconfig's current-context —
-    /// same "ambient default, explicit override" shape `K8sDriver::from_context`
-    /// and `observe_k8s_identity` already use.
+    name: String,
     #[serde(default)]
-    pub context: Option<String>,
-    /// k8s namespace this fleet's members live in.
-    pub namespace: String,
-    /// Agent names in this fleet. Empty ⇒ the whole namespace (mirrors
-    /// `FleetBinding`'s empty-members-means-everything convention).
+    context: Option<String>,
+    namespace: String,
     #[serde(default)]
-    pub members: Vec<String>,
-    /// Expected principal to verify the resolved k8s identity against —
-    /// same name and verify semantics as `FleetBinding::expected_principal`
-    /// (`observe_identity`/`identity_matches` for AWS), just compared against
-    /// `observe_k8s_identity`'s `SelfSubjectReview`-derived principal instead
-    /// of an STS caller ARN. Typically `system:serviceaccount:<ns>:<name>`
-    /// for a service account, or a plain username. `None` = no identity
-    /// verification for this fleet (same "unset = don't check" contract).
+    members: Vec<String>,
     #[serde(default)]
-    pub expected_principal: Option<String>,
+    expected_principal: Option<String>,
 }
 
-impl K8sFleetBinding {
-    /// Whether `agent_name` belongs to this fleet. An **empty** member list ⇒
-    /// the fleet covers the whole namespace (mirrors `FleetBinding::includes`).
-    pub fn includes(&self, agent_name: &str) -> bool {
-        self.members.is_empty() || self.members.iter().any(|m| m == agent_name)
-    }
-}
-
-/// The body of a `[fleet.<name>]` table in `fleets-k8s.toml` — the fields of
-/// a [`K8sFleetBinding`] minus `name`, which is the table key.
 #[derive(Debug, Clone, serde::Deserialize)]
-struct K8sFleetBody {
+struct LegacyK8sFleetBody {
     #[serde(default)]
     context: Option<String>,
     namespace: String,
@@ -871,18 +891,24 @@ struct K8sFleetBody {
 }
 
 #[derive(serde::Deserialize)]
-struct K8sFleetsDoc {
+struct LegacyK8sFleetsDoc {
     #[serde(default)]
-    fleet: std::collections::BTreeMap<String, K8sFleetBody>,
+    fleet: std::collections::BTreeMap<String, LegacyK8sFleetBody>,
 }
 
-impl From<K8sFleetsDoc> for K8sFleetBindings {
-    fn from(doc: K8sFleetsDoc) -> Self {
-        K8sFleetBindings {
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[serde(from = "LegacyK8sFleetsDoc")]
+struct LegacyK8sFleetBindings {
+    fleets: Vec<LegacyK8sFleetBinding>,
+}
+
+impl From<LegacyK8sFleetsDoc> for LegacyK8sFleetBindings {
+    fn from(doc: LegacyK8sFleetsDoc) -> Self {
+        LegacyK8sFleetBindings {
             fleets: doc
                 .fleet
                 .into_iter()
-                .map(|(name, b)| K8sFleetBinding {
+                .map(|(name, b)| LegacyK8sFleetBinding {
                     name,
                     context: b.context,
                     namespace: b.namespace,
@@ -894,69 +920,92 @@ impl From<K8sFleetsDoc> for K8sFleetBindings {
     }
 }
 
-/// Parsed k8s-fleet-binding file, canonicalized to a list. Deserializes from
-/// `[fleet.<name>]` (only form — no legacy array form, unlike `FleetBindings`,
-/// since there's no pre-existing k8s config to stay compatible with).
-#[derive(Debug, Clone, Default, serde::Deserialize)]
-#[serde(from = "K8sFleetsDoc")]
-pub struct K8sFleetBindings {
-    pub fleets: Vec<K8sFleetBinding>,
-}
-
-impl K8sFleetBindings {
-    /// The fleet whose explicit `members` contain `agent_name`, if any.
-    pub fn fleet_for_agent(&self, agent_name: &str) -> Option<&K8sFleetBinding> {
-        self.fleets.iter().find(|b| b.includes(agent_name))
-    }
-
-    /// A fleet by name.
-    pub fn get(&self, name: &str) -> Option<&K8sFleetBinding> {
-        self.fleets.iter().find(|b| b.name == name)
-    }
-}
-
-/// Default k8s-fleet-binding config path: `$OAB_K8S_FLEETS_CONFIG`, else
-/// `<config-dir>/oab-studio/fleets-k8s.toml`. Deliberately a different file
-/// from `default_bindings_path()` — see module docs above.
-pub fn default_k8s_bindings_path() -> Option<std::path::PathBuf> {
+/// Where the legacy k8s bindings file used to live: `$OAB_K8S_FLEETS_CONFIG`,
+/// else `<config-dir>/oab-studio/fleets-k8s.toml`.
+fn legacy_k8s_bindings_path() -> Option<std::path::PathBuf> {
     if let Ok(p) = std::env::var("OAB_K8S_FLEETS_CONFIG") {
         return Some(std::path::PathBuf::from(p));
     }
     dirs::config_dir().map(|d| d.join("oab-studio").join("fleets-k8s.toml"))
 }
 
-/// Load k8s fleet bindings from `path`. A missing file is **not** an error —
-/// it yields an empty set, so bindings are strictly opt-in (mirrors
-/// `load_bindings`).
-pub fn load_k8s_bindings(path: &std::path::Path) -> anyhow::Result<K8sFleetBindings> {
-    match std::fs::read_to_string(path) {
-        Ok(content) => Ok(toml::from_str(&content)?),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(K8sFleetBindings::default()),
-        Err(e) => Err(e.into()),
+/// Quote a TOML string value, escaping backslashes/quotes — the same minimal
+/// escaping the console's `fleetToml.ts` `quote()` helper does for the
+/// append-block write path.
+fn quote_toml(s: &str) -> String {
+    format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+/// One-time startup migration: if a legacy `fleets-k8s.toml` exists, append
+/// its fleets as `runtime = "k8s"` blocks onto `fleets.toml` and rename the
+/// legacy file out of the way (`.migrated` suffix — renamed, never deleted, so
+/// it's recoverable). A no-op (returns `Ok(false)`) when there's no legacy
+/// file — so this is safe and idempotent to call on every startup.
+///
+/// Runs before `load_bindings` in `OabMcp::from_env`, so a fleet that only
+/// ever lived in `fleets-k8s.toml` (e.g. Hephaestus) shows up in the unified
+/// read model without the operator doing anything.
+pub fn migrate_legacy_k8s_bindings() -> anyhow::Result<bool> {
+    let Some(legacy_path) = legacy_k8s_bindings_path() else {
+        return Ok(false);
+    };
+    let Some(bindings_path) = default_bindings_path() else {
+        return Ok(false);
+    };
+    migrate_legacy_k8s_bindings_at(&legacy_path, &bindings_path)
+}
+
+/// Path-parametrized core of [`migrate_legacy_k8s_bindings`] — split out so
+/// tests exercise real temp-dir paths directly instead of mutating the
+/// process-global `OAB_FLEETS_CONFIG`/`OAB_K8S_FLEETS_CONFIG` env vars (which
+/// `cargo test`'s default parallel test threads would race on).
+fn migrate_legacy_k8s_bindings_at(
+    legacy_path: &std::path::Path,
+    bindings_path: &std::path::Path,
+) -> anyhow::Result<bool> {
+    let legacy_text = match std::fs::read_to_string(legacy_path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(e.into()),
+    };
+    let legacy: LegacyK8sFleetBindings = toml::from_str(&legacy_text)?;
+
+    if !legacy.fleets.is_empty() {
+        let mut merged = read_bindings_text(bindings_path)?;
+        for b in &legacy.fleets {
+            merged.push_str(&format!("\n[fleet.{}]\nruntime = \"k8s\"\n", b.name));
+            if let Some(ctx) = &b.context {
+                merged.push_str(&format!("context = {}\n", quote_toml(ctx)));
+            }
+            merged.push_str(&format!("namespace = {}\n", quote_toml(&b.namespace)));
+            if !b.members.is_empty() {
+                let items = b
+                    .members
+                    .iter()
+                    .map(|m| quote_toml(m))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                merged.push_str(&format!("members = [{items}]\n"));
+            }
+            if let Some(p) = &b.expected_principal {
+                merged.push_str(&format!("expected_principal = {}\n", quote_toml(p)));
+            }
+        }
+        // Validates before writing — a malformed legacy file fails the
+        // migration loudly instead of corrupting fleets.toml.
+        save_bindings_text(bindings_path, &merged)?;
     }
-}
 
-/// Resolve the k8s driver a binding selects — a `K8sDriver` bound to its
-/// kubeconfig context. This is the k8s counterpart to
-/// `resolve_binding_config`'s AWS `SdkConfig` resolution: the **switch**,
-/// calls for this fleet act against the bound context instead of whatever
-/// kubeconfig `current-context` happens to be ambient. Orbstack's local
-/// cluster is targeted exactly this way — just a context name, no
-/// special-casing.
-pub async fn resolve_binding_driver(binding: &K8sFleetBinding) -> anyhow::Result<oabctl::K8sDriver> {
-    oabctl::K8sDriver::from_context(binding.context.as_deref()).await
-}
-
-/// Validate `text` parses as a k8s-bindings file and, if so, persist it
-/// verbatim to `fleets-k8s.toml` (never `fleets.toml` — see module docs
-/// above), returning the parsed set. Mirrors `save_bindings_text`.
-pub fn save_k8s_bindings_text(
-    path: &std::path::Path,
-    text: &str,
-) -> anyhow::Result<K8sFleetBindings> {
-    let parsed: K8sFleetBindings = toml::from_str(text)?;
-    write_bindings_atomic(path, text)?;
-    Ok(parsed)
+    let migrated_path = legacy_path.with_extension("toml.migrated");
+    std::fs::rename(legacy_path, &migrated_path)?;
+    eprintln!(
+        "migrated {} fleet(s) from {} into {} (legacy file renamed to {})",
+        legacy.fleets.len(),
+        legacy_path.display(),
+        bindings_path.display(),
+        migrated_path.display()
+    );
+    Ok(true)
 }
 
 // ---- Fleet-binding editing (raw-text, whole-file) ------------------------
@@ -1651,7 +1700,7 @@ pub async fn provision_agent_k8s(
 
 /// Extract the bare service-account name from an `expected_principal` string
 /// in `system:serviceaccount:<namespace>:<name>` form — the format
-/// `K8sFleetBinding.expected_principal` holds when the "+ New fleet" wizard's
+/// `FleetBinding.expected_principal` holds when the "+ New fleet" wizard's
 /// service-account picker set it (studio#104). `KubernetesRuntime.
 /// service_account` wants just the bare name (`k8s_driver::build_deployment`
 /// sets it as `pod_spec.service_account_name` directly), not the qualified
@@ -1781,7 +1830,7 @@ async fn provision_config_k8s_configmap(
 /// counterpart to [`build_default_manifest`]. No VPC/subnet/security-group
 /// concept (that's ECS-specific networking); k8s's per-fleet placement is
 /// `context` (which cluster) and `namespace` (both already resolved by the
-/// caller from `K8sFleetBinding`) — `context` is threaded through here only
+/// caller from `FleetBinding`) — `context` is threaded through here only
 /// to create the ACP auth Secret (studio#119 follow-up) below, it's still
 /// not stored on the manifest itself, mirroring how AWS's `cluster` is a
 /// driver-construction parameter, not a manifest field. `node_selector`/
@@ -1853,7 +1902,7 @@ async fn build_default_k8s_manifest(
 /// reworking that already-landed function's shape again; worth revisiting
 /// once both paths are proven.
 ///
-/// `expected_principal` is `K8sFleetBinding.expected_principal` — see
+/// `expected_principal` is `FleetBinding.expected_principal` — see
 /// [`k8s_service_account_from_principal`] for how it maps onto the manifest.
 pub async fn provision_from_library_k8s(
     aws_config: &aws_config::SdkConfig,
@@ -2175,11 +2224,11 @@ members = ["oab-prod-mira"]
         let b: FleetBindings = toml::from_str(doc).expect("parse named fleets");
         assert_eq!(b.fleets.len(), 2);
         let orca = b.get("orca").expect("orca fleet");
-        assert_eq!(orca.cluster, "oab");
+        assert_eq!(orca.cluster.as_deref(), Some("oab"));
         assert_eq!(orca.members, vec!["oab-prod-orca".to_string()]);
         assert_eq!(orca.profile.as_deref(), Some("oab-fleet"));
         // both fleets resolve to the same cluster (shared credential)
-        assert_eq!(b.get("mira").unwrap().cluster, "oab");
+        assert_eq!(b.get("mira").unwrap().cluster.as_deref(), Some("oab"));
         // membership routing
         assert_eq!(
             b.fleet_for_service("oab-prod-mira").map(|f| f.name.as_str()),
@@ -2194,11 +2243,9 @@ members = ["oab-prod-mira"]
     fn binding_includes_matches_full_or_short_name_and_whole_cluster() {
         let orca = FleetBinding {
             name: "orca".into(),
-            cluster: "oab".into(),
+            cluster: Some("oab".into()),
             members: vec!["oab-prod-orca".into()],
-            region: None,
-            profile: None,
-            expected_principal: None,
+            ..Default::default()
         };
         // full ECS name and short agent name both match (mirrors resolve_service)
         assert!(orca.includes("oab-prod-orca", "orca"));
@@ -2209,11 +2256,9 @@ members = ["oab-prod-mira"]
         // empty members ⇒ whole cluster: everything matches (legacy semantics)
         let whole = FleetBinding {
             name: "prod".into(),
-            cluster: "oab".into(),
+            cluster: Some("oab".into()),
             members: vec![],
-            region: None,
-            profile: None,
-            expected_principal: None,
+            ..Default::default()
         };
         assert!(whole.includes("oab-prod-orca", "orca"));
         assert!(whole.includes("anything", "at-all"));
@@ -2232,36 +2277,43 @@ members = ["oab-prod-mira"]
     fn k8s_fleets_parse_with_context_and_members() {
         let doc = r#"
 [fleet.orbstack-dev]
+runtime = "k8s"
 context = "orbstack"
 namespace = "dev"
 members = ["scratch-agent"]
 
 [fleet.orca-k8s]
+runtime = "k8s"
 namespace = "prod"
 "#;
-        let b: K8sFleetBindings = toml::from_str(doc).expect("parse");
+        let b: FleetBindings = toml::from_str(doc).expect("parse");
         assert_eq!(b.fleets.len(), 2);
         let dev = b.get("orbstack-dev").expect("orbstack-dev fleet");
+        assert_eq!(dev.runtime, FleetRuntime::K8s);
         assert_eq!(dev.context.as_deref(), Some("orbstack"));
-        assert_eq!(dev.namespace, "dev");
+        assert_eq!(dev.namespace.as_deref(), Some("dev"));
         assert_eq!(dev.members, vec!["scratch-agent".to_string()]);
         // context omitted ⇒ None (kubeconfig current-context), same as
         // K8sDriver::from_context's "ambient default" contract
         let prod = b.get("orca-k8s").expect("orca-k8s fleet");
         assert_eq!(prod.context, None);
+        // a k8s fleet is never a `for_cluster` match — it has no cluster
+        assert!(b.for_cluster("orbstack-dev").is_none());
     }
 
     #[test]
     fn k8s_fleet_expected_principal_parses_and_defaults_to_none() {
         let doc = r#"
 [fleet.dev]
+runtime = "k8s"
 namespace = "dev"
 expected_principal = "system:serviceaccount:dev:oab-agent"
 
 [fleet.unset]
+runtime = "k8s"
 namespace = "prod"
 "#;
-        let b: K8sFleetBindings = toml::from_str(doc).expect("parse");
+        let b: FleetBindings = toml::from_str(doc).expect("parse");
         assert_eq!(
             b.get("dev").expect("dev fleet").expected_principal.as_deref(),
             Some("system:serviceaccount:dev:oab-agent")
@@ -2270,73 +2322,58 @@ namespace = "prod"
     }
 
     #[test]
-    fn k8s_binding_includes_matches_by_name_or_whole_namespace() {
-        let scoped = K8sFleetBinding {
-            name: "dev".into(),
-            context: Some("orbstack".into()),
-            namespace: "dev".into(),
-            members: vec!["scratch-agent".into()],
-            expected_principal: None,
-        };
-        assert!(scoped.includes("scratch-agent"));
-        assert!(!scoped.includes("other-agent"));
-
-        let whole = K8sFleetBinding {
-            name: "prod".into(),
-            context: None,
-            namespace: "prod".into(),
-            members: vec![],
-            expected_principal: None,
-        };
-        assert!(whole.includes("anything"));
+    fn fleet_binding_without_runtime_field_defaults_to_ecs() {
+        // Every binding written before `runtime` existed has no such key —
+        // must keep parsing as an ECS binding, not fail or silently become k8s.
+        let doc = "[fleet.prod]\ncluster = \"oab\"\nprofile = \"oab-fleet\"\n";
+        let b: FleetBindings = toml::from_str(doc).expect("parse");
+        assert_eq!(b.get("prod").unwrap().runtime, FleetRuntime::Ecs);
     }
 
     #[test]
-    fn empty_k8s_config_and_no_fleet_key_parse_to_empty() {
-        assert!(toml::from_str::<K8sFleetBindings>("").unwrap().fleets.is_empty());
-        assert!(toml::from_str::<K8sFleetBindings>("# just a comment\n")
-            .unwrap()
-            .fleets
-            .is_empty());
-    }
-
-    #[test]
-    fn load_k8s_bindings_missing_file_is_empty() {
-        let path = std::env::temp_dir().join("oab-k8s-fleets-does-not-exist-xyz.toml");
-        let _ = std::fs::remove_file(&path);
-        assert!(load_k8s_bindings(&path).unwrap().fleets.is_empty());
-    }
-
-    #[test]
-    fn save_k8s_bindings_round_trips_and_preserves_text_verbatim() {
-        let dir = std::env::temp_dir().join(format!("oab-k8s-fleets-save-{}", std::process::id()));
-        let path = dir.join("fleets-k8s.toml");
+    fn migrate_legacy_k8s_bindings_merges_into_fleets_toml_and_renames_legacy_file() {
+        let dir = std::env::temp_dir().join(format!("oab-migrate-k8s-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let text = "# my k8s fleets\n\n[fleet.dev]\ncontext = \"orbstack\"\nnamespace = \"dev\"\n";
-        let parsed = save_k8s_bindings_text(&path, text).expect("save");
-        assert_eq!(parsed.fleets.len(), 1);
-        assert_eq!(parsed.get("dev").unwrap().namespace, "dev");
-        assert_eq!(read_bindings_text(&path).unwrap(), text);
+        std::fs::create_dir_all(&dir).unwrap();
+        let fleets_path = dir.join("fleets.toml");
+        let legacy_path = dir.join("fleets-k8s.toml");
+        std::fs::write(&fleets_path, "[fleet.prod]\ncluster = \"oab\"\nprofile = \"oab-fleet\"\n")
+            .unwrap();
+        std::fs::write(
+            &legacy_path,
+            "[fleet.hephaestus]\ncontext = \"orbstack\"\nnamespace = \"openab-studio\"\nmembers = [\"hera\"]\n",
+        )
+        .unwrap();
+
+        let migrated =
+            migrate_legacy_k8s_bindings_at(&legacy_path, &fleets_path).expect("migrate");
+
+        assert!(migrated);
+        assert!(!legacy_path.exists(), "legacy file should be renamed away");
+        assert!(dir.join("fleets-k8s.toml.migrated").exists());
+
+        let merged: FleetBindings = toml::from_str(&std::fs::read_to_string(&fleets_path).unwrap())
+            .expect("merged fleets.toml still parses");
+        assert_eq!(merged.fleets.len(), 2);
+        let heph = merged.get("hephaestus").expect("migrated k8s fleet present");
+        assert_eq!(heph.runtime, FleetRuntime::K8s);
+        assert_eq!(heph.context.as_deref(), Some("orbstack"));
+        assert_eq!(heph.namespace.as_deref(), Some("openab-studio"));
+        assert_eq!(heph.members, vec!["hera".to_string()]);
+        // the pre-existing ECS fleet is untouched
+        assert_eq!(merged.get("prod").unwrap().cluster.as_deref(), Some("oab"));
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn k8s_bindings_file_is_separate_from_aws_bindings_file() {
-        // Saving k8s bindings must never touch fleets.toml — the whole reason
-        // this is a separate file (see module docs on K8sFleetBinding).
-        let dir = std::env::temp_dir().join(format!("oab-separate-fleets-{}", std::process::id()));
+    fn migrate_legacy_k8s_bindings_is_noop_without_a_legacy_file() {
+        let dir = std::env::temp_dir().join(format!("oab-migrate-noop-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let aws_path = dir.join("fleets.toml");
-        let k8s_path = dir.join("fleets-k8s.toml");
-
-        let aws_text = "[fleet.prod]\ncluster = \"oab\"\nprofile = \"oab-fleet\"\n";
-        save_bindings_text(&aws_path, aws_text).expect("save aws");
-        let k8s_text = "[fleet.dev]\ncontext = \"orbstack\"\nnamespace = \"dev\"\n";
-        save_k8s_bindings_text(&k8s_path, k8s_text).expect("save k8s");
-
-        assert_eq!(read_bindings_text(&aws_path).unwrap(), aws_text);
-        assert_eq!(read_bindings_text(&k8s_path).unwrap(), k8s_text);
-        let _ = std::fs::remove_dir_all(&dir);
+        let migrated =
+            migrate_legacy_k8s_bindings_at(&dir.join("fleets-k8s.toml"), &dir.join("fleets.toml"))
+                .expect("migrate");
+        assert!(!migrated);
     }
 
     #[test]
