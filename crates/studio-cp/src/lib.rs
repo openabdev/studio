@@ -1052,15 +1052,17 @@ fn migrate_legacy_k8s_bindings_at(
                 merged.push_str(&format!("context = {}\n", quote_toml(ctx)));
             }
             merged.push_str(&format!("namespace = {}\n", quote_toml(&b.namespace)));
-            if !b.members.is_empty() {
-                let items = b
-                    .members
-                    .iter()
-                    .map(|m| quote_toml(m))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                merged.push_str(&format!("members = [{items}]\n"));
-            }
+            // Always written, even `[]` — Brett 2026-09-06: don't omit
+            // `members` just because it's empty (whole-namespace fleet);
+            // omitting it reads as "forgot to migrate this field", not
+            // "deliberately whole-namespace."
+            let items = b
+                .members
+                .iter()
+                .map(|m| quote_toml(m))
+                .collect::<Vec<_>>()
+                .join(", ");
+            merged.push_str(&format!("members = [{items}]\n"));
             if let Some(p) = &b.expected_principal {
                 merged.push_str(&format!("expected_principal = {}\n", quote_toml(p)));
             }
@@ -2481,7 +2483,7 @@ namespace = "prod"
         .unwrap();
         std::fs::write(
             &legacy_path,
-            "[fleet.hephaestus]\ncontext = \"orbstack\"\nnamespace = \"openab-studio\"\nmembers = [\"hera\"]\n",
+            "[fleet.hephaestus]\ncontext = \"orbstack\"\nnamespace = \"openab-studio\"\nmembers = [\"hera\"]\n\n[fleet.orbstack-dev]\nnamespace = \"dev\"\n",
         )
         .unwrap();
 
@@ -2492,9 +2494,9 @@ namespace = "prod"
         assert!(!legacy_path.exists(), "legacy file should be renamed away");
         assert!(dir.join("fleets-k8s.toml.migrated").exists());
 
-        let merged: FleetBindings = toml::from_str(&std::fs::read_to_string(&fleets_path).unwrap())
-            .expect("merged fleets.toml still parses");
-        assert_eq!(merged.fleets.len(), 2);
+        let merged_text = std::fs::read_to_string(&fleets_path).unwrap();
+        let merged: FleetBindings = toml::from_str(&merged_text).expect("merged fleets.toml still parses");
+        assert_eq!(merged.fleets.len(), 3);
         let heph = merged.get("hephaestus").expect("migrated k8s fleet present");
         assert_eq!(heph.runtime, FleetRuntime::K8s);
         assert_eq!(heph.context.as_deref(), Some("orbstack"));
@@ -2502,6 +2504,10 @@ namespace = "prod"
         assert_eq!(heph.members, vec!["hera".to_string()]);
         // the pre-existing ECS fleet is untouched
         assert_eq!(merged.get("prod").unwrap().cluster.as_deref(), Some("oab"));
+        // a legacy entry with no members still gets an explicit `members = []`
+        // written, not omitted (Brett 2026-09-06)
+        assert!(merged_text.contains("members = []"));
+        assert!(merged.get("orbstack-dev").unwrap().members.is_empty());
 
         let _ = std::fs::remove_dir_all(&dir);
     }
