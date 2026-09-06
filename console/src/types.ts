@@ -43,53 +43,41 @@ export interface FleetBinding {
   expected_principal: string | null;
 }
 
-// One configured fleet → managing-credential binding — mirrors an entry of
-// oab-mcp's `fleet_config` tool (ADR #19, fleet-grouping ADR). `name` is the
-// switch key: a fleet is a usage-based logical group, so two fleets may share a
-// `cluster` (and thus one credential) while listing different `members`.
-// Selecting a fleet targets its `cluster` for reads and filters the roster to
-// its `members`. `members` are the ECS service names in the group; empty ⇒ the
-// fleet covers the whole cluster (legacy `[[fleet]]` semantics).
+// One configured fleet → managing-credential/context binding — mirrors an
+// entry of oab-mcp's `fleet_config` tool (ADR #19, fleet-grouping ADR; unified
+// across runtimes 2026-09-06). `name` is the switch key: a fleet is a
+// usage-based logical group, so two fleets may share a `cluster` (and thus one
+// credential) while listing different `members`. `runtime` picks which of the
+// `ecs`-only (`cluster`/`region`/`profile`) or `k8s`-only
+// (`context`/`namespace`) fields apply — the other set is always `null` for a
+// given entry. Selecting a fleet targets its cluster/context for reads and
+// filters the roster to its `members`. `members` are the ECS service names or
+// k8s agent names in the group; empty ⇒ the fleet covers the whole
+// cluster/namespace (legacy `[[fleet]]` semantics).
 export interface FleetConfigEntry {
   name: string;
-  cluster: string;
-  members: string[];
+  runtime: "ecs" | "k8s";
+  cluster: string | null;
   region: string | null;
   profile: string | null;
+  context: string | null;
+  namespace: string | null;
+  members: string[];
   expected_principal: string | null;
 }
 
 // The declarative fleet-binding config — mirrors oab-mcp's `fleet_config` tool
-// (ADR #19). `path` is the file the bindings load from (so the panel can show
-// where to edit them); `default_cluster` is the fallback target when no fleet is
-// selected.
+// (ADR #19). One `fleets.toml` for every runtime (2026-09-06 — was previously
+// split across `fleets.toml`/`fleets-k8s.toml` and `FleetConfig`/
+// `K8sFleetConfig`). `path` is the file the bindings load from (so the panel
+// can show where to edit them); `default_cluster` is the fallback target when
+// no fleet is selected (`ecs`-only — k8s has no equivalent ambient default).
 export interface FleetConfig {
   path: string | null;
   default_cluster: string;
   fleets: FleetConfigEntry[];
   // Raw TOML text of the config file (what the editor loads/saves); empty when
   // no file exists yet.
-  text: string;
-}
-
-// One configured k8s fleet → (context, namespace) binding — mirrors an entry
-// of oab-mcp's `k8s_fleet_config` tool (studio#104). The k8s counterpart to
-// `FleetConfigEntry`: no `cluster`/`region`/`profile` (those are AWS-only),
-// `context`/`namespace` select the target instead.
-export interface K8sFleetConfigEntry {
-  name: string;
-  context: string | null;
-  namespace: string;
-  members: string[];
-  expected_principal: string | null;
-}
-
-// The declarative k8s fleet-binding config — mirrors oab-mcp's
-// `k8s_fleet_config` tool. `path` is `fleets-k8s.toml`'s location (null when
-// unresolved, e.g. no config dir).
-export interface K8sFleetConfig {
-  path: string | null;
-  fleets: K8sFleetConfigEntry[];
   text: string;
 }
 

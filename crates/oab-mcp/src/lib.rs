@@ -218,7 +218,7 @@ pub fn tools() -> Vec<Tool> {
         ),
         Tool::new(
             "fleet_config",
-            "List the configured per-fleet managing-credential bindings (ADR: Per-Fleet managing identity): each fleet's name, target cluster, AWS profile and region, and expected_principal, plus the config file path they load from and the server's default cluster. Read-only; the declarative 'declare' side of the config→switch→observe→reconcile loop. Profiles are names, not secrets.",
+            "List the configured per-fleet managing-credential/context bindings (ADR: Per-Fleet managing identity): each fleet's name, runtime (`ecs` or `k8s`), ECS target cluster/AWS profile/region OR k8s context/namespace (whichever the runtime uses), members, and expected_principal, plus the config file path they load from and the server's default cluster. Read-only; the declarative 'declare' side of the config→switch→observe→reconcile loop. Profiles are names, not secrets.",
             as_map(json!({
                 "type": "object",
                 "properties": {}
@@ -226,11 +226,11 @@ pub fn tools() -> Vec<Tool> {
         ),
         Tool::new(
             "fleet_config_write",
-            "Persist the whole fleet-binding config from raw TOML `text` (what the UI's editor holds), then hot-reload. Validates the text parses before writing — a bad edit never lands on disk — and the bytes are stored verbatim, so comments/layout are preserved. Returns the updated fleet_config. Write tool: overwrites the operator's fleets.toml.",
+            "Persist the whole fleet-binding config from raw TOML `text` (what the UI's editor holds), then hot-reload. Validates the text parses before writing — a bad edit never lands on disk — and the bytes are stored verbatim, so comments/layout are preserved. Returns the updated fleet_config. Write tool: overwrites the operator's fleets.toml (both `ecs` and `k8s` runtime fleets live in this one file).",
             as_map(json!({
                 "type": "object",
                 "properties": {
-                    "text": { "type": "string", "description": "Full TOML document for fleets.toml (a list of [[fleet]] tables)." }
+                    "text": { "type": "string", "description": "Full TOML document for fleets.toml (`[fleet.<name>]` tables, each requiring `runtime = \"ecs\"` or `runtime = \"k8s\"`)." }
                 },
                 "required": ["text"]
             })),
@@ -284,42 +284,7 @@ pub fn tools() -> Vec<Tool> {
                 "required": ["namespace"]
             })),
         ),
-        Tool::new(
-            "k8s_fleet_config",
-            "List the configured k8s fleet bindings (fleets-k8s.toml, separate from AWS's fleets.toml): each fleet's name, kubeconfig context, namespace, members, and expected_principal, plus the config file path and raw TOML text. Read-only; the k8s counterpart to `fleet_config` — used to read the current file before computing an appended block, since `k8s_fleet_config_write` takes the whole file's text with no partial/append primitive.",
-            as_map(json!({
-                "type": "object",
-                "properties": {}
-            })),
-        ),
-        Tool::new(
-            "k8s_fleet_config_write",
-            "Persist the whole k8s fleet-binding config (fleets-k8s.toml, separate from AWS's fleets.toml) from raw TOML `text`. Validates the text parses before writing — a bad edit never lands on disk — and the bytes are stored verbatim, so comments/layout are preserved. Returns the parsed fleets (name, context, namespace, members, expected_principal) plus the raw text. Write tool: overwrites the operator's fleets-k8s.toml.",
-            as_map(json!({
-                "type": "object",
-                "properties": {
-                    "text": { "type": "string", "description": "Full TOML document for fleets-k8s.toml (a list of [fleet.<name>] tables)." }
-                },
-                "required": ["text"]
-            })),
-        ),
     ]
-}
-
-fn k8s_fleets_json(bindings: &scp::K8sFleetBindings) -> Vec<Value> {
-    bindings
-        .fleets
-        .iter()
-        .map(|b| {
-            json!({
-                "name": b.name,
-                "context": b.context,
-                "namespace": b.namespace,
-                "members": b.members,
-                "expected_principal": b.expected_principal,
-            })
-        })
-        .collect()
 }
 
 fn deployment_json(d: &scp::Deployment) -> Value {
@@ -389,6 +354,24 @@ impl OabMcp {
         let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
         let aws = aws_config::load_defaults(aws_config::BehaviorVersion::latest()).await;
         let default_cluster = std::env::var("OAB_CLUSTER").unwrap_or_else(|_| "oab".to_string());
+        // Two one-time, idempotent startup migrations (2026-09-06
+        // unification) — order matters: normalize must run first, since
+        // migrate_legacy_k8s_bindings re-validates the whole file (including
+        // pre-existing entries) via save_bindings_text, which now requires
+        // `runtime` on every entry.
+        // 1. Give every pre-existing entry an explicit `runtime = "ecs"` (the
+        //    field used to default silently; it's required now).
+        if let Some(p) = scp::default_bindings_path() {
+            if let Err(e) = scp::normalize_bindings_runtime_field(&p) {
+                eprintln!("warning: failed to normalize fleets.toml runtime field: {e:#}");
+            }
+        }
+        // 2. Fold a legacy fleets-k8s.toml into fleets.toml if one is still
+        //    around. No-op after the first successful run (legacy file gets
+        //    renamed away).
+        if let Err(e) = scp::migrate_legacy_k8s_bindings() {
+            eprintln!("warning: failed to migrate legacy fleets-k8s.toml: {e:#}");
+        }
         let bindings_path = scp::default_bindings_path();
         let bindings = match &bindings_path {
             Some(path) => scp::load_bindings(path).unwrap_or_else(|e| {
@@ -446,8 +429,6 @@ impl OabMcp {
             "list_k8s_contexts" => self.t_list_k8s_contexts(args),
             "list_namespaces" => self.t_list_namespaces(args).await,
             "list_service_accounts" => self.t_list_service_accounts(args).await,
-            "k8s_fleet_config" => self.t_k8s_fleet_config(args),
-            "k8s_fleet_config_write" => self.t_k8s_fleet_write(args),
             other => anyhow::bail!("unknown tool {other:?}"),
         }
     }
@@ -472,8 +453,13 @@ impl OabMcp {
                 let known: Vec<&str> = guard.fleets.iter().map(|f| f.name.as_str()).collect();
                 anyhow::anyhow!("unknown fleet {name:?}; configured fleets: [{}]", known.join(", "))
             })?;
+            let cluster = binding.cluster.clone().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "fleet {name:?} is a k8s-runtime fleet; this tool only supports ecs fleets"
+                )
+            })?;
             return Ok(Target {
-                cluster: binding.cluster.clone(),
+                cluster,
                 binding: Some(binding),
             });
         }
@@ -644,11 +630,10 @@ impl OabMcp {
 
         // studio#104: k8s dispatch. `context`/`expected_principal` come as
         // direct args — the console's identity form already collects them
-        // (context/namespace/service-account <select>s, #108/#109), there's
-        // no existing K8sFleetBinding to resolve them from for a brand-new
-        // fleet (unlike AWS's `fleet` + `self.target()` — a fleet-scoped k8s
-        // lookup is future work for redeploys into an *existing* k8s fleet,
-        // not needed for this dispatch to exist).
+        // (context/namespace/service-account <select>s, #108/#109); a
+        // fleet-scoped k8s lookup (resolving these from an existing
+        // `FleetBinding{runtime: K8s}` instead) is future work for redeploys
+        // into an *existing* k8s fleet, not needed for this dispatch to exist.
         if args.get("provider").and_then(Value::as_str) == Some("k8s") {
             let context = args.get("context").and_then(Value::as_str);
             let expected_principal = args.get("expected_principal").and_then(Value::as_str);
@@ -919,10 +904,16 @@ impl OabMcp {
             .map(|b| {
                 json!({
                     "name": b.name,
+                    "runtime": match b.runtime {
+                        scp::FleetRuntime::Ecs => "ecs",
+                        scp::FleetRuntime::K8s => "k8s",
+                    },
                     "cluster": b.cluster,
                     "members": b.members,
                     "region": b.region,
                     "profile": b.profile,
+                    "context": b.context,
+                    "namespace": b.namespace,
                     "expected_principal": b.expected_principal,
                 })
             })
@@ -1021,49 +1012,6 @@ impl OabMcp {
         Ok(json!({ "service_accounts": service_accounts }))
     }
 
-    /// The declarative k8s fleet-binding config, read-only — the k8s
-    /// counterpart to `t_fleet_config`. Unlike AWS bindings, k8s bindings
-    /// aren't cached anywhere in `OabMcp`, so this loads fresh from disk each
-    /// call. Exists so a caller (the New Fleet wizard's k8s submit path) can
-    /// read the current `fleets-k8s.toml` text before computing an appended
-    /// block — `k8s_fleet_config_write` takes the whole file, no partial/
-    /// append primitive.
-    fn t_k8s_fleet_config(&self, _args: &Map<String, Value>) -> Result<Value> {
-        let path = scp::default_k8s_bindings_path();
-        let bindings = match &path {
-            Some(p) => scp::load_k8s_bindings(p).unwrap_or_default(),
-            None => scp::K8sFleetBindings::default(),
-        };
-        let text = match &path {
-            Some(p) => scp::read_bindings_text(p).unwrap_or_default(),
-            None => String::new(),
-        };
-        Ok(json!({
-            "path": path.map(|p| p.display().to_string()),
-            "fleets": k8s_fleets_json(&bindings),
-            "text": text,
-        }))
-    }
-
-    /// Write tool: persist the whole `fleets-k8s.toml` from the editor's
-    /// `text` after validating it parses, mirroring `t_fleet_write`'s
-    /// AWS-side shape. Unlike AWS bindings, k8s bindings aren't cached
-    /// anywhere in `OabMcp`, so this is a plain validate-then-write with no
-    /// in-memory state to invalidate.
-    fn t_k8s_fleet_write(&self, args: &Map<String, Value>) -> Result<Value> {
-        let text = args
-            .get("text")
-            .and_then(Value::as_str)
-            .ok_or_else(|| anyhow::anyhow!("missing required arg: text"))?;
-        let path = scp::default_k8s_bindings_path()
-            .ok_or_else(|| anyhow::anyhow!("no k8s fleet config path resolved; cannot write bindings"))?;
-        let bindings = scp::save_k8s_bindings_text(&path, text)?;
-        Ok(json!({
-            "path": path.display().to_string(),
-            "fleets": k8s_fleets_json(&bindings),
-            "text": text,
-        }))
-    }
 
     async fn t_delete(&self, args: &Map<String, Value>) -> Result<Value> {
         let t = self.target(args)?;
@@ -1147,7 +1095,7 @@ mod tests {
             .iter()
             .map(|t| t["name"].as_str().expect("tool has a name").to_string())
             .collect();
-        assert_eq!(names.len(), 19);
+        assert_eq!(names.len(), 17);
         for expected in [
             "deploy_list",
             "deploy_get",
@@ -1166,8 +1114,6 @@ mod tests {
             "list_k8s_contexts",
             "list_namespaces",
             "list_service_accounts",
-            "k8s_fleet_config",
-            "k8s_fleet_config_write",
         ] {
             assert!(names.contains(&expected.to_string()), "missing {expected}");
         }

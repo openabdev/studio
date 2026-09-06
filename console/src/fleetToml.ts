@@ -6,10 +6,13 @@
 // `fleet_config_write` with the full updated text. Kept side-effect-free and
 // regex-based (not a full TOML parser) so it's unit-testable and only ever
 // touches the one array/block it means to.
+//
+// One `fleets.toml` covers both `ecs` and `k8s` fleets (2026-09-06
+// unification — this module used to have a `fleetsK8sToml.ts` sibling for a
+// separate `fleets-k8s.toml`); `appendFleetBlock` below takes a `runtime`
+// discriminant and writes the matching fields, `runtime = "..."` always
+// included (required on the Rust side, no default).
 
-// Exported so fleetsK8sToml.ts (fleets-k8s.toml's client-side edits, same
-// `[fleet.<name>]` shape) can reuse it instead of duplicating a one-line
-// helper.
 export function quote(s: string): string {
   return JSON.stringify(s);
 }
@@ -34,10 +37,10 @@ function findFleetBlock(
 
 // Whether a `[fleet.<name>]` block already exists — used by the "New fleet"
 // wizard (deploy.ts) to reject a colliding name *before* provisioning an
-// instance, rather than discovering the collision only when appendFleetBlock/
-// appendK8sFleetBlock's blind append produces a second `[fleet.<name>]`
-// header and the resulting TOML fails to parse (studio: duplicate-key crash
-// after the instance was already deployed).
+// instance, rather than discovering the collision only when appendFleetBlock's
+// blind append produces a second `[fleet.<name>]` header and the resulting
+// TOML fails to parse (studio: duplicate-key crash after the instance was
+// already deployed).
 export function fleetBlockExists(text: string, name: string): boolean {
   return findFleetBlock(text, name) !== null;
 }
@@ -71,18 +74,28 @@ export function appendMember(text: string, fleetName: string, member: string): s
 export interface NewFleetEntry {
   name: string;
   member: string;
-  region: string | null;
-  profile: string | null;
   expectedPrincipal: string | null;
+  runtime:
+    | { kind: "ecs"; region: string | null; profile: string | null }
+    | { kind: "k8s"; context: string | null; namespace: string };
 }
 
 // Append a brand-new `[fleet.<name>]` block to the end of the file (7.5.1 step
-// 2), with the one member — the first instance just deployed. Optional fields
-// are omitted rather than written as empty strings.
+// 2), with the one member — the first instance just deployed. `runtime`
+// picks which fields get written (`ecs`'s region/profile vs `k8s`'s
+// context/namespace); `runtime = "..."` is always written first since it's a
+// required field on the Rust side (no default). Optional fields are omitted
+// rather than written as empty strings.
 export function appendFleetBlock(text: string, entry: NewFleetEntry): string {
-  const lines = [`[fleet.${entry.name}]`, `members = [${quote(entry.member)}]`];
-  if (entry.region) lines.push(`region = ${quote(entry.region)}`);
-  if (entry.profile) lines.push(`profile = ${quote(entry.profile)}`);
+  const lines = [`[fleet.${entry.name}]`, `runtime = ${quote(entry.runtime.kind)}`];
+  if (entry.runtime.kind === "k8s") {
+    if (entry.runtime.context) lines.push(`context = ${quote(entry.runtime.context)}`);
+    lines.push(`namespace = ${quote(entry.runtime.namespace)}`);
+  } else {
+    if (entry.runtime.region) lines.push(`region = ${quote(entry.runtime.region)}`);
+    if (entry.runtime.profile) lines.push(`profile = ${quote(entry.runtime.profile)}`);
+  }
+  lines.push(`members = [${quote(entry.member)}]`);
   if (entry.expectedPrincipal) lines.push(`expected_principal = ${quote(entry.expectedPrincipal)}`);
   const block = `${lines.join("\n")}\n`;
   const trimmed = text.replace(/\s*$/, "");

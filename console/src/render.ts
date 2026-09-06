@@ -141,11 +141,21 @@ function field(label: string, value: string, mono = true): string {
 // ---- Fleet config panel (ADR #19: the "declare" side) ------------------------
 
 function credLine(f: FleetConfig["fleets"][number]): string {
+  if (f.runtime === "k8s") {
+    // No AWS account/region here — just which kubeconfig context.
+    return escapeHtml(f.context ?? "current-context");
+  }
   // Profile-first (assume-role is later work); region pins the fleet's location.
   const parts = [f.profile ?? "default chain", f.region].filter(
     (p): p is string => Boolean(p),
   );
   return parts.map(escapeHtml).join(" · ");
+}
+
+// The cluster/namespace line: `ecs` shows the ECS cluster, `k8s` shows the
+// kubeconfig namespace — whichever field the fleet's runtime actually uses.
+function locationLine(f: FleetConfig["fleets"][number]): string {
+  return f.runtime === "k8s" ? (f.namespace ?? "") : (f.cluster ?? "");
 }
 
 // The members line: the ECS services grouped into this fleet, or a note that an
@@ -174,8 +184,8 @@ function fleetButton(
   const name = escapeHtml(f.name);
   return `<div class="fleets-row">
       <button class="${cls}" type="button" data-fleet="${name}" aria-pressed="${active}">
-        <span class="cfg-name">${escapeHtml(f.name || f.cluster)}</span>
-        <span class="cfg-cluster">${escapeHtml(f.cluster)}</span>
+        <span class="cfg-name">${escapeHtml(f.name || locationLine(f))}</span>
+        <span class="cfg-cluster">${escapeHtml(locationLine(f))}</span>
         ${membersLine(f)}
         <span class="cfg-cred">${credLine(f)}</span>
       </button>

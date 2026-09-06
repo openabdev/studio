@@ -14,7 +14,6 @@
 
 import type { Source } from "./source";
 import { appendMember, appendFleetBlock, fleetBlockExists } from "./fleetToml";
-import { appendK8sFleetBlock } from "./fleetsK8sToml";
 
 type Invoke = <T>(cmd: string, args?: Record<string, unknown>) => Promise<T>;
 
@@ -510,15 +509,14 @@ export function initDeployPanel(deps: DeployPanelDeps): DeployPanelHandle | null
       return;
     }
     // Reject a colliding name here, before Step 2 provisions anything —
-    // appendFleetBlock/appendK8sFleetBlock always append a brand-new
-    // `[fleet.<name>]` block, so reusing an existing name would otherwise
-    // only surface as a duplicate-key TOML parse error *after* the instance
-    // was already deployed (it has no partial/merge fallback; "add instance
-    // to an existing k8s fleet" isn't wired through this wizard yet either —
-    // see the isK8s check in the deploy submit handler below).
-    const isK8s = providerSel.value === "k8s";
+    // appendFleetBlock always appends a brand-new `[fleet.<name>]` block, so
+    // reusing an existing name would otherwise only surface as a
+    // duplicate-key TOML parse error *after* the instance was already
+    // deployed (it has no partial/merge fallback; "add instance to an
+    // existing k8s fleet" isn't wired through this wizard yet either — see
+    // the isK8s check in the deploy submit handler below).
     try {
-      const current = await (isK8s ? deps.source.k8sFleetConfig() : deps.source.fleetConfig());
+      const current = await deps.source.fleetConfig();
       if (fleetBlockExists(current.text, fleetName)) {
         setStatus(
           identityStatusEl,
@@ -607,37 +605,29 @@ export function initDeployPanel(deps: DeployPanelDeps): DeployPanelHandle | null
     }
     const service = `oab-${namespace}-${name}`;
     const fleetName = mode.kind === "new-fleet" ? nameInput.value.trim() : mode.fleetName;
-    const configFile = isK8s ? "fleets-k8s.toml" : "fleets.toml";
-    setStatus(deployStatusEl, `deployed ${service} — updating ${configFile}…`, "ok");
+    setStatus(deployStatusEl, `deployed ${service} — updating fleets.toml…`, "ok");
     try {
-      if (isK8s) {
-        const current = await deps.source.k8sFleetConfig();
-        const nextText = appendK8sFleetBlock(current.text, {
-          name: fleetName,
-          member: service,
-          context: context ?? null,
-          namespace,
-          expectedPrincipal: expectedPrincipal ?? null,
-        });
-        await deps.source.writeK8sFleetConfig(nextText);
-      } else {
-        const current = await deps.source.fleetConfig();
-        const nextText =
-          mode.kind === "new-fleet"
-            ? appendFleetBlock(current.text, {
-                name: fleetName,
-                member: service,
-                region: regionInput.value.trim() || null,
-                profile: profileInput.value.trim() || null,
-                expectedPrincipal: principalInput.value.trim() || null,
-              })
-            : appendMember(current.text, fleetName, service);
-        await deps.source.writeFleetConfig(nextText);
-      }
+      const current = await deps.source.fleetConfig();
+      const nextText =
+        mode.kind === "new-fleet"
+          ? appendFleetBlock(current.text, {
+              name: fleetName,
+              member: service,
+              expectedPrincipal: (isK8s ? expectedPrincipal : principalInput.value.trim()) || null,
+              runtime: isK8s
+                ? { kind: "k8s", context: context ?? null, namespace }
+                : {
+                    kind: "ecs",
+                    region: regionInput.value.trim() || null,
+                    profile: profileInput.value.trim() || null,
+                  },
+            })
+          : appendMember(current.text, fleetName, service);
+      await deps.source.writeFleetConfig(nextText);
     } catch (e) {
       // The instance is live but the config file wasn't updated — surface it
       // rather than silently leaving the roster's membership stale.
-      setStatus(deployStatusEl, `deployed ${service}, but ${configFile} update failed: ${errText(e)}`, "err");
+      setStatus(deployStatusEl, `deployed ${service}, but fleets.toml update failed: ${errText(e)}`, "err");
       deployBtn.disabled = false;
       return;
     }
