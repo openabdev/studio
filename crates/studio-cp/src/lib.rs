@@ -637,9 +637,12 @@ pub struct FleetBinding {
     /// of a legacy `[[fleet]]` entry).
     #[serde(default)]
     pub name: String,
-    /// Which driver manages this fleet. Defaults to `ecs` — every binding
-    /// written before this field existed is an ECS binding.
-    #[serde(default)]
+    /// Which driver manages this fleet. **Required, no default** (Brett
+    /// 2026-09-06) — every `[fleet.<name>]`/`[[fleet]]` entry must say
+    /// `runtime = "ecs"` or `"k8s"` explicitly. A file written before this
+    /// field existed needs `normalize_bindings_runtime_field` run on it once
+    /// (wired into `OabMcp::from_env`, ahead of `migrate_legacy_k8s_bindings`)
+    /// before it'll parse.
     pub runtime: FleetRuntime,
     /// ECS cluster this fleet's members live in (drives the managing credential;
     /// credential resolution stays cluster/account-granular). `runtime: ecs` only.
@@ -692,7 +695,6 @@ impl FleetBinding {
 /// `name`, which is the table key.
 #[derive(Debug, Clone, serde::Deserialize)]
 struct FleetBody {
-    #[serde(default)]
     runtime: FleetRuntime,
     #[serde(default)]
     cluster: Option<String>,
@@ -856,6 +858,78 @@ fn role_identity(arn: &str) -> Option<(String, String)> {
         return None;
     };
     Some((account, name))
+}
+
+// ---- `runtime` field normalization (2026-09-06, `runtime` became required) --
+
+/// Rewrite `text`, inserting `runtime = "ecs"` as the first line of the body
+/// of any `[fleet.<name>]`/`[[fleet]]` block that doesn't already declare a
+/// `runtime` key. Every binding written before `runtime` existed on
+/// `FleetBinding` is implicitly ECS — this makes that explicit on disk so the
+/// (now-required, no-default) field parses. Line-based, not a TOML
+/// round-trip, so comments/formatting elsewhere in the file survive
+/// untouched — same approach `migrate_legacy_k8s_bindings_at` uses to append
+/// blocks. Returns `(rewritten_text, changed)`.
+fn normalize_missing_runtime(text: &str) -> (String, bool) {
+    let is_fleet_header = |l: &str| {
+        let t = l.trim_start();
+        t.starts_with("[fleet.") || t.starts_with("[[fleet]]")
+    };
+    let is_any_header = |l: &str| l.trim_start().starts_with('[');
+    let is_runtime_key = |l: &str| l.trim_start().starts_with("runtime") && l.contains('=');
+
+    let lines: Vec<&str> = text.lines().collect();
+    let mut out: Vec<String> = Vec::with_capacity(lines.len() + 4);
+    let mut changed = false;
+    let mut i = 0;
+    while i < lines.len() {
+        let line = lines[i];
+        out.push(line.to_string());
+        if is_fleet_header(line) {
+            let mut j = i + 1;
+            let mut has_runtime = false;
+            while j < lines.len() && !is_any_header(lines[j]) {
+                if is_runtime_key(lines[j]) {
+                    has_runtime = true;
+                }
+                j += 1;
+            }
+            if !has_runtime {
+                out.push("runtime = \"ecs\"".to_string());
+                changed = true;
+            }
+        }
+        i += 1;
+    }
+    let mut rewritten = out.join("\n");
+    if text.ends_with('\n') || text.is_empty() {
+        rewritten.push('\n');
+    }
+    (rewritten, changed)
+}
+
+/// One-time startup normalization: if `path` has any `[fleet.*]`/`[[fleet]]`
+/// block missing an explicit `runtime` key, rewrite the file with
+/// `runtime = "ecs"` inserted for those blocks (validated via
+/// `save_bindings_text` before writing). A no-op, returning `Ok(false)`, when
+/// every block already declares `runtime` (or the file doesn't exist yet) —
+/// safe and idempotent to call on every startup.
+///
+/// Must run **before** [`migrate_legacy_k8s_bindings`] in `OabMcp::from_env`:
+/// that function reads the existing file's text and re-validates the whole
+/// thing via `save_bindings_text`, which would reject an old file whose
+/// pre-existing entries still lack `runtime`.
+pub fn normalize_bindings_runtime_field(path: &std::path::Path) -> anyhow::Result<bool> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(e.into()),
+    };
+    let (rewritten, changed) = normalize_missing_runtime(&text);
+    if changed {
+        save_bindings_text(path, &rewritten)?;
+    }
+    Ok(changed)
 }
 
 // ---- Legacy `fleets-k8s.toml` migration (ADR #63 slice 3f, pre-2026-09-06) --
@@ -2185,12 +2259,14 @@ mod tests {
         let doc = r#"
 [[fleet]]
 name = "prod"
+runtime = "ecs"
 cluster = "oab"
 region = "ap-east-2"
 profile = "orca-prod"
 
 [[fleet]]
 name = "sg"
+runtime = "ecs"
 cluster = "oab-sg"
 profile = "appier-sg"
 "#;
@@ -2210,12 +2286,14 @@ profile = "appier-sg"
         // cluster, grouped by explicit members.
         let doc = r#"
 [fleet.orca]
+runtime = "ecs"
 cluster = "oab"
 region = "ap-east-2"
 profile = "oab-fleet"
 members = ["oab-prod-orca"]
 
 [fleet.mira]
+runtime = "ecs"
 cluster = "oab"
 region = "ap-east-2"
 profile = "oab-fleet"
@@ -2322,12 +2400,71 @@ namespace = "prod"
     }
 
     #[test]
-    fn fleet_binding_without_runtime_field_defaults_to_ecs() {
-        // Every binding written before `runtime` existed has no such key —
-        // must keep parsing as an ECS binding, not fail or silently become k8s.
+    fn missing_runtime_field_is_rejected_at_parse_time() {
+        // `runtime` is required, no default (Brett 2026-09-06) — a block
+        // missing it must fail to parse, not silently become `ecs`. Old files
+        // need `normalize_bindings_runtime_field` run on them first (see
+        // below), not a parse-time default.
         let doc = "[fleet.prod]\ncluster = \"oab\"\nprofile = \"oab-fleet\"\n";
-        let b: FleetBindings = toml::from_str(doc).expect("parse");
+        assert!(toml::from_str::<FleetBindings>(doc).is_err());
+    }
+
+    #[test]
+    fn normalize_bindings_runtime_field_inserts_ecs_for_named_fleets() {
+        let dir = std::env::temp_dir().join(format!("oab-normalize-runtime-named-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("fleets.toml");
+        // A pre-`runtime`-field file, current `[fleet.<name>]` form, neither
+        // entry declaring `runtime`.
+        let text = "# my fleets\n\n[fleet.prod]\ncluster = \"oab\"\n\n[fleet.mira]\ncluster = \"oab\"\nprofile = \"oab-fleet\"\n";
+        std::fs::write(&path, text).unwrap();
+
+        let changed = normalize_bindings_runtime_field(&path).expect("normalize");
+        assert!(changed);
+
+        let rewritten = std::fs::read_to_string(&path).unwrap();
+        let b: FleetBindings = toml::from_str(&rewritten).expect("normalized text parses");
+        assert_eq!(b.fleets.len(), 2);
         assert_eq!(b.get("prod").unwrap().runtime, FleetRuntime::Ecs);
+        assert_eq!(b.get("mira").unwrap().runtime, FleetRuntime::Ecs);
+        // comment survives — this is a targeted line insertion, not a
+        // reserialize
+        assert!(rewritten.starts_with("# my fleets"));
+
+        // idempotent: a second pass over the now-normalized file is a no-op
+        let changed_again = normalize_bindings_runtime_field(&path).expect("normalize again");
+        assert!(!changed_again);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn normalize_bindings_runtime_field_inserts_ecs_for_legacy_array_fleets() {
+        let dir = std::env::temp_dir().join(format!("oab-normalize-runtime-legacy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("fleets.toml");
+        // The old `[[fleet]]` array form, no `runtime` declared.
+        let text = "[[fleet]]\nname = \"prod\"\ncluster = \"oab\"\nprofile = \"orca-prod\"\n";
+        std::fs::write(&path, text).unwrap();
+
+        let changed = normalize_bindings_runtime_field(&path).expect("normalize");
+        assert!(changed);
+
+        let rewritten = std::fs::read_to_string(&path).unwrap();
+        let b: FleetBindings = toml::from_str(&rewritten).expect("normalized text parses");
+        assert_eq!(b.fleets.len(), 1);
+        assert_eq!(b.fleets[0].runtime, FleetRuntime::Ecs);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn normalize_bindings_runtime_field_missing_file_is_noop() {
+        let path = std::env::temp_dir().join("oab-normalize-does-not-exist-xyz.toml");
+        let _ = std::fs::remove_file(&path);
+        assert!(!normalize_bindings_runtime_field(&path).unwrap());
     }
 
     #[test]
@@ -2337,8 +2474,11 @@ namespace = "prod"
         std::fs::create_dir_all(&dir).unwrap();
         let fleets_path = dir.join("fleets.toml");
         let legacy_path = dir.join("fleets-k8s.toml");
-        std::fs::write(&fleets_path, "[fleet.prod]\ncluster = \"oab\"\nprofile = \"oab-fleet\"\n")
-            .unwrap();
+        std::fs::write(
+            &fleets_path,
+            "[fleet.prod]\nruntime = \"ecs\"\ncluster = \"oab\"\nprofile = \"oab-fleet\"\n",
+        )
+        .unwrap();
         std::fs::write(
             &legacy_path,
             "[fleet.hephaestus]\ncontext = \"orbstack\"\nnamespace = \"openab-studio\"\nmembers = [\"hera\"]\n",
@@ -2381,7 +2521,7 @@ namespace = "prod"
         let dir = std::env::temp_dir().join(format!("oab-fleets-save-{}", std::process::id()));
         let path = dir.join("fleets.toml");
         let _ = std::fs::remove_dir_all(&dir);
-        let text = "# my fleets\n\n[[fleet]]\nname = \"prod\"\ncluster = \"oab\"\nprofile = \"orca-prod\"\n";
+        let text = "# my fleets\n\n[[fleet]]\nname = \"prod\"\nruntime = \"ecs\"\ncluster = \"oab\"\nprofile = \"orca-prod\"\n";
         let parsed = save_bindings_text(&path, text).expect("save");
         assert_eq!(parsed.fleets.len(), 1);
         assert_eq!(parsed.for_cluster("oab").unwrap().profile.as_deref(), Some("orca-prod"));
