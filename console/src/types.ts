@@ -34,12 +34,16 @@ export interface Deployment {
   instances: InstancePhase[];
 }
 
-// The fleet binding in effect for a cluster (ADR #19). Mirrors oab-mcp's
-// `runtime_context.binding`.
+// The fleet binding in effect for a cluster or k8s context (ADR #19).
+// Mirrors oab-mcp's `runtime_context.binding` — `profile`/`region` for an
+// ecs-runtime fleet, `context`/`namespace` for a k8s-runtime one (studio#146
+// slice 2); the other set is absent for a given entry.
 export interface FleetBinding {
   name: string;
-  profile: string | null;
-  region: string | null;
+  profile?: string | null;
+  region?: string | null;
+  context?: string | null;
+  namespace?: string | null;
   expected_principal: string | null;
 }
 
@@ -160,10 +164,15 @@ export interface FsCapability {
 }
 
 // The effective runtime identity/context the control plane resolved for a
-// cluster — mirrors oab-mcp's `runtime_context` tool (ADR #19). `identity_matches`
-// is `null` when the binding declares no `expected_principal`.
+// cluster or k8s-runtime fleet — mirrors oab-mcp's `runtime_context` tool
+// (ADR #19). `cluster` is `null` for a k8s-runtime fleet (`context`/
+// `namespace` are set instead, studio#146 slice 2) — always check `cluster`
+// before assuming an ecs shape. `identity_matches` is `null` when the
+// binding declares no `expected_principal`.
 export interface RuntimeContext {
-  cluster: string;
+  cluster: string | null;
+  context?: string | null;
+  namespace?: string | null;
   principal: string;
   principal_kind: string; // "role" | "user" | "unknown"
   scope: string; // AWS account id

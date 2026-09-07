@@ -24,8 +24,13 @@ import {
 // A read source for the console. Desktop (Tauri → studio-cp) and the standalone
 // browser build implement this identically, so the UI never knows which it is.
 export interface Source {
-  listDeployments(cluster?: string): Promise<Deployment[]>;
-  runtimeContext(cluster?: string): Promise<RuntimeContext>;
+  // `fleet` (studio#146 slices 2-4) is required to reach a k8s-runtime
+  // fleet's roster/identity — `cluster` has no k8s equivalent to resolve
+  // against, since a k8s fleet targets a (context, namespace) instead. Safe
+  // to pass alongside `cluster` for an ecs-runtime fleet too: oab-mcp
+  // resolves the fleet's own cluster from the binding either way.
+  listDeployments(cluster?: string, fleet?: string): Promise<Deployment[]>;
+  runtimeContext(cluster?: string, fleet?: string): Promise<RuntimeContext>;
   fleetConfig(): Promise<FleetConfig>;
   // Persist the raw TOML `text` of the config file, returning the reloaded
   // config. Rejects (without writing) when the text doesn't parse.
@@ -158,11 +163,11 @@ export class TauriSource implements Source {
     if (!invoke) throw new Error("Tauri bridge unavailable");
     return invoke;
   }
-  async listDeployments(cluster?: string): Promise<Deployment[]> {
-    return this.invoke()<Deployment[]>("deploy_list", { cluster });
+  async listDeployments(cluster?: string, fleet?: string): Promise<Deployment[]> {
+    return this.invoke()<Deployment[]>("deploy_list", { cluster, fleet });
   }
-  async runtimeContext(cluster?: string): Promise<RuntimeContext> {
-    return this.invoke()<RuntimeContext>("runtime_context", { cluster });
+  async runtimeContext(cluster?: string, fleet?: string): Promise<RuntimeContext> {
+    return this.invoke()<RuntimeContext>("runtime_context", { cluster, fleet });
   }
   async fleetConfig(): Promise<FleetConfig> {
     return this.invoke()<FleetConfig>("fleet_config");

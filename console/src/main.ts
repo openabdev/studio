@@ -352,7 +352,7 @@ function repaintRoster(): void {
 async function tick(): Promise<void> {
   if (!roster) return;
   try {
-    const all = await source.listDeployments(activeCluster);
+    const all = await source.listDeployments(activeCluster, activeFleet ?? undefined);
     // Filter to the active fleet's members (empty ⇒ whole cluster).
     const deployments = filterByMembers(all, activeMembers);
     lastDeployments = deployments;
@@ -450,24 +450,23 @@ function selectFleet(name: string): void {
   if (!name || name === activeFleet) return;
   const fleet = fleetConfig?.fleets.find((f) => f.name === name);
   if (!fleet) return;
-  // k8s fleets have no ECS cluster to point reads at — listDeployments/
-  // runtimeContext/tick are all cluster-keyed and ecs-only today (a separate,
-  // larger gap: k8s fleets have no roster/observe UI yet, tracked apart from
-  // this schema unification). Don't pretend a switch worked when reads would
-  // silently break against an empty cluster string.
-  if (fleet.runtime === "k8s" || fleet.cluster === null) {
-    note(
-      "info",
-      `fleet "${name}" is a k8s fleet — switching the roster view to it isn't wired up yet`,
-    );
-    return;
-  }
   closeOpenAgentConsole();
   activeFleet = name;
-  activeCluster = fleet.cluster;
   activeMembers = fleet.members;
-  if (clusterLabel) clusterLabel.textContent = `${activeFleet} · ${activeCluster}`;
-  note("info", `config: switched to fleet "${activeFleet}" (cluster "${activeCluster}")`);
+  if (fleet.runtime === "k8s") {
+    // No ECS cluster for a k8s fleet — reads now go by the `fleet` name
+    // instead (oab-mcp resolves the bound context/namespace itself,
+    // studio#146 slices 2-3); `activeCluster` stays a plain "" sentinel,
+    // never read on this path.
+    activeCluster = "";
+    const where = `${fleet.context ?? "current-context"}/${fleet.namespace ?? "default"}`;
+    if (clusterLabel) clusterLabel.textContent = `${activeFleet} · ${where}`;
+    note("info", `config: switched to fleet "${activeFleet}" (k8s ${where})`);
+  } else {
+    activeCluster = fleet.cluster ?? DEFAULT_CLUSTER;
+    if (clusterLabel) clusterLabel.textContent = `${activeFleet} · ${activeCluster}`;
+    note("info", `config: switched to fleet "${activeFleet}" (cluster "${activeCluster}")`);
+  }
   if (configEl) renderFleetConfig(configEl, fleetConfig, activeFleet);
   updateScreen();
   void tick();
