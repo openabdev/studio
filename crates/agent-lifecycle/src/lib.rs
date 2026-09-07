@@ -7,6 +7,7 @@
 //! never changes per runtime.
 
 pub mod ecs;
+pub mod k8s;
 
 /// Whether the control plane wants this instance running or stopped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
