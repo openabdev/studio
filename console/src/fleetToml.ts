@@ -71,6 +71,23 @@ export function appendMember(text: string, fleetName: string, member: string): s
   return text.slice(0, block.headerEnd) + newBody + text.slice(block.end);
 }
 
+// Remove a `[fleet.<name>]` block entirely — the inverse of `appendFleetBlock`
+// (Fleet detail's "Delete fleet" action: the console had no way to remove a
+// fleet short of hand-editing raw TOML via "Edit config"). `findFleetBlock`'s
+// `end` already lands exactly at the next block's `[` (or EOF), so the blank
+// line `appendFleetBlock` writes *before* each block travels with `before`,
+// not `after` — a plain concatenation needs no separator patching. The
+// `\n{3,}` collapse and single trailing newline are defensive tidy-ups, not
+// load-bearing (see fleetToml.test.ts for why each is safe). A no-op if the
+// fleet isn't found.
+export function removeFleetBlock(text: string, name: string): string {
+  const block = findFleetBlock(text, name);
+  if (!block) return text;
+  const result = text.slice(0, block.start) + text.slice(block.end);
+  const collapsed = result.replace(/\n{3,}/g, "\n\n");
+  return collapsed.trim() ? collapsed.replace(/\n+$/, "\n") : "";
+}
+
 export interface NewFleetEntry {
   name: string;
   member: string;

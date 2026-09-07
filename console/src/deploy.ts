@@ -172,6 +172,7 @@ export function initDeployPanel(deps: DeployPanelDeps): DeployPanelHandle | null
   const acpTokenGenerateBtn = document.getElementById("deploy-acp-token-generate") as HTMLButtonElement | null;
   const agentNameInput = document.getElementById("deploy-name") as HTMLInputElement | null;
   const agentNameShuffleBtn = document.getElementById("deploy-name-shuffle") as HTMLButtonElement | null;
+  const agentNamePreviewEl = document.getElementById("deploy-name-preview");
   const deployBtn = document.getElementById("deploy-deploy-btn") as HTMLButtonElement | null;
   const deployStatusEl = document.getElementById("deploy-deploy-status");
 
@@ -211,6 +212,7 @@ export function initDeployPanel(deps: DeployPanelDeps): DeployPanelHandle | null
     !acpTokenGenerateBtn ||
     !agentNameInput ||
     !agentNameShuffleBtn ||
+    !agentNamePreviewEl ||
     !deployBtn
   ) {
     return null;
@@ -328,6 +330,7 @@ export function initDeployPanel(deps: DeployPanelDeps): DeployPanelHandle | null
     applyChatPlatformMode();
     applyVendorMode();
     agentNameInput.value = randomGreekName();
+    updateNamePreview();
     void loadVendorImage();
   };
 
@@ -345,6 +348,19 @@ export function initDeployPanel(deps: DeployPanelDeps): DeployPanelHandle | null
     k8sNamespaceSel.value === NAMESPACE_NEW_SENTINEL
       ? k8sNamespaceNewInput.value.trim()
       : k8sNamespaceSel.value;
+
+  // The `oab-${namespace}-${name}` service-name convention (mirrored from the
+  // deploy submit handler below) was previously discoverable only by reading
+  // source — nothing in the wizard showed what actually lands in fleets.toml's
+  // `members` array (Brett, 2026-09-07). "add-instance" into an existing k8s
+  // fleet isn't wired through this wizard yet (see the isK8s check below), so
+  // it's always the ecs/"default" namespace outside "new-fleet" + k8s.
+  const updateNamePreview = (): void => {
+    const isK8s = mode?.kind === "new-fleet" && providerSel.value === "k8s";
+    const namespace = isK8s ? currentNamespace() || "default" : "default";
+    const name = agentNameInput.value.trim() || "<name>";
+    agentNamePreviewEl.textContent = `→ recorded in fleets.toml as oab-${namespace}-${name}`;
+  };
 
   // Toggle the AWS/k8s field groups per studio#104's design: switching
   // providers resets which group is visible; field *values* aren't cleared
@@ -441,6 +457,7 @@ export function initDeployPanel(deps: DeployPanelDeps): DeployPanelHandle | null
   providerSel.addEventListener("change", () => {
     showProviderFields(providerSel.value);
     if (providerSel.value === "k8s") void loadK8sContexts();
+    updateNamePreview();
   });
   k8sContextSel.addEventListener("change", () => {
     void loadK8sNamespaces();
@@ -449,10 +466,13 @@ export function initDeployPanel(deps: DeployPanelDeps): DeployPanelHandle | null
   k8sNamespaceSel.addEventListener("change", () => {
     applyNamespaceMode();
     void loadK8sServiceAccounts();
+    updateNamePreview();
   });
   // "change" (fires on commit/blur), not "input" (every keystroke) — avoids a
-  // tool call per character typed into the new-namespace field.
+  // tool call per character typed into the new-namespace field. The name
+  // preview updates live regardless (no tool call involved).
   k8sNamespaceNewInput.addEventListener("change", () => void loadK8sServiceAccounts());
+  k8sNamespaceNewInput.addEventListener("input", updateNamePreview);
 
   vendorSel.addEventListener("change", () => {
     applyVendorMode();
@@ -470,7 +490,9 @@ export function initDeployPanel(deps: DeployPanelDeps): DeployPanelHandle | null
   });
   agentNameShuffleBtn.addEventListener("click", () => {
     agentNameInput.value = randomGreekName();
+    updateNamePreview();
   });
+  agentNameInput.addEventListener("input", updateNamePreview);
 
   const open = (m: DeployMode): void => {
     mode = m;

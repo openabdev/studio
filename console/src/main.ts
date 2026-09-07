@@ -1,5 +1,6 @@
 import { defaultSource } from "./source";
 import { initConfigTab } from "./config";
+import { removeFleetBlock } from "./fleetToml";
 import {
   renderRoster,
   renderFleetConfig,
@@ -487,6 +488,31 @@ function deselectFleet(): void {
   void tick();
 }
 
+// Fleet detail's "Delete fleet" button: the only way to remove a fleet used
+// to be hand-editing raw TOML via "Edit config" (Brett, 2026-09-07). This is
+// the same text edit (`removeFleetBlock`), just behind a confirm dialog —
+// removes the `[fleet.<name>]` declaration only, it does not touch the
+// underlying deployments/instances themselves.
+async function deleteFleet(name: string): Promise<void> {
+  if (
+    !window.confirm(
+      `Delete fleet "${name}"? This removes it from fleets.toml — the instances themselves keep running.`,
+    )
+  ) {
+    return;
+  }
+  try {
+    const current = fleetConfig ?? (await source.fleetConfig());
+    fleetConfig = await source.writeFleetConfig(removeFleetBlock(current.text, name));
+    note("info", `config: deleted fleet "${name}"`);
+  } catch (e) {
+    note("error", `config: delete fleet failed — ${errText(e)}`);
+    return;
+  }
+  if (activeFleet === name) deselectFleet();
+  else if (configEl) renderFleetConfig(configEl, fleetConfig, activeFleet);
+}
+
 // After a deploy panel run succeeds (deploy_provision + fleets.toml write both
 // landed — `deploy.ts` guarantees that ordering): re-read fleets.toml, then
 // either land on the new fleet's detail screen (7.5.1 step 4) or, if we're
@@ -681,11 +707,6 @@ if (configEl) {
       deployPanel?.open({ kind: "new-fleet" });
       return;
     }
-    const debugBtn = target.closest<HTMLElement>('[data-action="fleet-debug"]');
-    if (debugBtn) {
-      openDebugDrawer(debugBtn.dataset.fleet ?? "");
-      return;
-    }
     const btn = target.closest<HTMLElement>("[data-fleet]");
     if (btn?.dataset.fleet) selectFleet(btn.dataset.fleet);
   });
@@ -707,6 +728,10 @@ if (fleetDetailEl) {
     }
     if (target.closest('[data-action="fleet-debug"]') && activeFleet) {
       openDebugDrawer(activeFleet);
+      return;
+    }
+    if (target.closest('[data-action="delete-fleet"]') && activeFleet) {
+      void deleteFleet(activeFleet);
     }
   });
 }

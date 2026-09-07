@@ -170,11 +170,11 @@ function membersLine(f: FleetConfig["fleets"][number]): string {
   return `<span class="cfg-members">${chips}</span>`;
 }
 
-// The `[⚙]` sits beside, not inside, the switch button — a fleet row is two
-// independent click targets (select vs. debug), not one giant button, so
-// they're siblings under a `.fleets-row` wrapper rather than nested
-// `<button>`s (7.2: "a `[⚙]` that opens the Debug drawer scoped to that
-// fleet's Activity/MCP/Config", slice 6).
+// The Fleets-list card for one fleet — clicking it selects the fleet
+// (drills into Fleet detail). The list used to carry its own `[⚙]` Debug
+// shortcut beside each card (slice 6), removed (Brett, 2026-09-07) since
+// Fleet detail's own `[⚙]` (`fleetDetailHeaderHtml`) already covers it once
+// drilled in, and having it on both screens read as clutter.
 function fleetButton(
   f: FleetConfig["fleets"][number],
   activeFleet: string | null,
@@ -182,15 +182,12 @@ function fleetButton(
   const active = f.name === activeFleet;
   const cls = active ? "cfg-fleet is-active" : "cfg-fleet";
   const name = escapeHtml(f.name);
-  return `<div class="fleets-row">
-      <button class="${cls}" type="button" data-fleet="${name}" aria-pressed="${active}">
+  return `<button class="${cls}" type="button" data-fleet="${name}" aria-pressed="${active}">
         <span class="cfg-name">${escapeHtml(f.name || locationLine(f))}</span>
         <span class="cfg-cluster">${escapeHtml(locationLine(f))}</span>
         ${membersLine(f)}
         <span class="cfg-cred">${credLine(f)}</span>
-      </button>
-      <button class="fd-btn fd-gear" type="button" data-action="fleet-debug" data-fleet="${name}" title="Debug: ${name}">⚙</button>
-    </div>`;
+      </button>`;
 }
 
 // Pure: the fleet-binding config -> the config panel HTML. A fleet is a
@@ -237,7 +234,10 @@ export function renderFleetConfig(
 // "← Fleets" returns to the Fleets screen (Part A's drill-down). `[+ Add
 // instance]` is the slice 5 entry point (7.5.2: deploy into this fleet, no new
 // fleet-identity step). `[⚙]` is the slice 6 entry point — opens the Debug
-// drawer (Activity/MCP/Config) scoped to this fleet.
+// drawer (Activity/MCP/Config) scoped to this fleet. `[Delete fleet]` is a
+// follow-up (Brett, 2026-09-07): the only way to remove a fleet before this
+// was hand-editing raw TOML via "Edit config" — this just does that same
+// text edit (`removeFleetBlock`) behind a button + confirm, in `main.ts`.
 export function fleetDetailHeaderHtml(fleetName: string): string {
   return `<div class="fd-head">
       <button class="fd-back" type="button" data-action="back-to-fleets">&larr; Fleets</button>
@@ -246,6 +246,7 @@ export function fleetDetailHeaderHtml(fleetName: string): string {
       <span class="fd-spacer"></span>
       <button class="fd-btn" type="button" data-action="add-instance">+ Add instance</button>
       <button class="fd-btn fd-gear" type="button" data-action="fleet-debug" title="Debug: ${escapeHtml(fleetName)}">⚙</button>
+      <button class="fd-btn fd-danger" type="button" data-action="delete-fleet" title="Delete fleet: ${escapeHtml(fleetName)}">Delete fleet</button>
     </div>`;
 }
 

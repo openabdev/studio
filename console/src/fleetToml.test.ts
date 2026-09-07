@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { appendMember, appendFleetBlock, fleetBlockExists } from "./fleetToml";
+import { appendMember, appendFleetBlock, fleetBlockExists, removeFleetBlock } from "./fleetToml";
 
 describe("appendMember", () => {
   const text = `default_cluster = "oab"
@@ -134,5 +134,49 @@ describe("appendFleetBlock", () => {
       runtime: { kind: "ecs", region: null, profile: null },
     });
     expect(out).toBe('default_cluster = "oab"\n\n[fleet.x]\nruntime = "ecs"\nmembers = ["m"]\n');
+  });
+});
+
+describe("removeFleetBlock", () => {
+  const text = `default_cluster = "oab"
+
+[fleet.a]
+members = ["oab-default-a1"]
+
+[fleet.b]
+members = ["oab-default-b1"]
+
+[fleet.c]
+members = ["oab-default-c1"]
+`;
+
+  it("removes a middle block, leaving one blank line between its neighbors", () => {
+    const out = removeFleetBlock(text, "b");
+    expect(out).toBe(
+      'default_cluster = "oab"\n\n[fleet.a]\nmembers = ["oab-default-a1"]\n\n[fleet.c]\nmembers = ["oab-default-c1"]\n',
+    );
+  });
+
+  it("removes the first block with no leading blank line left behind", () => {
+    const out = removeFleetBlock(text, "a");
+    expect(out).toBe(
+      'default_cluster = "oab"\n\n[fleet.b]\nmembers = ["oab-default-b1"]\n\n[fleet.c]\nmembers = ["oab-default-c1"]\n',
+    );
+  });
+
+  it("removes the last block with no trailing blank line left behind", () => {
+    const out = removeFleetBlock(text, "c");
+    expect(out).toBe(
+      'default_cluster = "oab"\n\n[fleet.a]\nmembers = ["oab-default-a1"]\n\n[fleet.b]\nmembers = ["oab-default-b1"]\n',
+    );
+  });
+
+  it("removes the only fleet block, leaving the rest of the file intact", () => {
+    const onlyOne = 'default_cluster = "oab"\n\n[fleet.a]\nmembers = ["oab-default-a1"]\n';
+    expect(removeFleetBlock(onlyOne, "a")).toBe('default_cluster = "oab"\n');
+  });
+
+  it("is a no-op when the fleet isn't found", () => {
+    expect(removeFleetBlock(text, "no-such-fleet")).toBe(text);
   });
 });
