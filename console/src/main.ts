@@ -722,6 +722,22 @@ if (fleetDetailEl) {
       return;
     }
     if (target.closest('[data-action="add-instance"]') && activeFleet) {
+      // studio#146 final-review pass: now that a k8s fleet can actually be
+      // drilled into, this button became reachable for one — but
+      // `deploy.ts`'s compose step assumes ECS whenever it isn't in
+      // "new-fleet" mode (the provider <select> only lives in the identity
+      // step, skipped for "add instance"), so submitting here would silently
+      // deploy an ECS service into a k8s fleet instead of erroring. Block it
+      // with the same clear-message pattern the wizard already uses for its
+      // own not-yet-supported k8s-provider case, rather than let that happen.
+      const fleet = fleetConfig?.fleets.find((f) => f.name === activeFleet);
+      if (fleet?.runtime === "k8s") {
+        note(
+          "info",
+          `fleet "${activeFleet}" is a k8s fleet — adding an instance to an existing k8s fleet isn't supported yet`,
+        );
+        return;
+      }
       deployPanel?.open({ kind: "add-instance", fleetName: activeFleet });
       return;
     }
