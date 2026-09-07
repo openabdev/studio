@@ -237,7 +237,10 @@ export function renderFleetConfig(
 // "← Fleets" returns to the Fleets screen (Part A's drill-down). `[+ Add
 // instance]` is the slice 5 entry point (7.5.2: deploy into this fleet, no new
 // fleet-identity step). `[⚙]` is the slice 6 entry point — opens the Debug
-// drawer (Activity/MCP/Config) scoped to this fleet.
+// drawer (Activity/MCP/Config) scoped to this fleet. `[Delete fleet]` is a
+// follow-up (Brett, 2026-09-07): the only way to remove a fleet before this
+// was hand-editing raw TOML via "Edit config" — this just does that same
+// text edit (`removeFleetBlock`) behind a button + confirm, in `main.ts`.
 export function fleetDetailHeaderHtml(fleetName: string): string {
   return `<div class="fd-head">
       <button class="fd-back" type="button" data-action="back-to-fleets">&larr; Fleets</button>
@@ -246,6 +249,7 @@ export function fleetDetailHeaderHtml(fleetName: string): string {
       <span class="fd-spacer"></span>
       <button class="fd-btn" type="button" data-action="add-instance">+ Add instance</button>
       <button class="fd-btn fd-gear" type="button" data-action="fleet-debug" title="Debug: ${escapeHtml(fleetName)}">⚙</button>
+      <button class="fd-btn fd-danger" type="button" data-action="delete-fleet" title="Delete fleet: ${escapeHtml(fleetName)}">Delete fleet</button>
     </div>`;
 }
 

@@ -830,6 +830,10 @@ button.act:disabled {
 .fd-gear {
   padding: 3px 8px;
 }
+.fd-danger:hover {
+  color: var(--s-unhealthy);
+  border-color: var(--s-unhealthy);
+}
 .fd-sep {
   color: var(--muted);
 }

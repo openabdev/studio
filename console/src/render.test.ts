@@ -270,6 +270,11 @@ describe("fleetDetailHeaderHtml", () => {
     expect(html).not.toContain('data-action="fleet-debug" disabled');
   });
 
+  it("wires the Delete fleet action", () => {
+    const html = fleetDetailHeaderHtml("oab-prod-orca");
+    expect(html).toContain('data-action="delete-fleet"');
+  });
+
   it("escapes the fleet name", () => {
     const html = fleetDetailHeaderHtml("<x>");
     expect(html).toContain("&lt;x&gt;");
