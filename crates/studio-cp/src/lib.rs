@@ -170,6 +170,216 @@ pub async fn observe_events(
     oabctl::fetch_ecs_events(aws_config, log_group, Some(cluster), service, since_ms, limit).await
 }
 
+// ---- k8s observe (studio#146) --------------------------------------------
+//
+// The k8s counterpart to the ECS read-model above (`observe_services` /
+// `observe_deployment` / `build_deployment`), producing the exact same
+// runtime-agnostic `Deployment`/`InstancePhase` types via
+// `agent_lifecycle::k8s::K8sDriver` instead of `EcsDriver`. This was
+// deliberately deferred when the k8s `ProvisionDriver` write path landed
+// (`oabctl::k8s_driver`'s module doc, studio#63 slice 3b) — this is that
+// follow-up (studio#146).
+
+/// One k8s Deployment discovered while listing a namespace — the k8s
+/// counterpart to ECS's [`oabctl::ServiceStatus`] enumeration step (only the
+/// fields fleet-membership filtering and the follow-up per-Deployment fetch
+/// need; full per-Pod detail comes from [`observe_k8s_deployment`], mirroring
+/// the ECS `deploy_list` → `deploy_get` two-step the console roster already
+/// does).
+pub struct K8sServiceStatus {
+    /// The agent's original (un-slugified) name — read back from the
+    /// Deployment's `oab/name` label (`k8s_driver.rs::build_deployment`
+    /// sets it verbatim, never the k8s-safe slug `k8s_deployment_name` uses
+    /// for the resource's own name).
+    pub name: String,
+    pub namespace: String,
+    /// Reconstructed `oab-{namespace}-{name}` — **not** the on-cluster
+    /// Deployment resource name (`oab-{slug(name)}`, no namespace embedded;
+    /// see `k8s_driver.rs`'s module doc on why the two differ). This is the
+    /// form the New Fleet / Add Instance wizard actually writes into
+    /// `fleets.toml`'s `members` array (`console/src/deploy.ts`'s `service =
+    /// oab-${namespace}-${name}`, unconditional for both runtimes) — carried
+    /// so `FleetBinding::includes` matches the same way it does for ECS.
+    pub service_name: String,
+    pub desired: i32,
+}
+
+fn k8s_oab_name(dep: &k8s_openapi::api::apps::v1::Deployment) -> Option<String> {
+    dep.metadata.labels.as_ref()?.get("oab/name").cloned()
+}
+
+/// List every OAB-managed Deployment (`oab/name` label present) in one
+/// `(context, namespace)` — the k8s counterpart to [`observe_services`].
+pub async fn observe_k8s_services(
+    context: Option<&str>,
+    namespace: &str,
+) -> anyhow::Result<Vec<K8sServiceStatus>> {
+    use k8s_openapi::api::apps::v1::Deployment as K8sDeployment;
+    use kube::api::{Api, ListParams};
+
+    let client = k8s_client_for(context).await?;
+    let api: Api<K8sDeployment> = Api::namespaced(client, namespace);
+    let list = api
+        .list(&ListParams::default().labels("oab/name"))
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to list k8s deployments in '{namespace}': {e}"))?;
+    Ok(list
+        .items
+        .iter()
+        .filter_map(|dep| {
+            let name = k8s_oab_name(dep)?;
+            let desired = dep.spec.as_ref().and_then(|s| s.replicas).unwrap_or(0);
+            Some(K8sServiceStatus {
+                service_name: format!("oab-{namespace}-{name}"),
+                name,
+                namespace: namespace.to_string(),
+                desired,
+            })
+        })
+        .collect())
+}
+
+fn k8s_pod_phase(pod: &k8s_openapi::api::core::v1::Pod) -> agent_lifecycle::k8s::PodPhase {
+    use agent_lifecycle::k8s::PodPhase;
+    match pod.status.as_ref().and_then(|s| s.phase.as_deref()) {
+        Some("Running") => PodPhase::Running,
+        Some("Succeeded") => PodPhase::Succeeded,
+        Some("Failed") => PodPhase::Failed,
+        Some("Unknown") => PodPhase::Unknown,
+        // "Pending" or not yet reported — not started, not a fault.
+        _ => PodPhase::Pending,
+    }
+}
+
+fn k8s_pod_ready(pod: &k8s_openapi::api::core::v1::Pod) -> bool {
+    pod.status
+        .as_ref()
+        .and_then(|s| s.conditions.as_ref())
+        .into_iter()
+        .flatten()
+        .any(|c| c.type_ == "Ready" && c.status == "True")
+}
+
+fn k8s_pod_ready_check_defined(pod: &k8s_openapi::api::core::v1::Pod) -> bool {
+    pod.spec
+        .as_ref()
+        .into_iter()
+        .flat_map(|s| s.containers.iter())
+        .any(|c| c.readiness_probe.is_some())
+}
+
+fn k8s_pod_crash_loop_back_off(pod: &k8s_openapi::api::core::v1::Pod) -> bool {
+    pod.status
+        .as_ref()
+        .and_then(|s| s.container_statuses.as_ref())
+        .into_iter()
+        .flatten()
+        .any(|cs| {
+            cs.state
+                .as_ref()
+                .and_then(|st| st.waiting.as_ref())
+                .is_some_and(|w| w.reason.as_deref() == Some("CrashLoopBackOff"))
+        })
+}
+
+/// One-shot approximation of the `identity_verified` latch (same caveat as
+/// ECS's `latched_verified`: the real latch needs CP-persisted history) — a
+/// Pod counts as verified once it's reached Running, or is already
+/// Terminating (it must have run to get there).
+fn k8s_latched_verified(pod: &k8s_openapi::api::core::v1::Pod) -> bool {
+    matches!(k8s_pod_phase(pod), agent_lifecycle::k8s::PodPhase::Running)
+        || pod.metadata.deletion_timestamp.is_some()
+}
+
+/// Map a live k8s Pod onto the canonical [`AgentState`], via
+/// [`agent_lifecycle::k8s::K8sDriver`] — the k8s counterpart to
+/// `instance_phase`'s ECS derivation. `lease_valid`/`accepting_work` are
+/// CP-level, not yet k8s-observable, so they default to valid/admitting —
+/// same stance `instance_phase` takes for ECS today.
+pub fn k8s_instance_phase(pod: &k8s_openapi::api::core::v1::Pod, verified_before: bool) -> AgentState {
+    use agent_lifecycle::k8s::{K8sDriver, K8sPod};
+    use agent_lifecycle::RuntimeDriver;
+
+    let native = K8sPod {
+        phase: k8s_pod_phase(pod),
+        deletion_timestamp_set: pod.metadata.deletion_timestamp.is_some(),
+        ready: k8s_pod_ready(pod),
+        ready_check_defined: k8s_pod_ready_check_defined(pod),
+        crash_loop_back_off: k8s_pod_crash_loop_back_off(pod),
+        lease_valid: true,
+        accepting_work: true,
+    };
+    K8sDriver.project(&native, verified_before).classify()
+}
+
+/// Observe one k8s Deployment end-to-end: replica counters + per-Pod phase —
+/// the k8s counterpart to [`observe_deployment`]. `service` matches either
+/// the reconstructed `oab-{namespace}-{name}` form or the bare agent name
+/// (same dual-match spirit as ECS's `resolve_service`).
+pub async fn observe_k8s_deployment(
+    context: Option<&str>,
+    namespace: &str,
+    service: &str,
+) -> anyhow::Result<Option<Deployment>> {
+    use k8s_openapi::api::apps::v1::Deployment as K8sDeployment;
+    use k8s_openapi::api::core::v1::Pod;
+    use kube::api::{Api, ListParams};
+
+    let client = k8s_client_for(context).await?;
+    let dep_api: Api<K8sDeployment> = Api::namespaced(client.clone(), namespace);
+    let deployments = dep_api
+        .list(&ListParams::default().labels("oab/name"))
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to list k8s deployments in '{namespace}': {e}"))?;
+    let Some(dep) = deployments.items.into_iter().find(|d| {
+        let Some(name) = k8s_oab_name(d) else { return false };
+        service == format!("oab-{namespace}-{name}") || service == name
+    }) else {
+        return Ok(None);
+    };
+    let name = k8s_oab_name(&dep).unwrap_or_default();
+    let desired = dep.spec.as_ref().and_then(|s| s.replicas).unwrap_or(0);
+
+    let selector = dep
+        .spec
+        .as_ref()
+        .and_then(|s| s.selector.match_labels.as_ref())
+        .map(|m| {
+            m.iter()
+                .map(|(k, v)| format!("{k}={v}"))
+                .collect::<Vec<_>>()
+                .join(",")
+        })
+        .unwrap_or_default();
+    let pod_api: Api<Pod> = Api::namespaced(client, namespace);
+    let pods = pod_api
+        .list(&ListParams::default().labels(&selector))
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to list pods for k8s deployment '{name}': {e}"))?;
+
+    let instances: Vec<InstancePhase> = pods
+        .items
+        .iter()
+        .map(|p| InstancePhase {
+            id: p.metadata.uid.clone().unwrap_or_default(),
+            phase: k8s_instance_phase(p, k8s_latched_verified(p)),
+        })
+        .collect();
+    let ready = instances
+        .iter()
+        .filter(|p| p.phase == AgentState::Running)
+        .count() as i32;
+
+    Ok(Some(Deployment {
+        name,
+        namespace: namespace.to_string(),
+        desired,
+        current: instances.len() as i32,
+        ready,
+        instances,
+    }))
+}
+
 // ---- Effective runtime identity/context (ADR: Per-Fleet managing identity) --
 //
 // Read-only observation of *who this control plane is actually acting as*. The

@@ -66,24 +66,24 @@ pub fn tools() -> Vec<Tool> {
     vec![
         Tool::new(
             "deploy_list",
-            "List all OAB deployments (ECS services) in the cluster with replica counts and status.",
+            "List all OAB deployments in the cluster (ECS) or namespace (k8s) with replica counts. For a k8s-runtime fleet, pass `fleet` — the fleet's own context/namespace govern the call, `cluster` is ignored.",
             as_map(json!({
                 "type": "object",
                 "properties": {
-                    "fleet": { "type": "string", "description": "Fleet name (see fleet_config): targets the fleet's cluster and managing credential and, for listing tools, restricts results to its members. Overrides the cluster arg." },
-                    "cluster": { "type": "string", "description": "ECS cluster (defaults to the server's configured cluster)." }
+                    "fleet": { "type": "string", "description": "Fleet name (see fleet_config): targets the fleet's cluster/context and managing credential and, for listing tools, restricts results to its members. Overrides the cluster arg. Required for a k8s-runtime fleet." },
+                    "cluster": { "type": "string", "description": "ECS cluster (defaults to the server's configured cluster). Ignored for a k8s-runtime fleet." }
                 }
             })),
         ),
         Tool::new(
             "deploy_get",
-            "Get one deployment's read-model: replica counters plus each instance's canonical lifecycle phase (6-state).",
+            "Get one deployment's read-model: replica counters plus each instance's canonical lifecycle phase (6-state). Works for both ECS and k8s-runtime fleets (pass `fleet` for k8s).",
             as_map(json!({
                 "type": "object",
                 "properties": {
-                    "service": { "type": "string", "description": "ECS service name (or bare agent name)." },
-                    "fleet": { "type": "string", "description": "Fleet name (see fleet_config): targets the fleet's cluster and managing credential and, for listing tools, restricts results to its members. Overrides the cluster arg." },
-                    "cluster": { "type": "string", "description": "ECS cluster (defaults to the server's configured cluster)." }
+                    "service": { "type": "string", "description": "ECS service name, k8s reconstructed oab-{namespace}-{name}, or bare agent name." },
+                    "fleet": { "type": "string", "description": "Fleet name (see fleet_config): targets the fleet's cluster/context and managing credential and, for listing tools, restricts results to its members. Overrides the cluster arg. Required for a k8s-runtime fleet." },
+                    "cluster": { "type": "string", "description": "ECS cluster (defaults to the server's configured cluster). Ignored for a k8s-runtime fleet." }
                 },
                 "required": ["service"]
             })),
@@ -207,7 +207,7 @@ pub fn tools() -> Vec<Tool> {
         ),
         Tool::new(
             "runtime_context",
-            "Show the effective runtime identity/context this control plane resolved for a cluster/fleet: the acting principal (STS caller ARN), its kind (role vs static user), account (scope), region (location), a best-effort credential-source hint, the fleet binding in effect (if any), and — when the binding declares an expected_principal — whether the resolved identity matches it (identity_matches; a non-blocking IdentityMismatch when false). Read-only; answers \"who am I acting as, against what account?\" and surfaces silent credential fallback.",
+            "Show the effective runtime identity/context this control plane resolved for a cluster/fleet: for ECS, the acting principal (STS caller ARN), its kind (role vs static user), account (scope), region (location), a best-effort credential-source hint; for a k8s-runtime fleet, the SelfSubjectReview-resolved principal against the fleet's kubeconfig context (cluster is null, context/namespace are set instead). Also returns the fleet binding in effect (if any) and — when the binding declares an expected_principal — whether the resolved identity matches it (identity_matches; a non-blocking IdentityMismatch when false). Read-only; answers \"who am I acting as, against what account?\" and surfaces silent credential fallback.",
             as_map(json!({
                 "type": "object",
                 "properties": {
@@ -469,6 +469,27 @@ impl OabMcp {
         })
     }
 
+    /// Like [`Self::target`], but doesn't reject a k8s-runtime fleet — for
+    /// the calls this made runtime-aware (studio#146): roster list/get and
+    /// `runtime_context`. Returns the named fleet's binding, or `None` for
+    /// an unscoped call (back-compat, same as `target()`'s bare-cluster
+    /// path). An unknown fleet name is still an error, same as `target()`.
+    /// `target()` itself stays ecs-only — every other call (scale/delete/
+    /// apply/provision/events) genuinely has no k8s-runtime dispatch yet, so
+    /// it should keep failing loudly rather than silently acting against an
+    /// empty cluster string.
+    fn named_fleet(&self, args: &Map<String, Value>) -> Result<Option<scp::FleetBinding>> {
+        let Some(name) = args.get("fleet").and_then(Value::as_str) else {
+            return Ok(None);
+        };
+        let guard = self.bindings.read().unwrap();
+        let binding = guard.get(name).cloned().ok_or_else(|| {
+            let known: Vec<&str> = guard.fleets.iter().map(|f| f.name.as_str()).collect();
+            anyhow::anyhow!("unknown fleet {name:?}; configured fleets: [{}]", known.join(", "))
+        })?;
+        Ok(Some(binding))
+    }
+
     /// The AWS config to act as for `cluster`: the fleet binding's credential
     /// when one governs it (resolved once, then memoized), else the default
     /// chain. This is where the per-fleet **switch** takes effect — a bound
@@ -496,6 +517,18 @@ impl OabMcp {
     }
 
     async fn t_list(&self, args: &Map<String, Value>) -> Result<Value> {
+        if let Some(b) = self.named_fleet(args)? {
+            if b.runtime == scp::FleetRuntime::K8s {
+                let namespace = b.namespace.clone().unwrap_or_else(|| "default".to_string());
+                let svcs = scp::observe_k8s_services(b.context.as_deref(), &namespace).await?;
+                let deployments: Vec<Value> = svcs
+                    .iter()
+                    .filter(|s| b.includes(&s.service_name, &s.name))
+                    .map(|s| json!({ "name": s.name, "namespace": s.namespace, "desired": s.desired }))
+                    .collect();
+                return Ok(json!({ "context": b.context, "namespace": namespace, "deployments": deployments }));
+            }
+        }
         let t = self.target(args)?;
         let cluster = t.cluster.clone();
         let svcs = scp::observe_services(&self.aws_for(&cluster).await, &cluster).await?;
@@ -519,11 +552,20 @@ impl OabMcp {
     }
 
     async fn t_get(&self, args: &Map<String, Value>) -> Result<Value> {
-        let cluster = self.target(args)?.cluster;
         let service = args
             .get("service")
             .and_then(Value::as_str)
             .ok_or_else(|| anyhow::anyhow!("missing required arg: service"))?;
+        if let Some(b) = self.named_fleet(args)? {
+            if b.runtime == scp::FleetRuntime::K8s {
+                let namespace = b.namespace.clone().unwrap_or_else(|| "default".to_string());
+                return match scp::observe_k8s_deployment(b.context.as_deref(), &namespace, service).await? {
+                    Some(d) => Ok(deployment_json(&d)),
+                    None => Ok(json!({ "found": false, "service": service })),
+                };
+            }
+        }
+        let cluster = self.target(args)?.cluster;
         match scp::observe_deployment(&self.aws_for(&cluster).await, &cluster, service).await? {
             Some(d) => Ok(deployment_json(&d)),
             None => Ok(json!({ "found": false, "service": service })),
@@ -848,6 +890,34 @@ impl OabMcp {
     }
 
     async fn t_runtime_context(&self, args: &Map<String, Value>) -> Result<Value> {
+        if let Some(b) = self.named_fleet(args)? {
+            if b.runtime == scp::FleetRuntime::K8s {
+                let ctx = scp::observe_k8s_identity(b.context.as_deref()).await?;
+                let expected = b.expected_principal.clone();
+                let identity_matches = expected
+                    .as_ref()
+                    .map(|e| scp::principal_matches(e, &ctx.principal));
+                return Ok(json!({
+                    "cluster": null,
+                    "context": b.context,
+                    "namespace": b.namespace,
+                    "principal": ctx.principal,
+                    "principal_kind": ctx.principal_kind,
+                    "scope": ctx.scope,
+                    "location": ctx.location,
+                    "source": ctx.source,
+                    "caller_id": ctx.caller_id,
+                    "binding": json!({
+                        "name": b.name,
+                        "context": b.context,
+                        "namespace": b.namespace,
+                        "expected_principal": b.expected_principal,
+                    }),
+                    "expected_principal": expected,
+                    "identity_matches": identity_matches,
+                }));
+            }
+        }
         let t = self.target(args)?;
         let cluster = t.cluster.clone();
         let aws = self.aws_for(&cluster).await;
