@@ -257,11 +257,21 @@ async fn deploy_provision_agent(
 
 /// List services (`deploy_list`) then fetch each one's per-instance 6-state
 /// (`deploy_get`), all over MCP — the two-step the in-process bridge used,
-/// now over the wire. Console view-model shape is unchanged.
-async fn roster_over_mcp(client: &McpClient, cluster: &str) -> Result<Vec<Value>, String> {
-    let listed = client
-        .call_tool("deploy_list", json!({ "cluster": cluster }))
-        .await?;
+/// now over the wire. Console view-model shape is unchanged. `fleet`, when
+/// given, is forwarded alongside `cluster` on every call — oab-mcp's
+/// `deploy_list`/`deploy_get` check `fleet` first and dispatch to the k8s
+/// observe path for a k8s-runtime fleet (studio#146 slice 2); `cluster`
+/// keeps its existing meaning for an ecs-runtime fleet or an unscoped call.
+async fn roster_over_mcp(
+    client: &McpClient,
+    cluster: &str,
+    fleet: Option<&str>,
+) -> Result<Vec<Value>, String> {
+    let mut list_args = json!({ "cluster": cluster });
+    if let Some(f) = fleet {
+        list_args["fleet"] = json!(f);
+    }
+    let listed = client.call_tool("deploy_list", list_args).await?;
     let services = listed
         .get("deployments")
         .and_then(Value::as_array)
@@ -273,9 +283,11 @@ async fn roster_over_mcp(client: &McpClient, cluster: &str) -> Result<Vec<Value>
         let Some(name) = svc.get("name").and_then(Value::as_str) else {
             continue;
         };
-        let got = client
-            .call_tool("deploy_get", json!({ "service": name, "cluster": cluster }))
-            .await?;
+        let mut get_args = json!({ "service": name, "cluster": cluster });
+        if let Some(f) = fleet {
+            get_args["fleet"] = json!(f);
+        }
+        let got = client.call_tool("deploy_get", get_args).await?;
         // `deploy_get` returns `{ "found": false, .. }` for a vanished service.
         if got.get("found") == Some(&Value::Bool(false)) {
             continue;
@@ -286,12 +298,15 @@ async fn roster_over_mcp(client: &McpClient, cluster: &str) -> Result<Vec<Value>
 }
 
 /// Bridge command: the deployment roster in the console's read-model shape,
-/// sourced through the bundled `oab-mcp` sidecar. Errors go to the caller and
-/// the log pane.
+/// sourced through the bundled `oab-mcp` sidecar. `fleet` (studio#146 slice
+/// 2/3) is required to reach a k8s-runtime fleet's roster — `cluster` alone
+/// has no k8s equivalent to resolve against. Errors go to the caller and the
+/// log pane.
 #[tauri::command]
 async fn deploy_list(
     core: tauri::State<'_, Core>,
     cluster: Option<String>,
+    fleet: Option<String>,
 ) -> Result<Vec<Value>, String> {
     let cluster = cluster.unwrap_or_else(default_cluster);
     let client = {
@@ -301,7 +316,7 @@ async fn deploy_list(
             .cloned()
             .ok_or_else(|| "core not started yet".to_string())?
     };
-    match roster_over_mcp(&client, &cluster).await {
+    match roster_over_mcp(&client, &cluster, fleet.as_deref()).await {
         Ok(v) => Ok(v),
         Err(e) => {
             client.log("error", &format!("deploy_list: {e}"));
@@ -310,13 +325,18 @@ async fn deploy_list(
     }
 }
 
-/// Bridge command: the effective runtime identity/context for a cluster (ADR
-/// #19), sourced through the bundled `oab-mcp` sidecar's `runtime_context` tool.
-/// The console renders "who am I managing this cluster as, against what account".
+/// Bridge command: the effective runtime identity/context for a cluster or
+/// fleet (ADR #19), sourced through the bundled `oab-mcp` sidecar's
+/// `runtime_context` tool. The console renders "who am I managing this
+/// cluster/context as, against what account". `fleet` (studio#146 slice 2/3)
+/// is required to resolve a k8s-runtime fleet's identity — its response has
+/// `cluster: null` with `context`/`namespace` set instead, which the console
+/// must branch on.
 #[tauri::command]
 async fn runtime_context(
     core: tauri::State<'_, Core>,
     cluster: Option<String>,
+    fleet: Option<String>,
 ) -> Result<Value, String> {
     let cluster = cluster.unwrap_or_else(default_cluster);
     let client = {
@@ -326,10 +346,11 @@ async fn runtime_context(
             .cloned()
             .ok_or_else(|| "core not started yet".to_string())?
     };
-    match client
-        .call_tool("runtime_context", json!({ "cluster": cluster }))
-        .await
-    {
+    let mut args = json!({ "cluster": cluster });
+    if let Some(f) = &fleet {
+        args["fleet"] = json!(f);
+    }
+    match client.call_tool("runtime_context", args).await {
         Ok(v) => Ok(v),
         Err(e) => {
             client.log("error", &format!("runtime_context: {e}"));
