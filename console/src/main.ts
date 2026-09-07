@@ -707,11 +707,6 @@ if (configEl) {
       deployPanel?.open({ kind: "new-fleet" });
       return;
     }
-    const debugBtn = target.closest<HTMLElement>('[data-action="fleet-debug"]');
-    if (debugBtn) {
-      openDebugDrawer(debugBtn.dataset.fleet ?? "");
-      return;
-    }
     const btn = target.closest<HTMLElement>("[data-fleet]");
     if (btn?.dataset.fleet) selectFleet(btn.dataset.fleet);
   });

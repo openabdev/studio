@@ -234,12 +234,9 @@ describe("fleetConfigHtml", () => {
     ).toContain('data-action="new-fleet"');
   });
 
-  it("gives each fleet row its own Debug-drawer gear, scoped by fleet name (ADR #83 slice 6, 7.2)", () => {
+  it("has no per-card Debug gear on the Fleets list (removed 2026-09-07 — Fleet detail's own [⚙] covers it)", () => {
     const html = fleetConfigHtml(FIXTURE_FLEET_CONFIG, "orca");
-    const gears = html.match(/data-action="fleet-debug"/g) ?? [];
-    expect(gears.length).toBe(FIXTURE_FLEET_CONFIG.fleets.length);
-    expect(html).toContain('data-action="fleet-debug" data-fleet="orca"');
-    expect(html).toContain('data-action="fleet-debug" data-fleet="mira"');
+    expect(html).not.toContain('data-action="fleet-debug"');
   });
 
   it("renders an unavailable state for null", () => {
