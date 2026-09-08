@@ -281,6 +281,20 @@ export function initDeployPanel(deps: DeployPanelDeps): DeployPanelHandle | null
     if (isCustom) imageCustomInput.focus();
   };
 
+  // studio#153: ACP-enabled deploys need an image with ACP wired as a
+  // first-class adapter (openab#1418, first shipped in 0.10.0-beta.2) —
+  // Stable can lag behind that fix for a long stretch (it did: Stable was
+  // pinned to 0.9.0, which predates the fix entirely, and picking it for an
+  // ACP-enabled agent reproduces the exact "no adapter configured" crash
+  // this was written to catch). ACP-on should not silently inherit the
+  // select's implicit first-option default. Only nudges *into* Beta the
+  // moment ACP is turned on; never fights a selection made afterward.
+  const preferBetaForAcp = (): void => {
+    if (!acpCheckbox.checked) return;
+    const betaOption = Array.from(imageSelectEl.options).find((o) => o.textContent?.startsWith("Beta"));
+    if (betaOption) imageSelectEl.value = betaOption.value;
+  };
+
   // studio#128/#136: a real <select> of GHCR's actually-published tags for
   // the selected vendor (Stable/Beta, whichever resolved) plus a "Custom…"
   // escape hatch — rebuilding the option list on every vendor change (not
@@ -313,7 +327,9 @@ export function initDeployPanel(deps: DeployPanelDeps): DeployPanelHandle | null
     }
     // No selected-attribute set above, so the browser defaults to the first
     // option — Stable if it resolved, else Beta, else Custom (never stuck
-    // on a meaningless blank selection).
+    // on a meaningless blank selection) — unless ACP is already on, in
+    // which case preferBetaForAcp overrides that default (see its comment).
+    preferBetaForAcp();
     applyImageMode();
   };
 
@@ -480,7 +496,11 @@ export function initDeployPanel(deps: DeployPanelDeps): DeployPanelHandle | null
   });
   imageSelectEl.addEventListener("change", applyImageMode);
   chatPlatformSel.addEventListener("change", applyChatPlatformMode);
-  acpCheckbox.addEventListener("change", applyAcpMode);
+  acpCheckbox.addEventListener("change", () => {
+    applyAcpMode();
+    preferBetaForAcp();
+    applyImageMode();
+  });
   acpTokenGenerateBtn.addEventListener("click", () => {
     // Same shape the sidecar generates itself (uuid v4) when this field is
     // left blank — a convenience for operators who want to know the token
