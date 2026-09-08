@@ -92,7 +92,23 @@ function randomGreekName(): string {
   return GREEK_GODS[Math.floor(Math.random() * GREEK_GODS.length)];
 }
 
-export type DeployMode = { kind: "new-fleet" } | { kind: "add-instance"; fleetName: string };
+// studio#153: "add-instance" now carries the target fleet's existing
+// runtime binding (read once, by the caller, from `FleetConfigEntry` —
+// `main.ts` already has it in hand from the fleet the operator drilled
+// into) instead of assuming ECS. This wizard has no k8s identity step for
+// "add-instance" (that only exists for "new-fleet"), so there's nothing to
+// re-collect from the operator — a k8s fleet's context/namespace/service
+// account were fixed the moment the fleet was created.
+export type DeployMode =
+  | { kind: "new-fleet" }
+  | {
+      kind: "add-instance";
+      fleetName: string;
+      runtime: "ecs" | "k8s";
+      context: string | null;
+      namespace: string | null;
+      expectedPrincipal: string | null;
+    };
 
 // What the panel reports back once a deploy + fleets.toml write both succeed —
 // enough for the caller (`main.ts`) to log it and re-derive screen state
@@ -365,15 +381,42 @@ export function initDeployPanel(deps: DeployPanelDeps): DeployPanelHandle | null
       ? k8sNamespaceNewInput.value.trim()
       : k8sNamespaceSel.value;
 
+  // studio#153: the single source of truth for "is this submit targeting
+  // k8s, and with what context/namespace/service-account" — "new-fleet"
+  // reads it live off the identity step's fields (the only mode with that
+  // step); "add-instance" reads it off the fleet binding `open()` was given
+  // (see the `DeployMode` comment), since that fleet's k8s placement was
+  // fixed at creation and this wizard never re-asks for it. `null` means
+  // "not a k8s deploy" (ecs, or a new-fleet submit with Provider left on
+  // "aws").
+  const currentK8sTarget = (): { context?: string; namespace: string; expectedPrincipal?: string } | null => {
+    if (mode?.kind === "new-fleet") {
+      if (providerSel.value !== "k8s") return null;
+      const namespace = currentNamespace() || "default";
+      const serviceAccount = k8sServiceAccountSel.value;
+      return {
+        context: k8sContextSel.value || undefined,
+        namespace,
+        expectedPrincipal: serviceAccount ? `system:serviceaccount:${namespace}:${serviceAccount}` : undefined,
+      };
+    }
+    if (mode?.kind === "add-instance") {
+      if (mode.runtime !== "k8s") return null;
+      return {
+        context: mode.context ?? undefined,
+        namespace: mode.namespace ?? "default",
+        expectedPrincipal: mode.expectedPrincipal ?? undefined,
+      };
+    }
+    return null;
+  };
+
   // The `oab-${namespace}-${name}` service-name convention (mirrored from the
   // deploy submit handler below) was previously discoverable only by reading
   // source — nothing in the wizard showed what actually lands in fleets.toml's
-  // `members` array (Brett, 2026-09-07). "add-instance" into an existing k8s
-  // fleet isn't wired through this wizard yet (see the isK8s check below), so
-  // it's always the ecs/"default" namespace outside "new-fleet" + k8s.
+  // `members` array (Brett, 2026-09-07).
   const updateNamePreview = (): void => {
-    const isK8s = mode?.kind === "new-fleet" && providerSel.value === "k8s";
-    const namespace = isK8s ? currentNamespace() || "default" : "default";
+    const namespace = currentK8sTarget()?.namespace ?? "default";
     const name = agentNameInput.value.trim() || "<name>";
     agentNamePreviewEl.textContent = `→ recorded in fleets.toml as oab-${namespace}-${name}`;
   };
@@ -554,9 +597,8 @@ export function initDeployPanel(deps: DeployPanelDeps): DeployPanelHandle | null
     // appendFleetBlock always appends a brand-new `[fleet.<name>]` block, so
     // reusing an existing name would otherwise only surface as a
     // duplicate-key TOML parse error *after* the instance was already
-    // deployed (it has no partial/merge fallback; "add instance to an
-    // existing k8s fleet" isn't wired through this wizard yet either — see
-    // the isK8s check in the deploy submit handler below).
+    // deployed (it has no partial/merge fallback — use "Add instance" on
+    // that fleet instead, per the error message below).
     try {
       const current = await deps.source.fleetConfig();
       if (fleetBlockExists(current.text, fleetName)) {
@@ -595,22 +637,18 @@ export function initDeployPanel(deps: DeployPanelDeps): DeployPanelHandle | null
       setStatus(deployStatusEl, "image tag is required", "err");
       return;
     }
-    // Only "new-fleet" ever reaches provider "k8s" — identityForm (where the
-    // provider <select> lives) is skipped for "add-instance", and reset()
-    // (run on every open()) puts the <select> back to its "aws" default, so
-    // an add-instance submit always sees "aws" here regardless of the fleet
-    // it's adding to. Adding an instance to an *existing* k8s fleet isn't
-    // wired through this wizard yet.
-    const isK8s = mode.kind === "new-fleet" && providerSel.value === "k8s";
-    const namespace = isK8s ? currentNamespace() || "default" : "default";
-    const context = isK8s ? k8sContextSel.value || undefined : undefined;
-    const serviceAccount = isK8s ? k8sServiceAccountSel.value : "";
-    // studio-cp's provision_agent_k8s expects the full
-    // `system:serviceaccount:<ns>:<name>` form (it extracts the bare name
-    // itself) — same shape as K8sFleetBinding.expected_principal.
-    const expectedPrincipal = serviceAccount
-      ? `system:serviceaccount:${namespace}:${serviceAccount}`
-      : undefined;
+    // studio#153: "new-fleet" reads this live off the identity step;
+    // "add-instance" reads it off the existing fleet's binding — either way
+    // `currentK8sTarget()` is the single place that decides it (see its
+    // comment). `expectedPrincipal` here is already in
+    // `system:serviceaccount:<ns>:<name>` form either way — `new-fleet`
+    // builds it fresh from the service-account picker, `add-instance`
+    // inherits it as-is from `K8sFleetBinding.expected_principal`.
+    const k8sTarget = currentK8sTarget();
+    const isK8s = k8sTarget !== null;
+    const namespace = k8sTarget?.namespace ?? "default";
+    const context = k8sTarget?.context;
+    const expectedPrincipal = k8sTarget?.expectedPrincipal;
     const chatPlatform = chatPlatformSel.value || undefined;
     // k8s deploys refuse a chat platform server-side (config.toml secret
     // resolution needs AWS credentials a k8s pod doesn't have) — check here
