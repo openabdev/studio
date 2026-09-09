@@ -722,23 +722,24 @@ if (fleetDetailEl) {
       return;
     }
     if (target.closest('[data-action="add-instance"]') && activeFleet) {
-      // studio#146 final-review pass: now that a k8s fleet can actually be
-      // drilled into, this button became reachable for one — but
-      // `deploy.ts`'s compose step assumes ECS whenever it isn't in
-      // "new-fleet" mode (the provider <select> only lives in the identity
-      // step, skipped for "add instance"), so submitting here would silently
-      // deploy an ECS service into a k8s fleet instead of erroring. Block it
-      // with the same clear-message pattern the wizard already uses for its
-      // own not-yet-supported k8s-provider case, rather than let that happen.
+      // studio#153: the k8s block studio#146's final-review pass added here
+      // is gone — `deploy.ts`'s submit handler now reads the target fleet's
+      // runtime/context/namespace/expected_principal straight off
+      // `FleetConfigEntry` (this lookup) instead of assuming ECS, so an
+      // "add instance" submit against a k8s fleet provisions into that
+      // fleet's actual context/namespace rather than silently targeting
+      // ECS. `fleet` should always resolve here (the operator already
+      // drilled into this fleet to see the button); fall back to "ecs" only
+      // to keep the type checker happy, not because it's an expected case.
       const fleet = fleetConfig?.fleets.find((f) => f.name === activeFleet);
-      if (fleet?.runtime === "k8s") {
-        note(
-          "info",
-          `fleet "${activeFleet}" is a k8s fleet — adding an instance to an existing k8s fleet isn't supported yet`,
-        );
-        return;
-      }
-      deployPanel?.open({ kind: "add-instance", fleetName: activeFleet });
+      deployPanel?.open({
+        kind: "add-instance",
+        fleetName: activeFleet,
+        runtime: fleet?.runtime ?? "ecs",
+        context: fleet?.context ?? null,
+        namespace: fleet?.namespace ?? null,
+        expectedPrincipal: fleet?.expected_principal ?? null,
+      });
       return;
     }
     if (target.closest('[data-action="fleet-debug"]') && activeFleet) {

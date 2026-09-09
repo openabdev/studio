@@ -253,7 +253,7 @@ pub fn tools() -> Vec<Tool> {
         ),
         Tool::new(
             "resolve_vendor_image_tags",
-            "Resolve a vendor's real, currently-published Stable/Beta image tags on ghcr.io/openabdev/openab (studio#128 — backs the New Fleet wizard's Vendor + Image tag fields). \"Beta\" is the hourly rolling pre-beta-<vendor> build; \"Stable\" is the newest openab release whose matching <version>-<vendor> image is confirmed to actually exist (a release existing doesn't guarantee a matching image was ever built — the build workflow is a manual, disconnected step). Anonymous GHCR/GitHub access, no auth needed (public package/repo). Either or both fields come back null if nothing verified — not an error; the caller should fall back to a plain editable text field.",
+            "Resolve a vendor's real, currently-published Stable/Beta image tags on ghcr.io/openabdev/openab (studio#128 — backs the New Fleet wizard's Vendor + Image tag fields). Both are pinned <version>-<vendor> tags, never a rolling moving tag: \"Beta\" is the newest beta-named openab release (<version>-beta.N) whose matching <version>-beta.N-<vendor> image is confirmed to actually exist; \"Stable\" is the newest non-beta release whose matching <version>-<vendor> image is confirmed to actually exist (a release existing doesn't guarantee a matching image was ever built — the build workflow is a manual, disconnected step). Anonymous GHCR/GitHub access, no auth needed (public package/repo). Either or both fields come back null if nothing verified — not an error; the caller should fall back to a plain editable text field.",
             as_map(json!({
                 "type": "object",
                 "properties": {

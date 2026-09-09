@@ -1,15 +1,19 @@
 //! Vendor image tag resolution (studio#128): resolves a vendor name (e.g.
 //! `claude`, `codex`, `cursor`, `kiro`, `antigravity`) to real,
 //! currently-published `ghcr.io/openabdev/openab` image tags — "Beta" (the
-//! hourly rolling `pre-beta-<vendor>` build) and "Stable" (the newest
-//! openab release whose matching `<version>-<vendor>` image is confirmed to
-//! actually exist).
+//! newest beta-named openab release, `<version>-beta.N`, whose matching
+//! `<version>-beta.N-<vendor>` image is confirmed to exist) and "Stable"
+//! (the newest non-beta release whose matching `<version>-<vendor>` image
+//! is confirmed to exist). Both are pinned version tags, never the rolling
+//! `pre-beta-<vendor>`/`nightly-<vendor>` moving tags — a caller (or a
+//! human reading the dropdown) needs an actual version number to reason
+//! about "is this new enough for fix X", which a moving tag can't answer.
 //!
 //! A GitHub release tag existing does **not** guarantee a matching image
 //! was ever published: the image-build workflow (`build-images.yml`) is a
 //! manual `workflow_dispatch` step, completely disconnected from cutting a
-//! release — confirmed by reading both workflows. So "stable" has to be
-//! verified against GHCR directly, not inferred from the release list
+//! release — confirmed by reading both workflows. So both channels have to
+//! be verified against GHCR directly, not inferred from the release list
 //! alone.
 //!
 //! All access here is anonymous — no GitHub token needed. `ghcr.io` speaks
@@ -72,13 +76,13 @@ struct GhRelease {
     prerelease: bool,
 }
 
-/// Real (non-beta) openab release version numbers, newest first — matches
-/// GitHub's own default ordering for this endpoint. Filters on both the
-/// `prerelease` flag *and* the tag name itself: at least one real release
-/// (`openab-0.10.0-beta.3`) has `prerelease: false` despite its name, so
-/// the flag alone isn't reliable.
-async fn openab_release_versions(client: &reqwest::Client) -> Result<Vec<String>> {
-    let releases: Vec<GhRelease> = client
+/// One GitHub API call, split into the two channels `resolve_vendor_image_tags`
+/// walks — newest first in both, matching GitHub's own default ordering for
+/// this endpoint. `prerelease` alone isn't a reliable channel signal (at
+/// least one real release, `openab-0.10.0-beta.3`, has `prerelease: false`
+/// despite its name) — the tag name itself decides stable vs. beta.
+async fn fetch_openab_releases(client: &reqwest::Client) -> Result<Vec<GhRelease>> {
+    client
         .get("https://api.github.com/repos/openabdev/openab/releases")
         // GitHub's REST API rejects requests with no User-Agent.
         .header("User-Agent", "openab-studio")
@@ -89,19 +93,40 @@ async fn openab_release_versions(client: &reqwest::Client) -> Result<Vec<String>
         .context("GitHub releases API returned an error")?
         .json()
         .await
-        .context("GitHub releases API returned invalid JSON")?;
-    Ok(releases
-        .into_iter()
+        .context("GitHub releases API returned invalid JSON")
+}
+
+/// Real (non-beta) openab release version numbers, newest first.
+fn stable_release_versions(releases: &[GhRelease]) -> Vec<String> {
+    releases
+        .iter()
         .filter(|r| !r.prerelease && r.tag_name.starts_with("openab-") && !r.tag_name.contains("-beta"))
         .map(|r| r.tag_name.trim_start_matches("openab-").to_string())
-        .collect())
+        .collect()
+}
+
+/// Beta-named openab release version numbers (`<version>-beta.N`), newest
+/// first — same "trust the tag name, not the `prerelease` flag" reasoning
+/// as `stable_release_versions`.
+fn beta_release_versions(releases: &[GhRelease]) -> Vec<String> {
+    releases
+        .iter()
+        .filter(|r| r.tag_name.starts_with("openab-") && r.tag_name.contains("-beta"))
+        .map(|r| r.tag_name.trim_start_matches("openab-").to_string())
+        .collect()
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct VendorImageTags {
-    /// `pre-beta-<vendor>` if the GHCR check confirms it exists.
+    /// The newest beta release version (`<version>-beta.N`) whose
+    /// `<version>-beta.N-<vendor>` image is confirmed to exist on GHCR.
+    /// Pinned, not the old rolling `pre-beta-<vendor>` moving tag — a
+    /// caller needs a version number to reason about (e.g. "is this
+    /// build new enough for fix X"), which a moving tag can't give.
+    /// `None` if no beta release has a matching image yet (or the
+    /// GitHub/GHCR calls themselves failed).
     pub beta: Option<String>,
-    /// The newest release version whose `<version>-<vendor>` image is
+    /// The newest stable release version whose `<version>-<vendor>` image is
     /// confirmed to exist on GHCR. `None` if no release has a matching
     /// image yet (or the GitHub/GHCR calls themselves failed).
     pub stable: Option<String>,
@@ -120,20 +145,69 @@ pub async fn resolve_vendor_image_tags(vendor: &str) -> VendorImageTags {
         return out;
     };
 
-    let beta_tag = format!("pre-beta-{vendor}");
-    if ghcr_tag_exists(&client, &token, &beta_tag).await.unwrap_or(false) {
-        out.beta = Some(beta_tag);
+    let Ok(releases) = fetch_openab_releases(&client).await else {
+        return out;
+    };
+
+    for version in beta_release_versions(&releases) {
+        let candidate = format!("{version}-{vendor}");
+        if ghcr_tag_exists(&client, &token, &candidate).await.unwrap_or(false) {
+            out.beta = Some(candidate);
+            break;
+        }
     }
 
-    if let Ok(versions) = openab_release_versions(&client).await {
-        for version in versions {
-            let candidate = format!("{version}-{vendor}");
-            if ghcr_tag_exists(&client, &token, &candidate).await.unwrap_or(false) {
-                out.stable = Some(candidate);
-                break;
-            }
+    for version in stable_release_versions(&releases) {
+        let candidate = format!("{version}-{vendor}");
+        if ghcr_tag_exists(&client, &token, &candidate).await.unwrap_or(false) {
+            out.stable = Some(candidate);
+            break;
         }
     }
 
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn release(tag_name: &str, prerelease: bool) -> GhRelease {
+        GhRelease { tag_name: tag_name.to_string(), prerelease }
+    }
+
+    // Real-world snapshot (2026-09-08, `gh api repos/openabdev/openab/releases`):
+    // newest-first, mixes stable/beta/unrelated tags, and includes the
+    // `prerelease: false` beta release that makes the flag alone unreliable.
+    fn sample_releases() -> Vec<GhRelease> {
+        vec![
+            release("oabctl-pre-beta", true),
+            release("openab-0.10.0-beta.3", false),
+            release("openab-0.10.0-beta.2", false),
+            release("openab-0.10.0-beta.1", false),
+            release("openab-0.9.0", false),
+            release("openab-0.9.0-beta.12", false),
+            release("pre-seed-utils-v2.35.13-ghp0.3.2", false),
+        ]
+    }
+
+    #[test]
+    fn stable_versions_excludes_beta_and_unrelated_tags() {
+        assert_eq!(stable_release_versions(&sample_releases()), vec!["0.9.0"]);
+    }
+
+    #[test]
+    fn beta_versions_newest_first_ignores_prerelease_flag() {
+        assert_eq!(
+            beta_release_versions(&sample_releases()),
+            vec!["0.10.0-beta.3", "0.10.0-beta.2", "0.10.0-beta.1", "0.9.0-beta.12"]
+        );
+    }
+
+    #[test]
+    fn both_channels_ignore_non_openab_prefixed_releases() {
+        let releases = vec![release("oabctl-pre-beta", true), release("pre-seed-utils-v2.35.13-ghp0.3.2", false)];
+        assert!(stable_release_versions(&releases).is_empty());
+        assert!(beta_release_versions(&releases).is_empty());
+    }
 }
