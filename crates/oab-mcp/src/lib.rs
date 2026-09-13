@@ -5,7 +5,7 @@
 //! tools:
 //!
 //! - read: `deploy_list`, `deploy_get`, `get_agent_states`, `deploy_events`,
-//!   `runtime_context`, `fleet_config`
+//!   `k8s_logs`, `runtime_context`, `fleet_config`
 //! - write: `deploy_apply`, `deploy_provision`, `deploy_scale`, `deploy_delete`,
 //!   `fleet_config_write`
 //!
@@ -113,6 +113,21 @@ pub fn tools() -> Vec<Tool> {
                     "fleet": { "type": "string", "description": "Fleet name (see fleet_config): targets the fleet's cluster and managing credential and, for listing tools, restricts results to its members. Overrides the cluster arg." },
                     "cluster": { "type": "string", "description": "ECS cluster (defaults to the server's configured cluster)." }
                 }
+            })),
+        ),
+        Tool::new(
+            "k8s_logs",
+            "Fetch one Pod's container log for a k8s-runtime fleet — the k8s counterpart to `deploy_events`, which only supports ECS (control-plane events aren't container stdout/stderr, and k8s has no archival system to read; the k8s API serves pod logs directly). Requires `fleet` naming a k8s-runtime fleet (see fleet_config), same as deploy_get/deploy_list's k8s dispatch.",
+            as_map(json!({
+                "type": "object",
+                "properties": {
+                    "service": { "type": "string", "description": "k8s reconstructed oab-{namespace}-{name}, or bare agent name." },
+                    "fleet": { "type": "string", "description": "Fleet name (see fleet_config) naming a k8s-runtime fleet; targets its context/namespace. Required — no bare-cluster k8s dispatch exists, same as deploy_get/deploy_list." },
+                    "instance_id": { "type": "string", "description": "Pod uid to select, from deploy_get/get_agent_states's InstancePhase.id. Required when more than one Pod matches (a rollout in flight, or a crashed Pod next to its replacement); optional with exactly one live Pod." },
+                    "tail_lines": { "type": "integer", "description": "Max lines from the end of the log (default 200, max 10000)." },
+                    "previous": { "type": "boolean", "description": "Read the last terminated container's log instead of the current one (like `kubectl logs -p`) — the only way to see why a CrashLoopBackOff pod died, since its current log is empty post-restart. Default false." }
+                },
+                "required": ["service"]
             })),
         ),
         Tool::new(
@@ -416,6 +431,7 @@ impl OabMcp {
             "deploy_get" => self.t_get(args).await,
             "get_agent_states" => self.t_states(args).await,
             "deploy_events" => self.t_events(args).await,
+            "k8s_logs" => self.t_k8s_logs(args).await,
             "deploy_apply" => self.t_apply(args).await,
             "deploy_provision" => self.t_provision(args).await,
             "deploy_provision_agent" => self.t_provision_agent(args).await,
@@ -646,6 +662,53 @@ impl OabMcp {
             "count": events.len(),
             "events": events.iter().map(event_json).collect::<Vec<_>>(),
         }))
+    }
+
+    async fn t_k8s_logs(&self, args: &Map<String, Value>) -> Result<Value> {
+        let service = args
+            .get("service")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("missing required arg: service"))?;
+        let Some(b) = self.named_fleet(args)? else {
+            anyhow::bail!(
+                "k8s_logs requires `fleet` naming a k8s-runtime fleet (see fleet_config) — no bare-cluster k8s dispatch exists, same as deploy_get/deploy_list"
+            );
+        };
+        if b.runtime != scp::FleetRuntime::K8s {
+            anyhow::bail!(
+                "fleet {:?} is not a k8s-runtime fleet; use deploy_events for an ecs fleet's logs",
+                b.name
+            );
+        }
+        let namespace = b.namespace.clone().unwrap_or_else(|| "default".to_string());
+        let instance_id = args.get("instance_id").and_then(Value::as_str);
+        let tail_lines = args
+            .get("tail_lines")
+            .and_then(Value::as_i64)
+            .unwrap_or(200)
+            .clamp(1, 10_000);
+        let previous = args
+            .get("previous")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        match scp::fetch_k8s_pod_logs(
+            b.context.as_deref(),
+            &namespace,
+            service,
+            instance_id,
+            tail_lines,
+            previous,
+        )
+        .await?
+        {
+            Some(logs) => Ok(json!({
+                "service": service,
+                "namespace": namespace,
+                "previous": previous,
+                "logs": logs,
+            })),
+            None => Ok(json!({ "found": false, "service": service })),
+        }
     }
 
     async fn t_provision(&self, args: &Map<String, Value>) -> Result<Value> {
@@ -1165,12 +1228,13 @@ mod tests {
             .iter()
             .map(|t| t["name"].as_str().expect("tool has a name").to_string())
             .collect();
-        assert_eq!(names.len(), 17);
+        assert_eq!(names.len(), 18);
         for expected in [
             "deploy_list",
             "deploy_get",
             "get_agent_states",
             "deploy_events",
+            "k8s_logs",
             "deploy_apply",
             "deploy_provision",
             "deploy_provision_agent",

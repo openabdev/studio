@@ -312,15 +312,18 @@ pub fn k8s_instance_phase(pod: &k8s_openapi::api::core::v1::Pod, verified_before
     K8sDriver.project(&native, verified_before).classify()
 }
 
-/// Observe one k8s Deployment end-to-end: replica counters + per-Pod phase —
-/// the k8s counterpart to [`observe_deployment`]. `service` matches either
-/// the reconstructed `oab-{namespace}-{name}` form or the bare agent name
-/// (same dual-match spirit as ECS's `resolve_service`).
-pub async fn observe_k8s_deployment(
+/// Resolve `service` (either the reconstructed `oab-{namespace}-{name}` form
+/// or the bare agent name) to its k8s Deployment's oab short name, desired
+/// replica count, and the live Pods its selector currently matches. Shared by
+/// [`observe_k8s_deployment`] (which only needs `phase`) and
+/// [`fetch_k8s_pod_logs`] (which needs the raw `Pod` — specifically
+/// `metadata.name`, which `InstancePhase` deliberately doesn't carry since
+/// ECS's `InstancePhase.id` has no equivalent "log by this name" use).
+async fn find_k8s_pods(
     context: Option<&str>,
     namespace: &str,
     service: &str,
-) -> anyhow::Result<Option<Deployment>> {
+) -> anyhow::Result<Option<(String, i32, Vec<k8s_openapi::api::core::v1::Pod>)>> {
     use k8s_openapi::api::apps::v1::Deployment as K8sDeployment;
     use k8s_openapi::api::core::v1::Pod;
     use kube::api::{Api, ListParams};
@@ -357,8 +360,23 @@ pub async fn observe_k8s_deployment(
         .await
         .map_err(|e| anyhow::anyhow!("failed to list pods for k8s deployment '{name}': {e}"))?;
 
+    Ok(Some((name, desired, pods.items)))
+}
+
+/// Observe one k8s Deployment end-to-end: replica counters + per-Pod phase —
+/// the k8s counterpart to [`observe_deployment`]. `service` matches either
+/// the reconstructed `oab-{namespace}-{name}` form or the bare agent name
+/// (same dual-match spirit as ECS's `resolve_service`).
+pub async fn observe_k8s_deployment(
+    context: Option<&str>,
+    namespace: &str,
+    service: &str,
+) -> anyhow::Result<Option<Deployment>> {
+    let Some((name, desired, pods)) = find_k8s_pods(context, namespace, service).await? else {
+        return Ok(None);
+    };
+
     let instances: Vec<InstancePhase> = pods
-        .items
         .iter()
         .map(|p| InstancePhase {
             id: p.metadata.uid.clone().unwrap_or_default(),
@@ -378,6 +396,78 @@ pub async fn observe_k8s_deployment(
         ready,
         instances,
     }))
+}
+
+/// Fetch one Pod's container log for a k8s-runtime deployment — the k8s
+/// counterpart ECS gets from `deploy_events`'s CloudWatch-archived stream,
+/// which doesn't exist for k8s (control-plane events aren't the same thing
+/// as container stdout/stderr, and there's no archival system to read here —
+/// the k8s API serves pod logs directly).
+///
+/// `instance_id` selects a specific Pod by the same `uid` `deploy_get`/
+/// `get_agent_states` already surface as `InstancePhase.id` — required
+/// whenever more than one Pod matches (e.g. a rollout in flight, or a crashed
+/// Pod sitting next to its replacement, exactly the shape hit debugging
+/// "seaturtle"'s `0.9.0` → `0.10.0-beta.4` image swap). With exactly one Pod,
+/// `instance_id` may be omitted. `previous` reads the last terminated
+/// container's log (`kubectl logs -p`) — the only way to see why a
+/// CrashLoopBackOff pod died, since its current log is empty post-restart.
+pub async fn fetch_k8s_pod_logs(
+    context: Option<&str>,
+    namespace: &str,
+    service: &str,
+    instance_id: Option<&str>,
+    tail_lines: i64,
+    previous: bool,
+) -> anyhow::Result<Option<String>> {
+    use kube::api::{Api, LogParams};
+
+    let Some((name, _desired, pods)) = find_k8s_pods(context, namespace, service).await? else {
+        return Ok(None);
+    };
+    let pod = match instance_id {
+        Some(id) => pods
+            .iter()
+            .find(|p| p.metadata.uid.as_deref() == Some(id))
+            .ok_or_else(|| {
+                let known: Vec<&str> = pods
+                    .iter()
+                    .filter_map(|p| p.metadata.uid.as_deref())
+                    .collect();
+                anyhow::anyhow!(
+                    "no pod with instance_id {id:?} for '{name}'; live instance ids: [{}]",
+                    known.join(", ")
+                )
+            })?,
+        None => match pods.len() {
+            1 => &pods[0],
+            0 => return Ok(None),
+            n => anyhow::bail!(
+                "'{name}' has {n} live pods — pass instance_id to pick one (see deploy_get/get_agent_states)"
+            ),
+        },
+    };
+    let pod_name = pod
+        .metadata
+        .name
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("pod for '{name}' has no metadata.name"))?;
+
+    let client = k8s_client_for(context).await?;
+    let pod_api: Api<k8s_openapi::api::core::v1::Pod> = Api::namespaced(client, namespace);
+    let logs = pod_api
+        .logs(
+            &pod_name,
+            &LogParams {
+                tail_lines: Some(tail_lines),
+                previous,
+                timestamps: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to fetch logs for pod '{pod_name}': {e}"))?;
+    Ok(Some(logs))
 }
 
 // ---- Effective runtime identity/context (ADR: Per-Fleet managing identity) --
