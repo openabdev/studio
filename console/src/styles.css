@@ -1139,6 +1139,15 @@ button.act:disabled {
   font-size: 11px;
   color: var(--warn);
 }
+.chat-status {
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 8px;
+}
+.chat-status .chat-spinner {
+  margin-left: 0;
+  margin-right: 6px;
+}
 .chat-input {
   display: flex;
   gap: 8px;

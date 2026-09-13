@@ -70,6 +70,7 @@ const chatTextEl = document.getElementById("chat-text") as HTMLTextAreaElement |
 const chatSendEl = document.getElementById("chat-send") as HTMLButtonElement | null;
 const chatStopEl = document.getElementById("chat-stop") as HTMLButtonElement | null;
 const chatConnEl = document.getElementById("chat-conn");
+const chatStatusEl = document.getElementById("chat-status");
 const source = defaultSource();
 
 // The Debug drawer (ADR #83 Part D / slice 6, 7.6): Activity/MCP/Config
@@ -813,7 +814,8 @@ function buildManagementPanel(): void {
     !chatTextEl ||
     !chatSendEl ||
     !chatStopEl ||
-    !chatConnEl
+    !chatConnEl ||
+    !chatStatusEl
   )
     return;
   managementPanel = createChatPanel(
@@ -824,6 +826,7 @@ function buildManagementPanel(): void {
       send: chatSendEl,
       stop: chatStopEl,
       conn: chatConnEl,
+      status: chatStatusEl,
     },
     { source, mock: isMock(), note },
   );
