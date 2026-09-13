@@ -53,6 +53,7 @@ export function initAgentConsole(cfg: AgentConsoleConfig): AgentConsole {
   const send = document.getElementById("ac-chat-send") as HTMLButtonElement | null;
   const stop = document.getElementById("ac-chat-stop") as HTMLButtonElement | null;
   const conn = document.getElementById("ac-chat-conn");
+  const status = document.getElementById("ac-chat-status");
 
   const noop: AgentConsole = {
     refresh: async () => {},
@@ -141,9 +142,9 @@ export function initAgentConsole(cfg: AgentConsoleConfig): AgentConsole {
     // Optimistic "connecting" until the first `remote-status` (or ready in mock).
     renderHeader(cfg.mock ? "connected" : "connecting");
     renderList();
-    if (log && form && text && send && stop && conn) {
+    if (log && form && text && send && stop && conn && status) {
       panel = createChatPanel(
-        { log, form, text, send, stop, conn },
+        { log, form, text, send, stop, conn, status },
         {
           agent: name,
           source: cfg.source,

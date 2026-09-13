@@ -34,6 +34,12 @@ export interface ChatPanelElements {
   send: HTMLButtonElement;
   stop: HTMLButtonElement;
   conn: HTMLElement;
+  // A fixed line above the input box, shown only while a turn is in flight —
+  // unlike `conn` (which also carries the not-ready/connected states and can
+  // scroll out of view above a long transcript), this sits right where the
+  // user is about to type, so "is it still working?" never requires a glance
+  // up top or a scroll through the log.
+  status: HTMLElement;
 }
 
 export interface ChatPanelOptions {
@@ -113,6 +119,7 @@ export function createChatPanel(
     els.conn.textContent = label;
     els.conn.classList.toggle("is-connected", r && !turnActive);
     els.conn.classList.toggle("is-error", false);
+    els.status.hidden = !turnActive;
   }
 
   // Enqueue a prompt and try to release it. `flush` is the single choke point
