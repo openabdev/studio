@@ -137,6 +137,18 @@ pub enum Phase {
     SessionActive,
 }
 
+/// One inline image the operator pasted into the chat input (issue #158). Carries
+/// the already-base64-encoded payload as-is — this layer never decodes or
+/// re-encodes it, only wraps it in an ACP `ContentBlock` (`type: "image"`).
+/// `Deserialize` lets the Tauri `agent_prompt` command take it straight off the
+/// frontend's `invoke` payload.
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+pub struct PromptImage {
+    pub data: String,
+    #[serde(rename = "mimeType")]
+    pub mime_type: String,
+}
+
 /// The client-side session state machine. It **produces** the outbound frames
 /// (`initialize`, `session/new`, `session/resume`) and tracks the phase + the
 /// declaration set; the transport owns the socket and feeds results back in.
@@ -238,20 +250,28 @@ impl Session {
         Some((id, frame))
     }
 
-    /// Build a `session/prompt` request carrying one text block — the operator's
-    /// chat turn (ADR *agent-chat-panel*, Part A). `None` until a session is
-    /// active. Returns `(id, frame)`; the transport correlates the eventual
-    /// `{ stopReason }` result by this `id` (prompt results are method-less, the
-    /// same shape as handshake acks, so id-correlation is mandatory).
-    pub fn prompt(&mut self, text: &str) -> Option<(u64, Value)> {
+    /// Build a `session/prompt` request carrying the operator's chat turn (ADR
+    /// *agent-chat-panel*, Part A) — a text block plus zero or more pasted image
+    /// blocks (issue #158). `None` until a session is active. Returns
+    /// `(id, frame)`; the transport correlates the eventual `{ stopReason }`
+    /// result by this `id` (prompt results are method-less, the same shape as
+    /// handshake acks, so id-correlation is mandatory).
+    pub fn prompt(&mut self, text: &str, images: &[PromptImage]) -> Option<(u64, Value)> {
         let session_id = self.session_id.clone()?;
         let id = self.alloc_id();
+        let mut blocks: Vec<Value> = Vec::new();
+        if !text.is_empty() {
+            blocks.push(json!({ "type": "text", "text": text }));
+        }
+        for img in images {
+            blocks.push(json!({ "type": "image", "data": img.data, "mimeType": img.mime_type }));
+        }
         let frame = request(
             id,
             "session/prompt",
             json!({
                 "sessionId": session_id,
-                "prompt": [{ "type": "text", "text": text }],
+                "prompt": blocks,
             }),
         );
         Some((id, frame))
@@ -332,12 +352,18 @@ pub enum Inbound {
     /// `mcp/cancel` (notification) — abandon the in-flight request whose **outer**
     /// frame id is `request_id`. No reply is owed.
     Cancel { request_id: Value },
-    /// `session/update` with `sessionUpdate == "agent_message_chunk"` — a piece of
-    /// the agent's chat reply (ADR *agent-chat-panel*). openab emits a single
-    /// terminal chunk today, but the transport accumulates so incremental chunks
-    /// need no rework. Other `session/update` kinds (thoughts, tool calls) are not
-    /// emitted by openab yet and stay [`Inbound::Other`].
+    /// `session/update` with `sessionUpdate == "agent_message_chunk"` and content
+    /// `type == "text"` — a piece of the agent's chat reply (ADR
+    /// *agent-chat-panel*). openab emits a single terminal chunk today, but the
+    /// transport accumulates so incremental chunks need no rework. Other
+    /// `session/update` kinds (thoughts, tool calls) are not emitted by openab yet
+    /// and stay [`Inbound::Other`].
     AgentChunk { text: String },
+    /// `session/update` with `sessionUpdate == "agent_message_chunk"` and content
+    /// `type == "image"` — an inline image in the agent's chat reply (issue
+    /// #158). Unlike [`Inbound::AgentChunk`] this is not accumulated — each image
+    /// is forwarded to the panel as its own `agent-update`.
+    AgentImage { data: String, mime_type: String },
     /// Not a tunnel frame (unknown method, or a `session/update` kind we don't
     /// surface) — ignored.
     Other,
@@ -387,16 +413,32 @@ pub fn parse_inbound(frame: &Value) -> Inbound {
         },
         "session/update" => {
             let update = params.get("update").cloned().unwrap_or(Value::Null);
-            match update.get("sessionUpdate").and_then(Value::as_str) {
-                Some("agent_message_chunk") => Inbound::AgentChunk {
-                    text: update
-                        .get("content")
-                        .and_then(|c| c.get("text"))
+            if update.get("sessionUpdate").and_then(Value::as_str) != Some("agent_message_chunk") {
+                // thoughts / tool_call etc. — openab does not emit these yet.
+                return Inbound::Other;
+            }
+            let content = update.get("content").cloned().unwrap_or(Value::Null);
+            match content.get("type").and_then(Value::as_str) {
+                Some("text") => Inbound::AgentChunk {
+                    text: content
+                        .get("text")
                         .and_then(Value::as_str)
                         .unwrap_or_default()
                         .to_string(),
                 },
-                // thoughts / tool_call etc. — openab does not emit these yet.
+                Some("image") => Inbound::AgentImage {
+                    data: content
+                        .get("data")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string(),
+                    mime_type: content
+                        .get("mimeType")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string(),
+                },
+                // audio / resource / resource_link — not surfaced in chat yet.
                 _ => Inbound::Other,
             }
         }
@@ -673,12 +715,12 @@ mod tests {
     fn prompt_needs_a_session_then_builds_a_text_turn() {
         let mut fresh = Session::new(vec![oab_server("c")]);
         assert!(
-            fresh.prompt("hi").is_none(),
+            fresh.prompt("hi", &[]).is_none(),
             "no prompt before a session exists"
         );
 
         let mut s = active_session();
-        let (id, frame) = s.prompt("hello there").expect("session active");
+        let (id, frame) = s.prompt("hello there", &[]).expect("session active");
         assert_eq!(frame["jsonrpc"], "2.0");
         assert_eq!(frame["id"], id);
         assert_eq!(frame["method"], "session/prompt");
@@ -687,6 +729,36 @@ mod tests {
             frame["params"]["prompt"][0],
             json!({ "type": "text", "text": "hello there" })
         );
+    }
+
+    #[test]
+    fn prompt_appends_image_blocks_after_the_text_block() {
+        let mut s = active_session();
+        let images = vec![PromptImage {
+            data: "YWJj".into(),
+            mime_type: "image/png".into(),
+        }];
+        let (_, frame) = s.prompt("look at this", &images).expect("session active");
+        let blocks = frame["params"]["prompt"].as_array().unwrap();
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0], json!({ "type": "text", "text": "look at this" }));
+        assert_eq!(
+            blocks[1],
+            json!({ "type": "image", "data": "YWJj", "mimeType": "image/png" })
+        );
+    }
+
+    #[test]
+    fn prompt_with_only_images_omits_the_text_block() {
+        let mut s = active_session();
+        let images = vec![PromptImage {
+            data: "YWJj".into(),
+            mime_type: "image/png".into(),
+        }];
+        let (_, frame) = s.prompt("", &images).expect("session active");
+        let blocks = frame["params"]["prompt"].as_array().unwrap();
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0]["type"], "image");
     }
 
     #[test]
@@ -740,5 +812,32 @@ mod tests {
         let thought = json!({ "method": "session/update", "params": { "update": {
             "sessionUpdate": "agent_thought_chunk", "content": { "text": "hmm" } } } });
         assert_eq!(parse_inbound(&thought), Inbound::Other);
+    }
+
+    #[test]
+    fn agent_message_chunk_with_image_content_is_classified() {
+        let chunk = json!({
+            "jsonrpc": "2.0", "method": "session/update",
+            "params": { "sessionId": "s", "update": {
+                "sessionUpdate": "agent_message_chunk",
+                "content": { "type": "image", "data": "YWJj", "mimeType": "image/png" }
+            }}
+        });
+        assert_eq!(
+            parse_inbound(&chunk),
+            Inbound::AgentImage {
+                data: "YWJj".into(),
+                mime_type: "image/png".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn agent_message_chunk_with_unsupported_content_type_stays_other() {
+        // audio / resource / resource_link content blocks — not surfaced in chat yet.
+        let chunk = json!({ "method": "session/update", "params": { "update": {
+            "sessionUpdate": "agent_message_chunk",
+            "content": { "type": "audio", "data": "YWJj", "mimeType": "audio/wav" } } } });
+        assert_eq!(parse_inbound(&chunk), Inbound::Other);
     }
 }

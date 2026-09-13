@@ -851,6 +851,9 @@ async function registerManagementPanel(): Promise<void> {
 function routeChunk(agent: string, text: string): void {
   chatPanels.get(agent)?.onChunk(text);
 }
+function routeImage(agent: string, data: string, mimeType: string): void {
+  chatPanels.get(agent)?.onImage({ data, mimeType });
+}
 function routeTurnEnd(agent: string, stopReason: string): void {
   chatPanels.get(agent)?.onTurnEnd(stopReason);
 }
@@ -882,11 +885,14 @@ async function bindAgentUpdates(): Promise<void> {
     agent?: string;
     kind?: string;
     text?: string;
+    data?: string;
+    mimeType?: string;
     stopReason?: string;
   }>("agent-update", (e) => {
     const p = e.payload;
     const agent = p.agent ?? managementName ?? "management";
     if (p.kind === "chunk") routeChunk(agent, p.text ?? "");
+    else if (p.kind === "image" && p.data && p.mimeType) routeImage(agent, p.data, p.mimeType);
     else if (p.kind === "turn_end") routeTurnEnd(agent, p.stopReason ?? "end_turn");
   });
 }

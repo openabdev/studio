@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 
 use acp_tunnel as acp;
 use acp_tunnel::config::{AgentEndpoint, AgentRegistry, RemoteConfig};
-use acp_tunnel::{DisconnectReason, Inbound, Session};
+use acp_tunnel::{DisconnectReason, Inbound, PromptImage, Session};
 use futures_util::{Sink, SinkExt, StreamExt};
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager, Runtime};
@@ -70,8 +70,9 @@ pub struct RemoteState {
 /// *agent-chat-panel*, Part B). Pushed by the `agent_prompt` / `agent_cancel`
 /// commands into the per-connection channel that `run_once` drains onto the WS.
 pub enum OutMsg {
-    /// Send a chat turn (`session/prompt`).
-    Prompt(String),
+    /// Send a chat turn (`session/prompt`): the typed text plus any pasted
+    /// images (issue #158).
+    Prompt(String, Vec<PromptImage>),
     /// Abandon the in-flight turn (`session/cancel`).
     Cancel,
     /// User is disconnecting: abandon any in-flight turn and close the socket
@@ -83,8 +84,13 @@ pub enum OutMsg {
 impl Remote {
     /// Send a chat turn to the named agent. Errors if that agent's session is not
     /// live (each agent console has its own connection, so the target is explicit).
-    pub async fn send_prompt(&self, agent: &str, text: String) -> Result<(), String> {
-        self.push(agent, OutMsg::Prompt(text)).await
+    pub async fn send_prompt(
+        &self,
+        agent: &str,
+        text: String,
+        images: Vec<PromptImage>,
+    ) -> Result<(), String> {
+        self.push(agent, OutMsg::Prompt(text, images)).await
     }
 
     /// Cancel the named agent's in-flight turn (best-effort).
@@ -604,7 +610,7 @@ async fn run_once<R: Runtime>(
             // whole run, so it stays open until teardown.
             Some(out) = out_rx.recv() => {
                 match out {
-                    OutMsg::Prompt(text) => {
+                    OutMsg::Prompt(text, images) => {
                         // In-flight guard (review #1): single-shot turn model. A
                         // second prompt while one is pending would overwrite
                         // `pending_prompt` and orphan the first turn's `turn_end`
@@ -616,7 +622,7 @@ async fn run_once<R: Runtime>(
                                 "app-log",
                                 json!({ "level": "warn", "msg": "remote: prompt ignored — a turn is already in flight" }),
                             );
-                        } else if let Some((id, frame)) = session.prompt(&text) {
+                        } else if let Some((id, frame)) = session.prompt(&text, &images) {
                             pending_prompt = Some(id);
                             if let Err(e) = send(&mut write, &frame).await {
                                 outcome = Err(e);
@@ -986,6 +992,14 @@ async fn run_once<R: Runtime>(
                     // A piece of the agent's chat reply → forward to the panel.
                     Inbound::AgentChunk { text } => {
                         let _ = app.emit("agent-update", json!({ "agent": agent, "kind": "chunk", "text": text }));
+                    }
+                    // An inline image in the agent's chat reply (issue #158) — forwarded
+                    // as its own update, not accumulated like a text chunk.
+                    Inbound::AgentImage { data, mime_type } => {
+                        let _ = app.emit(
+                            "agent-update",
+                            json!({ "agent": agent, "kind": "image", "data": data, "mimeType": mime_type }),
+                        );
                     }
                     Inbound::Cancel { .. } | Inbound::Other => {}
                 }
