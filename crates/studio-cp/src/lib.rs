@@ -1783,6 +1783,74 @@ fn write_local_agent_config(folder: &str, name: &str, config_toml: &[u8]) -> any
         .map_err(|e| anyhow::anyhow!("failed to write {}: {e}", path.display()))
 }
 
+/// Minimum openab release version (`X.Y.Z[-beta.N]`) that ships `/acp`
+/// gateway support (`crates/openab-gateway/src/adapters/acp_server.rs` —
+/// confirmed absent through `0.10.0-beta.1`, present from `0.10.0-beta.2`
+/// onward, openab#1418).
+const MIN_ACP_VERSION: (u32, u32, u32, u32) = (0, 10, 0, 2);
+
+/// Parses the `X.Y.Z` or `X.Y.Z-beta.N` version prefix of an openab release
+/// tag into a tuple ordered so a final release outranks every beta of the
+/// same `X.Y.Z` (`beta` defaults to `u32::MAX` when absent — `0.10.0` sorts
+/// after `0.10.0-beta.4`). Returns `None` for anything that doesn't match
+/// this shape — a custom/non-openab image the caller supplied directly,
+/// which [`check_acp_image_compat`] deliberately lets through rather than
+/// guessing, same "can't verify, don't block" stance `resolve_vendor_image_tags`
+/// already takes on a failed GHCR/GitHub lookup.
+fn parse_openab_version(v: &str) -> Option<(u32, u32, u32, u32)> {
+    let (base, beta) = match v.split_once("-beta.") {
+        Some((b, n)) => (b, n.parse().ok()?),
+        None => (v, u32::MAX),
+    };
+    let mut parts = base.split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    let patch = parts.next()?.parse().ok()?;
+    if parts.next().is_some() {
+        return None; // trailing junk after the third component
+    }
+    Some((major, minor, patch, beta))
+}
+
+/// Refuses an ACP-only deploy (`acp_enabled` true, no `chat_platform` — ACP
+/// is this agent's *only* connection path) onto an image that predates
+/// `/acp` gateway support: it would boot with zero adapters configured and
+/// crash (`Error: no adapter configured...`). studio#153 already guards the
+/// New Fleet wizard's Image-tag `<select>` against exactly this (nudging
+/// into Beta the moment ACP is checked) — but that guard lives entirely in
+/// `console/src/deploy.ts`, client-side. This is the same check enforced
+/// here, at the one place every caller funnels through regardless of
+/// front end (`deploy_provision_agent`), so a caller that bypasses the
+/// wizard — an MCP client calling the tool directly, exactly how the
+/// "seaturtle" test agent broke this session — can't reproduce it either.
+///
+/// Only recognizes openab's own `<version>[-beta.N]-<vendor>` tag shape
+/// (`rsplit_once('-')` strips the trailing vendor component — vendor names
+/// are a fixed, hyphen-free set, and the `-beta.N` hyphen is never the
+/// *last* one in the tag, so this never misparses); anything else — a
+/// custom image the caller supplied directly — passes through unchecked.
+fn check_acp_image_compat(image: &str, input: &AgentWizardInput) -> anyhow::Result<()> {
+    if !input.acp_enabled || input.chat_platform.is_some() {
+        return Ok(());
+    }
+    let tag = image.rsplit_once(':').map(|(_, t)| t).unwrap_or(image);
+    let Some((version, _vendor)) = tag.rsplit_once('-') else {
+        return Ok(());
+    };
+    let Some(parsed) = parse_openab_version(version) else {
+        return Ok(());
+    };
+    if parsed < MIN_ACP_VERSION {
+        anyhow::bail!(
+            "image tag {tag:?} predates /acp gateway support (openab#1418, first shipped in \
+             0.10.0-beta.2) — acp_enabled is on with no chat_platform, so this agent would boot \
+             with zero adapters configured and crash (\"no adapter configured\"). Use a \
+             0.10.0-beta.2 or newer image, set a chat_platform, or pass acp_enabled: false."
+        );
+    }
+    Ok(())
+}
+
 /// [`provision_from_library`], but for the studio#128 wizard's direct path —
 /// no compose library, no `template ⊕ overlay`: builds config.toml itself
 /// from [`AgentWizardInput`] (via [`generate_agent_config`]) instead of
@@ -1800,6 +1868,7 @@ pub async fn provision_agent(
     input: AgentWizardInput,
     local_config_folder: Option<&str>,
 ) -> anyhow::Result<ProvisionOutcome> {
+    check_acp_image_compat(image, &input)?;
     provision_agent_secrets(aws_config, namespace, name, &input).await?;
     let config_toml = generate_agent_config(namespace, name, &input).into_bytes();
     if let Some(folder) = local_config_folder {
@@ -1906,6 +1975,7 @@ pub async fn provision_agent_k8s(
              directly, or deploy this agent to ECS instead."
         );
     }
+    check_acp_image_compat(image, &input)?;
     // Normalized once, up front, and shadowed for the rest of this function —
     // every k8s object placed below (the namespace itself, the ConfigMap, the
     // ACP Secret, the Deployment) must agree on the same slugified value, or
@@ -2911,5 +2981,88 @@ aws_access_key_id = AKIA...
             "k8s memory quantity must carry a unit suffix (e.g. \"512Mi\"), got {:?}",
             manifest.spec.resources.memory
         );
+    }
+
+    #[test]
+    fn parses_stable_and_beta_versions() {
+        assert_eq!(parse_openab_version("0.9.0"), Some((0, 9, 0, u32::MAX)));
+        assert_eq!(parse_openab_version("0.10.0-beta.2"), Some((0, 10, 0, 2)));
+        assert_eq!(parse_openab_version("0.10.0-beta.4"), Some((0, 10, 0, 4)));
+    }
+
+    #[test]
+    fn rejects_unparseable_versions() {
+        assert_eq!(parse_openab_version("not-a-version"), None);
+        assert_eq!(parse_openab_version("1.2"), None); // missing patch
+        assert_eq!(parse_openab_version("1.2.3.4"), None); // trailing junk
+    }
+
+    #[test]
+    fn a_final_release_outranks_its_own_betas() {
+        let final_release = parse_openab_version("0.10.0").unwrap();
+        let beta4 = parse_openab_version("0.10.0-beta.4").unwrap();
+        assert!(final_release > beta4);
+    }
+
+    #[test]
+    fn stable_0_9_0_predates_any_0_10_0_beta() {
+        let stable = parse_openab_version("0.9.0").unwrap();
+        let beta2 = parse_openab_version("0.10.0-beta.2").unwrap();
+        assert!(stable < beta2);
+    }
+
+    fn wizard_input(acp_enabled: bool, chat_platform: Option<&str>) -> AgentWizardInput {
+        AgentWizardInput {
+            api_key: None,
+            chat_platform: chat_platform.map(str::to_string),
+            chat_bot_token: None,
+            chat_channel_secret: None,
+            acp_enabled,
+            acp_token: None,
+        }
+    }
+
+    #[test]
+    fn acp_compat_check_is_a_noop_without_acp_or_with_a_chat_platform() {
+        let ancient = "ghcr.io/openabdev/openab:0.9.0-claude";
+        check_acp_image_compat(ancient, &wizard_input(false, None))
+            .expect("acp disabled — nothing to check");
+        check_acp_image_compat(ancient, &wizard_input(true, Some("discord")))
+            .expect("a chat_platform is configured — ACP isn't the only path");
+    }
+
+    #[test]
+    fn acp_compat_check_refuses_stable_0_9_0() {
+        let err = check_acp_image_compat(
+            "ghcr.io/openabdev/openab:0.9.0-claude",
+            &wizard_input(true, None),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("predates /acp gateway support"), "{err}");
+    }
+
+    #[test]
+    fn acp_compat_check_refuses_beta_1_but_accepts_beta_2_and_later() {
+        assert!(check_acp_image_compat(
+            "ghcr.io/openabdev/openab:0.10.0-beta.1-claude",
+            &wizard_input(true, None)
+        )
+        .is_err());
+        check_acp_image_compat(
+            "ghcr.io/openabdev/openab:0.10.0-beta.2-claude",
+            &wizard_input(true, None),
+        )
+        .expect("0.10.0-beta.2 first shipped /acp support");
+        check_acp_image_compat(
+            "ghcr.io/openabdev/openab:0.10.0-beta.4-claude",
+            &wizard_input(true, None),
+        )
+        .expect("newer than the minimum");
+    }
+
+    #[test]
+    fn acp_compat_check_lets_a_custom_image_through_unverified() {
+        check_acp_image_compat("my-registry.example.com/custom:latest", &wizard_input(true, None))
+            .expect("not an openab release tag — can't verify, don't block");
     }
 }
