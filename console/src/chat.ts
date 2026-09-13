@@ -25,6 +25,61 @@ export interface ChatTurn {
   // a "queued" state so it isn't invisible until the queue drains. Cleared when
   // its turn actually starts.
   pending?: boolean;
+  // Inline images attached to this turn (issue #158) — pasted by the operator on
+  // a `user` turn, or streamed in from the agent's reply on an `agent` turn.
+  // Rendered after the turn's text; order relative to interleaved text chunks
+  // isn't preserved, the same simplification `appendChunk` already makes for
+  // multiple text chunks accumulating into one string.
+  images?: ChatImage[];
+}
+
+// One inline image — the wire shape is already `{ data, mimeType }` end to end
+// (ACP `ImageContent`, `agent-update` events, the `agent_prompt` payload), so the
+// transcript keeps it as-is rather than inventing another shape.
+export interface ChatImage {
+  data: string;
+  mimeType: string;
+}
+
+// Only these are rendered — image content is agent- or clipboard-sourced, less
+// trusted than markdown text, so it gets an allow-list instead of open season on
+// `<img src="data:...">`.
+const ALLOWED_IMAGE_MIME = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
+
+// Base64's alphabet has no `<`/`>`/`"`/`'` — a `data` value that doesn't match
+// this shape isn't real base64 and must not reach a `src` attribute.
+const BASE64_RE = /^[A-Za-z0-9+/]+={0,2}$/;
+
+// Hard cap on one image's base64 payload: ~8MB decoded (≈10.9M base64 chars).
+// Mirrors the ~5MB raw-file cap `chatPanel.ts` enforces before it ever base64s a
+// pasted image — this is the render-side half of the same guard, so a malformed
+// or oversized image (however it got here) is dropped rather than rendered.
+const MAX_IMAGE_BASE64_CHARS = Math.ceil((8 * 1024 * 1024 * 4) / 3);
+
+// Exported so `chatPanel.ts` can apply the same allow-list/shape check to a
+// freshly pasted image before it ever gets attached to an outgoing turn.
+export function isRenderableImage(img: ChatImage): boolean {
+  return (
+    ALLOWED_IMAGE_MIME.has(img.mimeType) &&
+    img.data.length > 0 &&
+    img.data.length <= MAX_IMAGE_BASE64_CHARS &&
+    BASE64_RE.test(img.data)
+  );
+}
+
+// `mimeType` is allow-listed and `data` is base64-shape-checked above, so neither
+// can carry a quote/angle-bracket — safe to interpolate directly into the `src`
+// attribute without a further escape pass.
+function imagesHtml(images: ChatImage[] | undefined): string {
+  const valid = (images ?? []).filter(isRenderableImage);
+  if (valid.length === 0) return "";
+  return (
+    `<div class="chat-images">` +
+    valid
+      .map((img) => `<img class="chat-image" src="data:${img.mimeType};base64,${img.data}" alt="pasted image">`)
+      .join("") +
+    `</div>`
+  );
 }
 
 // Markdown → HTML for a finalized agent turn. `html: false` escapes any raw HTML
@@ -63,6 +118,7 @@ export function turnHtml(turn: ChatTurn, renderMd: RenderMarkdown): string {
     return (
       `<div class="${cls}">` +
       `<div class="chat-body chat-md">${renderMd(turn.text)}</div>` +
+      imagesHtml(turn.images) +
       queued +
       `</div>`
     );
@@ -74,6 +130,7 @@ export function turnHtml(turn: ChatTurn, renderMd: RenderMarkdown): string {
       `<div class="chat-turn chat-agent" data-id="${turn.id}">` +
       `<div class="chat-body chat-stream">${escapeHtml(turn.text)}` +
       `<span class="chat-spinner" aria-label="thinking"></span></div>` +
+      imagesHtml(turn.images) +
       `</div>`
     );
   }
@@ -84,6 +141,7 @@ export function turnHtml(turn: ChatTurn, renderMd: RenderMarkdown): string {
   return (
     `<div class="chat-turn chat-agent" data-id="${turn.id}">` +
     `<div class="chat-body chat-md">${renderMd(turn.text)}</div>` +
+    imagesHtml(turn.images) +
     `<div class="chat-tools">` +
     `<button class="chat-copy" type="button" data-copy="${turn.id}">Copy</button>${reason}` +
     `</div>` +
@@ -113,8 +171,9 @@ export function appendUser(
   id: number,
   text: string,
   pending = false,
+  images?: ChatImage[],
 ): ChatTurn[] {
-  return [...turns, { id, role: "user", text, streaming: false, pending }];
+  return [...turns, { id, role: "user", text, streaming: false, pending, images }];
 }
 
 // Clear the `pending` flag on the user turn `id` — its queued message is now the
@@ -136,6 +195,23 @@ export function appendChunk(
     return [...turns.slice(0, -1), updated];
   }
   return [...turns, { id, role: "agent", text, streaming: true }];
+}
+
+// Append a streamed inline `image` (issue #158). Mirrors `appendChunk`: opens the
+// turn on the first update of a reply (chunk or image), otherwise appends to the
+// still-open turn's image list.
+export function appendImage(
+  turns: ChatTurn[],
+  id: number,
+  image: ChatImage,
+): ChatTurn[] {
+  const last = turns[turns.length - 1];
+  if (last && last.role === "agent" && last.streaming) {
+    const images = [...(last.images ?? []), image];
+    const updated: ChatTurn = { ...last, images };
+    return [...turns.slice(0, -1), updated];
+  }
+  return [...turns, { id, role: "agent", text: "", streaming: true, images: [image] }];
 }
 
 // Close the open agent turn on `turn_end`. If a `turn_end` arrives with no open

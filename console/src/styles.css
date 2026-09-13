@@ -1139,6 +1139,19 @@ button.act:disabled {
   font-size: 11px;
   color: var(--warn);
 }
+/* Inline images (issue #158) — agent replies or the operator's own pasted turn. */
+.chat-images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 4px;
+}
+.chat-image {
+  max-width: 260px;
+  max-height: 260px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+}
 .chat-status {
   font-size: 12px;
   color: var(--muted);
@@ -1150,9 +1163,45 @@ button.act:disabled {
 }
 .chat-input {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   margin-top: 8px;
   align-items: flex-end;
+}
+/* Pending pasted images (issue #158) — forced onto their own full-width row
+   above the textarea/actions via `order` + a 100% flex-basis. */
+.chat-attachments {
+  order: -1;
+  flex: 0 0 100%;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.chat-attachment {
+  position: relative;
+  display: inline-flex;
+}
+.chat-attachment img {
+  width: 48px;
+  height: 48px;
+  object-fit: cover;
+  border-radius: 5px;
+  border: 1px solid var(--border);
+}
+.chat-attachment-remove {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  width: 16px;
+  height: 16px;
+  line-height: 14px;
+  padding: 0;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 11px;
 }
 .chat-text {
   flex: 1 1 auto;

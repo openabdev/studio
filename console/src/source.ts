@@ -9,6 +9,7 @@ import type {
   RemoteConfig,
   RuntimeContext,
 } from "./types";
+import type { ChatImage } from "./chat";
 import {
   FIXTURE_AGENTS,
   FIXTURE_DEPLOYMENTS,
@@ -70,7 +71,7 @@ export interface Source {
   // names the registry endpoint; omitted ⇒ the management endpoint. The reply
   // streams back as `agent-update` events, not through this call, so both
   // resolve immediately.
-  agentPrompt(text: string, agent?: string): Promise<void>;
+  agentPrompt(text: string, agent?: string, images?: ChatImage[]): Promise<void>;
   agentCancel(agent?: string): Promise<void>;
   // The remote file editor's read path (Part D). fs is an MCP files server the
   // target agent exposes, reached Studio-brokered via the `oab` reverse-MCP tool
@@ -212,8 +213,8 @@ export class TauriSource implements Source {
     );
     return res.agents;
   }
-  async agentPrompt(text: string, agent?: string): Promise<void> {
-    await this.invoke()<unknown>("agent_prompt", { text, agent });
+  async agentPrompt(text: string, agent?: string, images?: ChatImage[]): Promise<void> {
+    await this.invoke()<unknown>("agent_prompt", { text, agent, images });
   }
   async agentCancel(agent?: string): Promise<void> {
     await this.invoke()<unknown>("agent_cancel", { agent });

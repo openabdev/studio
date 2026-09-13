@@ -750,9 +750,10 @@ async fn agent_prompt(
     remote: tauri::State<'_, remote::Remote>,
     agent: Option<String>,
     text: String,
+    images: Option<Vec<acp_tunnel::PromptImage>>,
 ) -> Result<(), String> {
     let name = remote::resolve_name(agent.as_deref())?;
-    remote.send_prompt(&name, text).await
+    remote.send_prompt(&name, text, images.unwrap_or_default()).await
 }
 
 /// Abandon an agent's in-flight chat turn (`session/cancel`). Best-effort.
