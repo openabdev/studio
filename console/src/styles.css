@@ -216,7 +216,12 @@ body {
   align-items: stretch;
   gap: 0;
   margin: 0 0 16px;
-  min-height: var(--drilldown-row-h, auto);
+  /* Was `min-height` — a floor only, so a long chat transcript (or any other
+     tall column content) pushed the row past the window instead of clipping
+     to it (Brett: chat panel not fitting the window / not autoscrolling).
+     `height` makes the live-measured var a real ceiling too, matching how
+     `.is-split` below already caps the row while the editor is open. */
+  height: var(--drilldown-row-h, auto);
 }
 /* Nothing toggles `hidden` on this element today (deploy.ts used to; it now
    hides `#config`/`#fleet-detail` in place instead, see deploy.ts), but the
@@ -252,6 +257,10 @@ body {
   min-height: 0;
   display: flex;
   flex-direction: column;
+  /* The row's height is now a real ceiling (see `.drilldown-row` above) — give
+     this column its own scrollbar for content taller than that, same as the
+     chat log does, instead of silently clipping it. */
+  overflow-y: auto;
 }
 /* Same equal-specificity trap as `.debug-drawer[hidden]`/`.deploy-identity
    [hidden]` above — `.drilldown-main > *` and the UA `[hidden]` rule tie, and
