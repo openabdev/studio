@@ -39,12 +39,16 @@ export interface Source {
   // Scale a deployment on (size 1) or off (size 0) — the start/stop action.
   // Reversible: ECS keeps the Spec at desiredCount 0, so no state store is
   // needed. `namespace` is required (the service is `oab-{namespace}-{name}`);
-  // the managing credential is resolved per-cluster from `cluster`.
+  // the managing credential is resolved per-cluster from `cluster`. `fleet`
+  // (same rule as `listDeployments`/`runtimeContext`) is required to reach a
+  // k8s-runtime fleet — pass it whenever a fleet is active, alongside
+  // `cluster`, so oab-mcp can dispatch by runtime without a cluster fallback.
   scaleDeployment(
     name: string,
     size: 0 | 1,
     namespace: string,
     cluster?: string,
+    fleet?: string,
   ): Promise<void>;
   // The remote reverse-MCP connection (Part B): the management endpoint's parsed
   // url + live status for the panel. The editor now edits the registry
@@ -181,12 +185,14 @@ export class TauriSource implements Source {
     size: 0 | 1,
     namespace: string,
     cluster?: string,
+    fleet?: string,
   ): Promise<void> {
     await this.invoke()<unknown>("deploy_scale", {
       name,
       size,
       namespace,
       cluster,
+      fleet,
     });
   }
   async remoteConfig(): Promise<RemoteConfig> {
