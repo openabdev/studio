@@ -569,6 +569,9 @@ async fn list_service_accounts(
 /// Spec is kept by ECS, so it's reversible). An OAB service runs a single bot
 /// token, so size is 0/1 only; `namespace` is required upstream to resolve the
 /// service (`oab-{namespace}-{name}`) and the managing credential is per-cluster.
+/// `fleet` (same rule as `deploy_list`/`runtime_context`) is required to reach a
+/// k8s-runtime fleet — without it this silently fell through to the ECS path
+/// with an empty cluster string.
 #[tauri::command]
 async fn deploy_scale(
     core: tauri::State<'_, Core>,
@@ -576,6 +579,7 @@ async fn deploy_scale(
     size: i64,
     namespace: Option<String>,
     cluster: Option<String>,
+    fleet: Option<String>,
 ) -> Result<Value, String> {
     let cluster = cluster.unwrap_or_else(default_cluster);
     let client = {
@@ -588,6 +592,9 @@ async fn deploy_scale(
     let mut params = json!({ "name": name, "size": size, "cluster": cluster });
     if let Some(ns) = namespace {
         params["namespace"] = json!(ns);
+    }
+    if let Some(f) = fleet {
+        params["fleet"] = json!(f);
     }
     match client.call_tool("deploy_scale", params).await {
         Ok(v) => Ok(v),

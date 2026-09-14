@@ -146,15 +146,15 @@ pub fn tools() -> Vec<Tool> {
         ),
         Tool::new(
             "deploy_scale",
-            "Scale an OAB service on or off. OAB services run a single bot token, so size must be 0 (off) or 1 (on).",
+            "Scale an OAB service on or off. OAB services run a single bot token, so size must be 0 (off) or 1 (on). Works for both ECS and k8s-runtime fleets (pass `fleet` for k8s — required, since a k8s-runtime fleet has no ECS cluster to fall back to).",
             as_map(json!({
                 "type": "object",
                 "properties": {
                     "name": { "type": "string", "description": "Agent / service name (service = oab-{namespace}-{name})." },
                     "size": { "type": "integer", "enum": [0, 1], "description": "0 = off, 1 = on." },
-                    "fleet": { "type": "string", "description": "Fleet name (see fleet_config): targets the fleet's cluster and managing credential; a write to a service outside the fleet's members is refused. Overrides the cluster arg." },
-                    "cluster": { "type": "string", "description": "ECS cluster (defaults to the server's configured cluster)." },
-                    "namespace": { "type": "string", "description": "Namespace (default \"default\")." }
+                    "fleet": { "type": "string", "description": "Fleet name (see fleet_config): targets the fleet's cluster/context and managing credential; a write to a service outside the fleet's members is refused. Overrides the cluster arg. Required for a k8s-runtime fleet." },
+                    "cluster": { "type": "string", "description": "ECS cluster (defaults to the server's configured cluster). Ignored for a k8s-runtime fleet." },
+                    "namespace": { "type": "string", "description": "Namespace (default \"default\"). Ignored for a k8s-runtime fleet — the fleet binding's own namespace is used." }
                 },
                 "required": ["name", "size"]
             })),
@@ -918,8 +918,6 @@ impl OabMcp {
     }
 
     async fn t_scale(&self, args: &Map<String, Value>) -> Result<Value> {
-        let t = self.target(args)?;
-        let cluster = t.cluster.clone();
         let namespace = args
             .get("namespace")
             .and_then(Value::as_str)
@@ -932,10 +930,27 @@ impl OabMcp {
             args.get("size")
                 .and_then(Value::as_i64)
                 .ok_or_else(|| anyhow::anyhow!("missing or invalid arg: size"))? as i32;
+        let service_name = format!("oab-{namespace}-{name}");
+        if let Some(b) = self.named_fleet(args)? {
+            if b.runtime == scp::FleetRuntime::K8s {
+                // Guard: a fleet handle only operates its own members — same
+                // reasoning as the ECS path below.
+                if !b.includes(&service_name, name) {
+                    anyhow::bail!("service {service_name:?} is not a member of the named fleet");
+                }
+                let namespace = b.namespace.clone().unwrap_or_else(|| namespace.to_string());
+                scp::scale_k8s_deployment(b.context.as_deref(), &namespace, name, size).await?;
+                return Ok(json!({
+                    "ok": true, "cluster": null, "context": b.context, "namespace": namespace,
+                    "name": name, "size": size,
+                }));
+            }
+        }
+        let t = self.target(args)?;
+        let cluster = t.cluster.clone();
         // Guard: a fleet handle only operates its own members — refuse to scale a
         // service outside the named fleet (a no-op for unscoped or whole-cluster
         // calls). Stops a fleet-scoped call from reaching a co-located non-member.
-        let service_name = format!("oab-{namespace}-{name}");
         if !t.includes(&service_name, name) {
             anyhow::bail!("service {service_name:?} is not a member of the named fleet");
         }

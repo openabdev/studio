@@ -455,10 +455,12 @@ function selectFleet(name: string): void {
   activeFleet = name;
   activeMembers = fleet.members;
   if (fleet.runtime === "k8s") {
-    // No ECS cluster for a k8s fleet — reads now go by the `fleet` name
-    // instead (oab-mcp resolves the bound context/namespace itself,
-    // studio#146 slices 2-3); `activeCluster` stays a plain "" sentinel,
-    // never read on this path.
+    // No ECS cluster for a k8s fleet — reads and scale/start/stop now go by
+    // the `fleet` name instead (oab-mcp resolves the bound context/namespace
+    // itself, studio#146 + the deploy_scale k8s dispatch fix). `activeCluster`
+    // stays a plain "" sentinel: still sent alongside `fleet` on every call
+    // for back-compat with the ECS path, but every k8s-aware tool checks
+    // `fleet`'s runtime before ever looking at it.
     activeCluster = "";
     const where = `${fleet.context ?? "current-context"}/${fleet.namespace ?? "default"}`;
     if (clusterLabel) clusterLabel.textContent = `${activeFleet} · ${where}`;
@@ -920,7 +922,11 @@ async function scale(
   );
   repaintRoster(); // disable the button immediately
   try {
-    await source.scaleDeployment(name, size, namespace, activeCluster);
+    // `activeCluster` is the "" sentinel for a k8s-runtime fleet (see
+    // `selectFleet`) — `fleet` carries the same (context, namespace)
+    // resolution `listDeployments`/`runtimeContext` already rely on, so
+    // oab-mcp can dispatch by runtime instead of falling through to ECS.
+    await source.scaleDeployment(name, size, namespace, activeCluster, activeFleet ?? undefined);
     note("info", `roster: ${action === "start" ? "started" : "stopped"} ${namespace}/${name}`);
     // tick() observes the new desiredCount and prunes the guard when it flips.
     await tick();

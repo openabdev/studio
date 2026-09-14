@@ -2448,6 +2448,22 @@ pub async fn scale_deployment(
     oabctl::studio_api::scale(aws_config, cluster, namespace, name, size).await
 }
 
+/// Scale a k8s-runtime OAB service to `size` replicas (0 = off, 1 = on) — the
+/// k8s counterpart to [`scale_deployment`]. `deploy_scale`/`t_scale` never
+/// had a k8s branch (studio#146 only made the *read* path — list/get/
+/// runtime_context — k8s-aware); this closes that gap so a k8s-runtime
+/// fleet's start/stop action reaches `K8sDriver::scale` instead of silently
+/// falling through to the ECS path with an empty cluster string.
+pub async fn scale_k8s_deployment(
+    context: Option<&str>,
+    namespace: &str,
+    name: &str,
+    size: i32,
+) -> anyhow::Result<()> {
+    use oabctl::ProvisionDriver;
+    oabctl::K8sDriver::from_context(context).await?.scale(namespace, name, size).await
+}
+
 /// Delete a control-plane resource (e.g. an `OABService`).
 ///
 /// The control-plane bucket is resolved from the environment / account, not
