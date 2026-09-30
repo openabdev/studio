@@ -90,13 +90,9 @@ pub struct SkillsLibrary {
     pub skills: BTreeMap<String, Skill>,
 }
 
-impl SkillsLibrary {
-    /// Build a library from `(name, skill)` pairs — convenience for callers/tests.
-    pub fn from_iter<I, N>(it: I) -> Self
-    where
-        I: IntoIterator<Item = (N, Skill)>,
-        N: Into<String>,
-    {
+/// Build a library from `(name, skill)` pairs — convenience for callers/tests.
+impl<N: Into<String>> FromIterator<(N, Skill)> for SkillsLibrary {
+    fn from_iter<T: IntoIterator<Item = (N, Skill)>>(it: T) -> Self {
         SkillsLibrary {
             skills: it.into_iter().map(|(n, s)| (n.into(), s)).collect(),
         }
@@ -190,7 +186,9 @@ impl Bundle {
                 // start_file/write on an in-memory Cursor<Vec<u8>> cannot fail
                 // (no OS I/O involved) — unwrap keeps this fn infallible, matching
                 // every other pure Bundle method (digest, preview, artifact_objects).
-                writer.start_file(path, options).expect("zip: in-memory write");
+                writer
+                    .start_file(path, options)
+                    .expect("zip: in-memory write");
                 std::io::Write::write_all(&mut writer, bytes).expect("zip: in-memory write");
             }
             writer.finish().expect("zip: in-memory write");
@@ -520,10 +518,7 @@ mod tests {
         let mut t = tmpl();
         t.skills = vec!["s".into()];
         let overlay = Overlay {
-            files: BTreeMap::from([(
-                ".claude/skills/s/SKILL.md".into(),
-                "from overlay\n".into(),
-            )]),
+            files: BTreeMap::from([(".claude/skills/s/SKILL.md".into(), "from overlay\n".into())]),
             ..Default::default()
         };
         let b = compose(&t, &overlay, &lib).unwrap();
@@ -542,7 +537,9 @@ mod tests {
                 referenced_by: SkillRef::Template,
             }
         );
-        assert!(err.to_string().contains("template references skill \"nope\""));
+        assert!(err
+            .to_string()
+            .contains("template references skill \"nope\""));
     }
 
     #[test]
@@ -601,7 +598,8 @@ mod tests {
     fn digest_changes_when_a_byte_changes() {
         let base = compose(&tmpl(), &Overlay::default(), &SkillsLibrary::default()).unwrap();
         let mut t = tmpl();
-        t.files.insert("config.toml".into(), "[agent]\nname = \"x\"\n".into());
+        t.files
+            .insert("config.toml".into(), "[agent]\nname = \"x\"\n".into());
         let changed = compose(&t, &Overlay::default(), &SkillsLibrary::default()).unwrap();
         assert_ne!(base.digest(), changed.digest());
     }
@@ -702,7 +700,10 @@ mod tests {
             ]
         );
         // bytes travel with the key, unmodified
-        let (_, cfg) = objs.iter().find(|(k, _)| k.ends_with("/config.toml")).unwrap();
+        let (_, cfg) = objs
+            .iter()
+            .find(|(k, _)| k.ends_with("/config.toml"))
+            .unwrap();
         assert_eq!(cfg, b"[agent]\nname = \"base\"\n");
     }
 

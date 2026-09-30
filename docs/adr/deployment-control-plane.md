@@ -123,6 +123,10 @@ One idempotent primitive: **`apply(Spec)`** — converge observed toward desired
   `accepting_work`, a Spec field). Without them the write model could not reach a
   state ADR-1 defines. `cordon` is *not* `stop`: it keeps the Instance alive and
   resumable.
+- **Naming (ADR-1 review follow-up):** the enum label stays `Paused`, not
+  `Cordoned` — `cordon` is only *one* cause of `¬accepting_work` (a CP-set
+  `superseded` fence is another, and classifies the same way), so naming the
+  state after the verb would mis-scope it.
 - **dry-run / diff**: every write supports a preview that returns *what would
   change* without mutating — a safety valve, and important for agents (look
   before you leap). See §6 for `dry_run` as a first-class tool parameter.

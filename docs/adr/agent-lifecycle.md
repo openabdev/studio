@@ -4,7 +4,7 @@
 - **Date:** 2026-08-08
 - **Author:** @brettchien
 - **Reviewers:** Mira (ECS), Jellyfish (control-plane), Falcon (MCP) — all LGTM
-- **Tracking issues:** implementation openabdev/studio#2
+- **Tracking issues:** implementation openabdev/studio#2 · review follow-ups openabdev/studio#3
 
 > **Y-statement.** In the context of running agents across heterogeneous
 > runtimes, facing the need for one glanceable, runtime-independent notion of
@@ -67,7 +67,8 @@ stateDiagram-v2
     Unhealthy --> Stopped   : hard loss (OOM / crash / node death), no flush
     Running   --> Stopping  : stop / replace (desired=stopped)
     Paused    --> Stopping  : stop / replace
-    Stopping  --> Stopped   : state saved
+    Stopping  --> Stopped   : state saved (graceful)
+    Stopping  --> Stopped   : reclaim / hard loss (no flush)
     Running   --> Stopped   : reclaim (hard loss)
     Paused    --> Stopped   : reclaim (hard loss)
     Stopped   --> [*]
@@ -84,12 +85,16 @@ stateDiagram-v2
 
 **Attributes, not states** (read alongside the state): `accepting_work`
 (Running vs Paused) — its authority is the **CP/director**, never the agent's
-self-report; `superseded` / version-skew (a healthy instance whose desired
-version has moved on) ⇒ `accepting_work=false`, so it classifies as **Paused**
-and is never dispatched new work. *When and in what order* a superseded instance
+self-report; `superseded` / version-skew is an **instance-level** attribute:
+when a healthy, verified instance's desired version moves on, the CP sets
+`accepting_work=false` *on that instance*, so it classifies as **Paused** and is
+never dispatched new work while the attribute holds — the *agent* is not paused,
+only that instance is; a replacement is a fresh instance with its own lifecycle
+(typically `Starting`→`Running`). *When and in what order* a superseded instance
 is drained or replaced is a **fleet-level rollout** concern (e.g.
-make-before-break) — out of scope for this instance-level ADR; see the future
-rollout / RuntimeDriver ADR. Also: health `cause` = observed-bad vs
+make-before-break) — out of scope for this instance-level ADR; the
+RuntimeDriver contract is [ADR-2](./deployment-control-plane.md) and rollout
+ordering remains future work. Also: health `cause` = observed-bad vs
 unobservable; death `cause` enum; turn-level busy/idle.
 
 ## 4. Principles
@@ -111,8 +116,10 @@ unobservable; death `cause` enum; turn-level busy/idle.
 4. **`reclaim` is two paths, not one.** A *planned* interruption (Spot/preempt
    notice — ECS ~120s SIGTERM, GKE ~30s + preStop) **compresses `Stopping`**
    into a short deadline. Only a *hard* loss (node death / SIGKILL / OOM) jumps
-   straight to `Stopped`. Durability never relies on the Stopping window —
-   **checkpoint while Running.**
+   straight to `Stopped` — **from any live state, `Stopping` included**: a hard
+   loss mid-flush skips `state saved` and lands in the same absorbing `Stopped`,
+   so "lost while Stopping" is not a third outcome. Durability never relies on
+   the Stopping window — **checkpoint while Running.**
 5. **Runtime-independent.** Each driver projects native signals onto the 6 via
    the discriminators `(desiredStatus, accepting_work, health, identity_verified)`;
    the machine never changes per runtime.
@@ -192,8 +199,27 @@ an ECS-only coincidence.
   and `restart:"no"` conditions above.
 - Detailed sub-states are **attributes** of the 6 (accepting_work, superseded,
   health-cause, death-cause enum, busy/idle), not new states.
-- **Follow-ups:** a `RuntimeDriver` contract ADR (verbs apply / observe / scale
-  / cordon / …); an identity / lease / epoch spec ADR.
+- **Lock-in / reversibility.** Expensive to reverse: the 6-state set itself —
+  the read-model, Studio, the dispatch predicate, and every driver's
+  conformance suite are all keyed on it, so adding or merging a state later is
+  a breaking change for every consumer; the `identity_verified` latch — each
+  driver must observe-and-remember "ever verified" per instance, which no
+  runtime exposes natively (k8s has no "ever Ready" field); per-instance
+  identity + the fencing epoch — unwinding them re-opens the trust model of
+  principles 1–2; and the single-field dispatch predicate — demoting `Paused`
+  to an attribute later silently restores the two-field predicate rejected in
+  §7, mis-dispatching every caller that forgets `&& accepting_work`. Cheap to
+  change: the §6 projection rows, the cause enums, new attributes, and
+  deadline/window tuning.
+- **Follow-ups:** the `RuntimeDriver` contract ADR —
+  [ADR-2](./deployment-control-plane.md) (verbs apply / scale / cordon /
+  resume / stop / delete) — also owns the surface *labels* of the
+  `AgentState` enum: `Paused` is the state name while `cordon`/`resume` are
+  the write-path verbs. The naming alignment (state `Paused` vs verb
+  `cordon`) is recorded in ADR-2 §5 — the enum stays `Paused`, since cordon
+  is only one of several `¬accepting_work` causes; the discriminator
+  semantics above are settled either way. Also: an identity / lease / epoch
+  spec ADR.
 
 ## 10. More Information
 

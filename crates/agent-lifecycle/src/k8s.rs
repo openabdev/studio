@@ -67,8 +67,7 @@ impl RuntimeDriver for K8sDriver {
 
         // `identity_verified` latches once the pod has ever reported phase
         // Running with Ready true.
-        let identity_verified =
-            verified_before || (pod.phase == PodPhase::Running && pod.ready);
+        let identity_verified = verified_before || (pod.phase == PodPhase::Running && pod.ready);
 
         // Node-unreachable (Unknown phase), a crash-loop, or a lost lease all
         // fault outright. A *declared* readiness probe failing faults too —
@@ -100,13 +99,7 @@ mod tests {
     use super::*;
     use crate::AgentState;
 
-    fn pod(
-        phase: PodPhase,
-        deleting: bool,
-        ready: bool,
-        lease: bool,
-        accepting: bool,
-    ) -> K8sPod {
+    fn pod(phase: PodPhase, deleting: bool, ready: bool, lease: bool, accepting: bool) -> K8sPod {
         // Default: no readiness probe declared (the common case for OAB agents).
         pod_probe(phase, deleting, ready, lease, accepting, false, false)
     }
