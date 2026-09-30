@@ -498,10 +498,24 @@ fn list_local_agent_configs(folder: String) -> Result<Vec<String>, String> {
 
 /// Reads one agent's `config.toml` from the local "Config folder" —
 /// `<folder>/<agent>/config.toml`, the same layout
-/// `list_local_agent_configs` scans.
+/// `list_local_agent_configs` scans. `agent` must be a single path
+/// component — the same containment rule `studio_cp::write_local_agent_config`
+/// enforces on the write side (studio#135) — or the join could read a
+/// `config.toml` outside the folder.
 #[tauri::command]
 fn read_local_agent_config(folder: String, agent: String) -> Result<String, String> {
-    let path = std::path::Path::new(&folder).join(&agent).join("config.toml");
+    let mut components = std::path::Path::new(&agent).components();
+    if !matches!(components.next(), Some(std::path::Component::Normal(_)))
+        || components.next().is_some()
+        || agent.contains('\\')
+    {
+        return Err(format!(
+            "agent name {agent:?} isn't a single path component"
+        ));
+    }
+    let path = std::path::Path::new(&folder)
+        .join(&agent)
+        .join("config.toml");
     std::fs::read_to_string(&path).map_err(|e| format!("read {}: {e}", path.display()))
 }
 

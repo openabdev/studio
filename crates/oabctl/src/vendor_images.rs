@@ -100,7 +100,9 @@ async fn fetch_openab_releases(client: &reqwest::Client) -> Result<Vec<GhRelease
 fn stable_release_versions(releases: &[GhRelease]) -> Vec<String> {
     releases
         .iter()
-        .filter(|r| !r.prerelease && r.tag_name.starts_with("openab-") && !r.tag_name.contains("-beta"))
+        .filter(|r| {
+            !r.prerelease && r.tag_name.starts_with("openab-") && !r.tag_name.contains("-beta")
+        })
         .map(|r| r.tag_name.trim_start_matches("openab-").to_string())
         .collect()
 }
@@ -151,7 +153,10 @@ pub async fn resolve_vendor_image_tags(vendor: &str) -> VendorImageTags {
 
     for version in beta_release_versions(&releases) {
         let candidate = format!("{version}-{vendor}");
-        if ghcr_tag_exists(&client, &token, &candidate).await.unwrap_or(false) {
+        if ghcr_tag_exists(&client, &token, &candidate)
+            .await
+            .unwrap_or(false)
+        {
             out.beta = Some(candidate);
             break;
         }
@@ -159,7 +164,10 @@ pub async fn resolve_vendor_image_tags(vendor: &str) -> VendorImageTags {
 
     for version in stable_release_versions(&releases) {
         let candidate = format!("{version}-{vendor}");
-        if ghcr_tag_exists(&client, &token, &candidate).await.unwrap_or(false) {
+        if ghcr_tag_exists(&client, &token, &candidate)
+            .await
+            .unwrap_or(false)
+        {
             out.stable = Some(candidate);
             break;
         }
@@ -173,7 +181,10 @@ mod tests {
     use super::*;
 
     fn release(tag_name: &str, prerelease: bool) -> GhRelease {
-        GhRelease { tag_name: tag_name.to_string(), prerelease }
+        GhRelease {
+            tag_name: tag_name.to_string(),
+            prerelease,
+        }
     }
 
     // Real-world snapshot (2026-09-08, `gh api repos/openabdev/openab/releases`):
@@ -200,13 +211,21 @@ mod tests {
     fn beta_versions_newest_first_ignores_prerelease_flag() {
         assert_eq!(
             beta_release_versions(&sample_releases()),
-            vec!["0.10.0-beta.3", "0.10.0-beta.2", "0.10.0-beta.1", "0.9.0-beta.12"]
+            vec![
+                "0.10.0-beta.3",
+                "0.10.0-beta.2",
+                "0.10.0-beta.1",
+                "0.9.0-beta.12"
+            ]
         );
     }
 
     #[test]
     fn both_channels_ignore_non_openab_prefixed_releases() {
-        let releases = vec![release("oabctl-pre-beta", true), release("pre-seed-utils-v2.35.13-ghp0.3.2", false)];
+        let releases = vec![
+            release("oabctl-pre-beta", true),
+            release("pre-seed-utils-v2.35.13-ghp0.3.2", false),
+        ];
         assert!(stable_release_versions(&releases).is_empty());
         assert!(beta_release_versions(&releases).is_empty());
     }

@@ -223,10 +223,13 @@ pub async fn provision(
         control_plane_bucket: control_plane_bucket.map(str::to_string),
         wait: false,
     };
-    crate::driver::EcsDriver { aws_config: config, cluster }
-        .apply(&manifests, &opts)
-        .await
-        .context("failed to apply manifest during provision")
+    crate::driver::EcsDriver {
+        aws_config: config,
+        cluster,
+    }
+    .apply(&manifests, &opts)
+    .await
+    .context("failed to apply manifest during provision")
 }
 
 /// [`provision`], but takes an already-built [`crate::manifest::OABServiceManifest`]
@@ -310,7 +313,14 @@ pub async fn load_manifest(
             Ok(Some(manifest))
         }
         // A missing object is the "not provisioned yet" signal, not an error.
-        Err(err) if err.as_service_error().map(|e| e.is_no_such_key()).unwrap_or(false) => Ok(None),
+        Err(err)
+            if err
+                .as_service_error()
+                .map(|e| e.is_no_such_key())
+                .unwrap_or(false) =>
+        {
+            Ok(None)
+        }
         Err(err) => {
             Err(anyhow::Error::new(err).context(format!("failed to fetch stored manifest '{key}'")))
         }
@@ -338,7 +348,9 @@ pub async fn redeploy(
     let mut manifest = load_manifest(config, namespace, name, Some(&bucket))
         .await?
         .with_context(|| {
-            format!("no stored manifest for {namespace}/{name} — create the agent before redeploying")
+            format!(
+                "no stored manifest for {namespace}/{name} — create the agent before redeploying"
+            )
         })?;
 
     if let Some(img) = image.filter(|s| !s.is_empty()) {
@@ -363,9 +375,12 @@ pub async fn scale(
     name: &str,
     size: i32,
 ) -> Result<()> {
-    crate::driver::EcsDriver { aws_config: config, cluster }
-        .scale(namespace, name, size)
-        .await
+    crate::driver::EcsDriver {
+        aws_config: config,
+        cluster,
+    }
+    .scale(namespace, name, size)
+    .await
 }
 
 /// Delete a control-plane resource (currently `oabservice`).
@@ -382,9 +397,12 @@ pub async fn delete(
     control_plane_bucket: Option<&str>,
 ) -> Result<()> {
     let bucket = crate::control_plane::resolve_bucket(config, control_plane_bucket).await?;
-    crate::driver::EcsDriver { aws_config: config, cluster }
-        .delete(resource, name, namespace, &bucket)
-        .await
+    crate::driver::EcsDriver {
+        aws_config: config,
+        cluster,
+    }
+    .delete(resource, name, namespace, &bucket)
+    .await
 }
 
 #[cfg(test)]
@@ -417,7 +435,8 @@ mod tests {
     #[test]
     fn inject_pre_seed_hook_appends_to_existing_config() {
         let config = b"[agent]\nname = \"orca\"\n";
-        let out = inject_pre_seed_hook(config, "s3://bucket/artifacts/prod/orca/bundle.zip").unwrap();
+        let out =
+            inject_pre_seed_hook(config, "s3://bucket/artifacts/prod/orca/bundle.zip").unwrap();
         let text = String::from_utf8(out).unwrap();
         assert!(text.starts_with("[agent]\nname = \"orca\"\n"));
         assert!(text.contains("[hooks.pre_seed]"));
@@ -428,8 +447,10 @@ mod tests {
 
     #[test]
     fn inject_pre_seed_hook_is_a_true_noop_only_when_source_already_present() {
-        let config = b"[hooks.pre_seed]\nsources = [\"s3://bucket/artifacts/prod/orca/bundle.zip\"]\n";
-        let out = inject_pre_seed_hook(config, "s3://bucket/artifacts/prod/orca/bundle.zip").unwrap();
+        let config =
+            b"[hooks.pre_seed]\nsources = [\"s3://bucket/artifacts/prod/orca/bundle.zip\"]\n";
+        let out =
+            inject_pre_seed_hook(config, "s3://bucket/artifacts/prod/orca/bundle.zip").unwrap();
         // unchanged, byte-for-byte — this exact source is already wired, a
         // second redeploy of the same agent shouldn't touch the file at all
         assert_eq!(out, config);
@@ -442,10 +463,17 @@ mod tests {
         // bundle) used to make injection silently no-op entirely, so the new
         // bundle was never wired in at all. It must be added alongside.
         let config = b"[hooks.pre_seed]\nsources = [\"s3://other/state.zip\"]\n";
-        let out = inject_pre_seed_hook(config, "s3://bucket/artifacts/prod/orca/bundle.zip").unwrap();
+        let out =
+            inject_pre_seed_hook(config, "s3://bucket/artifacts/prod/orca/bundle.zip").unwrap();
         let text = String::from_utf8(out).unwrap();
-        assert!(text.contains("s3://other/state.zip"), "operator's own source must survive: {text}");
-        assert!(text.contains("s3://bucket/artifacts/prod/orca/bundle.zip"), "new source must be added: {text}");
+        assert!(
+            text.contains("s3://other/state.zip"),
+            "operator's own source must survive: {text}"
+        );
+        assert!(
+            text.contains("s3://bucket/artifacts/prod/orca/bundle.zip"),
+            "new source must be added: {text}"
+        );
         let reparsed: toml::Value = text.parse().expect("valid toml");
         let sources = reparsed["hooks"]["pre_seed"]["sources"].as_array().unwrap();
         assert_eq!(sources.len(), 2);
@@ -484,7 +512,8 @@ sources = ["s3://a", "s3://b", "s3://c", "s3://d", "s3://e"]
         let config = b"# a comment worth keeping\n[agent]\nname = \"orca\" # inline comment\n";
         let out = inject_pre_seed_hook(config, "s3://x/bundle.zip").unwrap();
         let text = String::from_utf8(out).unwrap();
-        assert!(text.starts_with("# a comment worth keeping\n[agent]\nname = \"orca\" # inline comment\n"));
+        assert!(text
+            .starts_with("# a comment worth keeping\n[agent]\nname = \"orca\" # inline comment\n"));
     }
 
     #[test]

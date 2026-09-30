@@ -195,7 +195,7 @@ pub fn tools() -> Vec<Tool> {
                     "chat_channel_secret": { "type": "string", "description": "LINE only." },
                     "acp_enabled": { "type": "boolean", "description": "Enable the reverse-MCP-over-ACP tunnel on this agent. Defaults to true when omitted (studio#119: Studio-deployed agents default to ACP on). Not honorable for every vendor — the caller is responsible for not setting this true for a vendor that can't support it (e.g. agy, whose bridge bypasses /acp entirely)." },
                     "acp_token": { "type": "string", "description": "Optional (studio#136), only meaningful when acp_enabled is true. The OPENAB_ACP_AUTH_KEY to use, instead of generating a random one." },
-                    "local_config_folder": { "type": "string", "description": "Optional local directory (studio#135) — when set, config.toml is written to <local_config_folder>/<name>/config.toml *before* anything touches S3. Omit to skip the local mirror entirely." },
+                    "local_config_folder": { "type": "string", "description": "Optional local directory (studio#135) — when set, config.toml is written to <local_config_folder>/<name>/config.toml *before* anything touches S3. `name` must be a single path component; path-like names (`..`, separators, absolute) are refused rather than allowed to escape the folder. Omit to skip the local mirror entirely." },
                     "provider": { "type": "string", "description": "\"aws\" (default) or \"k8s\" — which driver applies the result." },
                     "fleet": { "type": "string", "description": "AWS only. Fleet name (see fleet_config): targets the fleet's cluster and managing credential; a write to a service outside the fleet's members is refused. Overrides the cluster arg." },
                     "cluster": { "type": "string", "description": "AWS only. ECS cluster (defaults to the server's configured cluster)." },
@@ -467,7 +467,10 @@ impl OabMcp {
             let guard = self.bindings.read().unwrap();
             let binding = guard.get(name).cloned().ok_or_else(|| {
                 let known: Vec<&str> = guard.fleets.iter().map(|f| f.name.as_str()).collect();
-                anyhow::anyhow!("unknown fleet {name:?}; configured fleets: [{}]", known.join(", "))
+                anyhow::anyhow!(
+                    "unknown fleet {name:?}; configured fleets: [{}]",
+                    known.join(", ")
+                )
             })?;
             let cluster = binding.cluster.clone().ok_or_else(|| {
                 anyhow::anyhow!(
@@ -501,7 +504,10 @@ impl OabMcp {
         let guard = self.bindings.read().unwrap();
         let binding = guard.get(name).cloned().ok_or_else(|| {
             let known: Vec<&str> = guard.fleets.iter().map(|f| f.name.as_str()).collect();
-            anyhow::anyhow!("unknown fleet {name:?}; configured fleets: [{}]", known.join(", "))
+            anyhow::anyhow!(
+                "unknown fleet {name:?}; configured fleets: [{}]",
+                known.join(", ")
+            )
         })?;
         Ok(Some(binding))
     }
@@ -542,7 +548,9 @@ impl OabMcp {
                     .filter(|s| b.includes(&s.service_name, &s.name))
                     .map(|s| json!({ "name": s.name, "namespace": s.namespace, "desired": s.desired }))
                     .collect();
-                return Ok(json!({ "context": b.context, "namespace": namespace, "deployments": deployments }));
+                return Ok(
+                    json!({ "context": b.context, "namespace": namespace, "deployments": deployments }),
+                );
             }
         }
         let t = self.target(args)?;
@@ -575,7 +583,9 @@ impl OabMcp {
         if let Some(b) = self.named_fleet(args)? {
             if b.runtime == scp::FleetRuntime::K8s {
                 let namespace = b.namespace.clone().unwrap_or_else(|| "default".to_string());
-                return match scp::observe_k8s_deployment(b.context.as_deref(), &namespace, service).await? {
+                return match scp::observe_k8s_deployment(b.context.as_deref(), &namespace, service)
+                    .await?
+                {
                     Some(d) => Ok(deployment_json(&d)),
                     None => Ok(json!({ "found": false, "service": service })),
                 };
@@ -817,9 +827,18 @@ impl OabMcp {
             .and_then(Value::as_str)
             .ok_or_else(|| anyhow::anyhow!("missing required arg: image"))?;
         let input = scp::AgentWizardInput {
-            api_key: args.get("api_key").and_then(Value::as_str).map(str::to_string),
-            chat_platform: args.get("chat_platform").and_then(Value::as_str).map(str::to_string),
-            chat_bot_token: args.get("chat_bot_token").and_then(Value::as_str).map(str::to_string),
+            api_key: args
+                .get("api_key")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            chat_platform: args
+                .get("chat_platform")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            chat_bot_token: args
+                .get("chat_bot_token")
+                .and_then(Value::as_str)
+                .map(str::to_string),
             chat_channel_secret: args
                 .get("chat_channel_secret")
                 .and_then(Value::as_str)
@@ -827,8 +846,14 @@ impl OabMcp {
             // studio#119: default on when the caller doesn't say — matches
             // build_default_manifest's original hardcoded behavior before
             // studio#128 made it caller-controlled.
-            acp_enabled: args.get("acp_enabled").and_then(Value::as_bool).unwrap_or(true),
-            acp_token: args.get("acp_token").and_then(Value::as_str).map(str::to_string),
+            acp_enabled: args
+                .get("acp_enabled")
+                .and_then(Value::as_bool)
+                .unwrap_or(true),
+            acp_token: args
+                .get("acp_token")
+                .and_then(Value::as_str)
+                .map(str::to_string),
         };
         // studio#135: Brett's explicit ordering — write local first, S3
         // (via provision_agent[_k8s]'s existing upload) after. Optional:
@@ -1159,7 +1184,6 @@ impl OabMcp {
         let service_accounts = scp::list_service_accounts(context, namespace).await?;
         Ok(json!({ "service_accounts": service_accounts }))
     }
-
 
     async fn t_delete(&self, args: &Map<String, Value>) -> Result<Value> {
         let t = self.target(args)?;
