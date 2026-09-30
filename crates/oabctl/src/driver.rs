@@ -38,7 +38,11 @@ pub struct ProvisionOptions {
 #[async_trait]
 pub trait ProvisionDriver {
     /// Create-or-update the given manifests.
-    async fn apply(&self, manifests: &[OABServiceManifest], opts: &ProvisionOptions) -> Result<ApplyReport>;
+    async fn apply(
+        &self,
+        manifests: &[OABServiceManifest],
+        opts: &ProvisionOptions,
+    ) -> Result<ApplyReport>;
 
     /// Scale a single service. OAB services carry a single bot token, so
     /// `size` must be 0 (off) or 1 (on) — enforced by the implementation.
@@ -47,7 +51,13 @@ pub trait ProvisionDriver {
     /// Delete a control-plane resource (`resource` is currently always
     /// `"oabservice"`). `control_plane_bucket` is the already-resolved bucket
     /// (see `control_plane::resolve_bucket`) — the driver does not resolve it.
-    async fn delete(&self, resource: &str, name: &str, namespace: &str, control_plane_bucket: &str) -> Result<()>;
+    async fn delete(
+        &self,
+        resource: &str,
+        name: &str,
+        namespace: &str,
+        control_plane_bucket: &str,
+    ) -> Result<()>;
 }
 
 /// The ECS implementation. Every method is a thin wrapper over the existing
@@ -59,7 +69,11 @@ pub struct EcsDriver<'a> {
 
 #[async_trait]
 impl<'a> ProvisionDriver for EcsDriver<'a> {
-    async fn apply(&self, manifests: &[OABServiceManifest], opts: &ProvisionOptions) -> Result<ApplyReport> {
+    async fn apply(
+        &self,
+        manifests: &[OABServiceManifest],
+        opts: &ProvisionOptions,
+    ) -> Result<ApplyReport> {
         let mut ecs_opts = crate::apply::ApplyOptions::new(self.cluster).with_wait(opts.wait);
         if let Some(bucket) = &opts.control_plane_bucket {
             ecs_opts = ecs_opts.with_control_plane_bucket(bucket.clone());
@@ -81,7 +95,13 @@ impl<'a> ProvisionDriver for EcsDriver<'a> {
         ecsctl::scale::scale_service(&ecs, self.cluster, &service_name, size, false).await
     }
 
-    async fn delete(&self, resource: &str, name: &str, namespace: &str, control_plane_bucket: &str) -> Result<()> {
+    async fn delete(
+        &self,
+        resource: &str,
+        name: &str,
+        namespace: &str,
+        control_plane_bucket: &str,
+    ) -> Result<()> {
         crate::delete::run_with_bucket(
             self.aws_config,
             resource,
@@ -111,7 +131,9 @@ fn ecs_apply_error_to_anyhow(e: crate::apply::ApplyError) -> anyhow::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::apply::{ApplyAction, AppliedService, ApplyError, ApplyErrorKind, ApplyReport, ServiceTarget};
+    use crate::apply::{
+        AppliedService, ApplyAction, ApplyError, ApplyErrorKind, ApplyReport, ServiceTarget,
+    };
 
     #[test]
     fn ecs_apply_error_to_anyhow_preserves_downcast_and_partial_progress() {
@@ -130,7 +152,8 @@ mod tests {
             name: "mira".to_string(),
             ecs_service_name: "oab-prod-mira".to_string(),
         };
-        let source = ApplyError::reconciliation(failed.clone(), completed.clone(), anyhow::anyhow!("boom"));
+        let source =
+            ApplyError::reconciliation(failed.clone(), completed.clone(), anyhow::anyhow!("boom"));
 
         let err = ecs_apply_error_to_anyhow(source);
 

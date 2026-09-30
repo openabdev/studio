@@ -40,7 +40,7 @@
 //! mapping table) to land as its own follow-up rather than growing this PR
 //! further.
 
-use crate::apply::{ApplyAction, AppliedService, ApplyReport};
+use crate::apply::{AppliedService, ApplyAction, ApplyReport};
 use crate::driver::{ProvisionDriver, ProvisionOptions};
 use crate::manifest::{OABServiceManifest, Runtime};
 use anyhow::{Context, Result};
@@ -68,7 +68,13 @@ use std::collections::BTreeMap;
 pub fn k8s_safe_name(name: &str) -> String {
     name.to_lowercase()
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '-' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
         .collect::<String>()
         .trim_matches('-')
         .to_string()
@@ -112,7 +118,9 @@ impl K8sDriver {
     }
 }
 
-fn require_kubernetes_runtime(m: &OABServiceManifest) -> Result<&crate::manifest::KubernetesRuntime> {
+fn require_kubernetes_runtime(
+    m: &OABServiceManifest,
+) -> Result<&crate::manifest::KubernetesRuntime> {
     match &m.spec.runtime {
         Runtime::Kubernetes(rt) => Ok(rt),
         Runtime::Ecs(_) => anyhow::bail!(
@@ -230,7 +238,11 @@ fn build_deployment(m: &OABServiceManifest) -> Result<Deployment> {
         // frame, so a separate wrapper here would silently swallow the
         // parser's own detail (which scheme, which malformed part).
         Some(Err(e)) => {
-            anyhow::bail!("{e} — manifest '{}/{}'", m.metadata.namespace, m.metadata.name)
+            anyhow::bail!(
+                "{e} — manifest '{}/{}'",
+                m.metadata.namespace,
+                m.metadata.name
+            )
         }
     };
     let (command, volumes, volume_mounts) = if let Some((config_map_name, _key)) = configmap_ref {
@@ -321,7 +333,11 @@ fn build_deployment(m: &OABServiceManifest) -> Result<Deployment> {
 
 #[async_trait]
 impl ProvisionDriver for K8sDriver {
-    async fn apply(&self, manifests: &[OABServiceManifest], _opts: &ProvisionOptions) -> Result<ApplyReport> {
+    async fn apply(
+        &self,
+        manifests: &[OABServiceManifest],
+        _opts: &ProvisionOptions,
+    ) -> Result<ApplyReport> {
         let mut services = Vec::with_capacity(manifests.len());
         for m in manifests {
             let deployment = build_deployment(m)?;
@@ -351,7 +367,11 @@ impl ProvisionDriver for K8sDriver {
                 namespace: m.metadata.namespace.clone(),
                 name: m.metadata.name.clone(),
                 resource_name: name,
-                action: if existed { ApplyAction::Updated } else { ApplyAction::Created },
+                action: if existed {
+                    ApplyAction::Updated
+                } else {
+                    ApplyAction::Created
+                },
                 webhook_urls: Vec::new(),
                 warnings: Vec::new(),
             });
@@ -375,7 +395,13 @@ impl ProvisionDriver for K8sDriver {
         Ok(())
     }
 
-    async fn delete(&self, resource: &str, name: &str, namespace: &str, _control_plane_bucket: &str) -> Result<()> {
+    async fn delete(
+        &self,
+        resource: &str,
+        name: &str,
+        namespace: &str,
+        _control_plane_bucket: &str,
+    ) -> Result<()> {
         if resource != "oabservice" {
             anyhow::bail!("unknown resource type: {resource}. Use 'oabservice'");
         }
@@ -385,7 +411,9 @@ impl ProvisionDriver for K8sDriver {
             Ok(_) => Ok(()),
             // Delete is idempotent — already gone is success, not an error.
             Err(kube::Error::Api(e)) if e.code == 404 => Ok(()),
-            Err(e) => Err(e).with_context(|| format!("failed to delete k8s deployment '{dep_name}'")),
+            Err(e) => {
+                Err(e).with_context(|| format!("failed to delete k8s deployment '{dep_name}'"))
+            }
         }
     }
 }
@@ -457,12 +485,21 @@ mod tests {
         // a manifest carrying it builds identically to one without.
         let with = k8s_manifest(Some("s3://bucket/artifacts/prod/orca/"), &[]);
         let without = k8s_manifest(None, &[]);
-        assert_eq!(build_deployment(&with).unwrap(), build_deployment(&without).unwrap());
+        assert_eq!(
+            build_deployment(&with).unwrap(),
+            build_deployment(&without).unwrap()
+        );
     }
 
     #[test]
     fn build_deployment_wires_secret_key_ref() {
-        let m = k8s_manifest(None, &[("DISCORD_BOT_TOKEN", "k8s-secret://oab-orca#DISCORD_BOT_TOKEN")]);
+        let m = k8s_manifest(
+            None,
+            &[(
+                "DISCORD_BOT_TOKEN",
+                "k8s-secret://oab-orca#DISCORD_BOT_TOKEN",
+            )],
+        );
         let dep = build_deployment(&m).unwrap();
         let pod = dep.spec.unwrap().template.spec.unwrap();
         let env = pod.containers[0].env.as_ref().unwrap();
@@ -480,7 +517,13 @@ mod tests {
 
     #[test]
     fn build_deployment_rejects_non_k8s_secret_scheme() {
-        let m = k8s_manifest(None, &[("DISCORD_BOT_TOKEN", "aws-sm://oab/prod/orca#DISCORD_BOT_TOKEN")]);
+        let m = k8s_manifest(
+            None,
+            &[(
+                "DISCORD_BOT_TOKEN",
+                "aws-sm://oab/prod/orca#DISCORD_BOT_TOKEN",
+            )],
+        );
         let err = build_deployment(&m).unwrap_err();
         assert!(err.to_string().contains("k8s-secret://"));
     }
@@ -492,7 +535,10 @@ mod tests {
         let m = k8s_manifest(None, &[("DISCORD_BOT_TOKEN", "k8s-secret://oab-orca")]);
         let err = build_deployment(&m).unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("DISCORD_BOT_TOKEN"), "must name the env var: {msg}");
+        assert!(
+            msg.contains("DISCORD_BOT_TOKEN"),
+            "must name the env var: {msg}"
+        );
         assert!(msg.contains("prod/orca"), "must name the agent: {msg}");
     }
 
@@ -525,7 +571,10 @@ mod tests {
         m.spec.config_from = "k8s-configmap://orca-config".to_string(); // missing #key
         let err = build_deployment(&m).unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("k8s-configmap://"), "must name the scheme: {msg}");
+        assert!(
+            msg.contains("k8s-configmap://"),
+            "must name the scheme: {msg}"
+        );
         assert!(msg.contains("prod/orca"), "must name the agent: {msg}");
     }
 
@@ -538,7 +587,10 @@ mod tests {
 
         let pod = dep.spec.unwrap().template.spec.unwrap();
         let container = &pod.containers[0];
-        assert_eq!(container.image.as_deref(), Some("ghcr.io/openabdev/openab:latest"));
+        assert_eq!(
+            container.image.as_deref(),
+            Some("ghcr.io/openabdev/openab:latest")
+        );
         assert_eq!(
             container.command.as_deref(),
             Some(
@@ -564,15 +616,21 @@ mod tests {
     #[test]
     fn build_deployment_wires_service_account_and_node_selector() {
         let mut m = k8s_manifest(None, &[]);
-        let Runtime::Kubernetes(rt) = &mut m.spec.runtime else { unreachable!() };
+        let Runtime::Kubernetes(rt) = &mut m.spec.runtime else {
+            unreachable!()
+        };
         rt.service_account = Some("orca-sa".to_string());
-        rt.node_selector.insert("kubernetes.io/arch".to_string(), "arm64".to_string());
+        rt.node_selector
+            .insert("kubernetes.io/arch".to_string(), "arm64".to_string());
 
         let dep = build_deployment(&m).unwrap();
         let pod = dep.spec.unwrap().template.spec.unwrap();
         assert_eq!(pod.service_account_name.as_deref(), Some("orca-sa"));
         assert_eq!(
-            pod.node_selector.unwrap().get("kubernetes.io/arch").map(String::as_str),
+            pod.node_selector
+                .unwrap()
+                .get("kubernetes.io/arch")
+                .map(String::as_str),
             Some("arm64")
         );
     }
