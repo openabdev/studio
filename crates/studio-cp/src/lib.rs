@@ -12,6 +12,11 @@
 //! an MCP surface later) is a downstream client of this crate, so oabctl stays
 //! clean and upstream-contributable.
 
+// Provision/observe entry points intentionally take flat argument lists (the
+// callers are thin dispatchers passing args through); the 7-arg clippy
+// heuristic doesn't fit this API surface.
+#![allow(clippy::too_many_arguments)]
+
 pub use agent_lifecycle::AgentState;
 pub use oabctl::{EcsEvent, ServiceStatus, DEFAULT_EVENTS_LOG_GROUP};
 
@@ -123,14 +128,89 @@ pub fn build_deployment(svc: &ServiceStatus, instances: &[InstanceStatus]) -> De
 
 /// Resolve a caller's `service` selector to the matched service, accepting
 /// **either** the full ECS name (`oab-{ns}-{name}`) **or** the display short
-/// name (`{name}`). [`observe_deployment`] passes the resolved service's
-/// `service_name` straight to `instance_status` with no further transformation,
-/// so a test over this fully covers the "a short selector must query tasks by
-/// the full ECS name" guarantee.
+/// name (`{name}`). [`observe_deployment_with`] / [`observe_events_with`] pass
+/// the resolved service's `service_name` on to `instance_status` /
+/// `fetch_ecs_events` with no further transformation, so a test over this
+/// covers the "a short selector must query by the full ECS name" guarantee.
+/// A bare name that exists in several namespaces resolves to the first match —
+/// pass the full `oab-{ns}-{name}` to disambiguate.
 fn resolve_service<'a>(service: &str, services: &'a [ServiceStatus]) -> Option<&'a ServiceStatus> {
     services
         .iter()
         .find(|s| service == s.service_name || service == s.name)
+}
+
+/// The AWS reads behind the observe endpoints — one trait so a test can wire a
+/// recording client and assert the exact `service` argument crossing each
+/// ECS/CloudWatch Logs boundary (studio#29). Implemented for
+/// [`aws_config::SdkConfig`] by delegating to the real [`oabctl`] calls;
+/// production entry points pass the config straight through.
+pub trait EcsObserveReads {
+    /// [`oabctl::service_status`]
+    fn service_status<'a>(
+        &'a self,
+        cluster: &'a str,
+    ) -> impl std::future::Future<Output = anyhow::Result<Vec<ServiceStatus>>> + Send + 'a;
+    /// [`oabctl::instance_status`]
+    fn instance_status<'a>(
+        &'a self,
+        cluster: &'a str,
+        service: &'a str,
+    ) -> impl std::future::Future<Output = anyhow::Result<Vec<InstanceStatus>>> + Send + 'a;
+    /// [`oabctl::fetch_ecs_events`]
+    fn fetch_ecs_events<'a>(
+        &'a self,
+        log_group: &'a str,
+        cluster: Option<&'a str>,
+        service: Option<&'a str>,
+        since_ms: i64,
+        limit: i32,
+    ) -> impl std::future::Future<Output = anyhow::Result<Vec<EcsEvent>>> + Send + 'a;
+}
+
+impl EcsObserveReads for aws_config::SdkConfig {
+    async fn service_status(&self, cluster: &str) -> anyhow::Result<Vec<ServiceStatus>> {
+        oabctl::service_status(self, cluster).await
+    }
+    async fn instance_status(
+        &self,
+        cluster: &str,
+        service: &str,
+    ) -> anyhow::Result<Vec<InstanceStatus>> {
+        oabctl::instance_status(self, cluster, service).await
+    }
+    async fn fetch_ecs_events(
+        &self,
+        log_group: &str,
+        cluster: Option<&str>,
+        service: Option<&str>,
+        since_ms: i64,
+        limit: i32,
+    ) -> anyhow::Result<Vec<EcsEvent>> {
+        oabctl::fetch_ecs_events(self, log_group, cluster, service, since_ms, limit).await
+    }
+}
+
+/// [`observe_deployment`] with its AWS reads injected — the recording-client
+/// seam (studio#29) a test wires to capture the exact `service` argument
+/// reaching `instance_status`/`ListTasks`. Production callers use
+/// [`observe_deployment`], which binds the real [`oabctl`] reads.
+pub async fn observe_deployment_with<R: EcsObserveReads>(
+    reads: &R,
+    cluster: &str,
+    service: &str,
+) -> anyhow::Result<Option<Deployment>> {
+    let services = reads.service_status(cluster).await?;
+    let Some(svc) = resolve_service(service, &services) else {
+        return Ok(None);
+    };
+    // Query tasks by the authoritative ECS service name ECS handed back — never
+    // the caller's (possibly short) selector, and never a `format!`-rebuilt name
+    // (wrong for services that don't fit the `oab-<ns>-<name>` shape). A short
+    // name reaching `ListTasks` is exactly what surfaced as
+    // `ServiceNotFoundException`.
+    let instances = reads.instance_status(cluster, &svc.service_name).await?;
+    Ok(Some(build_deployment(svc, &instances)))
 }
 
 /// Observe one Deployment end-to-end: service-level counters + per-Instance
@@ -141,23 +221,56 @@ pub async fn observe_deployment(
     cluster: &str,
     service: &str,
 ) -> anyhow::Result<Option<Deployment>> {
-    let services = oabctl::service_status(aws_config, cluster).await?;
-    let Some(svc) = resolve_service(service, &services) else {
-        return Ok(None);
+    observe_deployment_with(aws_config, cluster, service).await
+}
+
+/// [`observe_events`] with its AWS reads injected — the same recording seam as
+/// [`observe_deployment_with`] (studio#29): a test captures the `service`
+/// filter handed to `fetch_ecs_events` and asserts it is the resolved FULL
+/// `oab-{ns}-{name}`.
+pub async fn observe_events_with<R: EcsObserveReads>(
+    reads: &R,
+    log_group: &str,
+    cluster: &str,
+    service: Option<&str>,
+    since_ms: i64,
+    limit: i32,
+) -> anyhow::Result<Vec<EcsEvent>> {
+    // The logs filter keys on the full `oab-{ns}-{name}` — resolve the caller's
+    // short-or-full selector against live services first, same discipline as
+    // observe_deployment_with.
+    let service_name = match service {
+        None => None,
+        Some(selector) => {
+            let services = reads.service_status(cluster).await?;
+            match resolve_service(selector, &services) {
+                Some(svc) => Some(svc.service_name.clone()),
+                // Already a full `oab-` name (e.g. a deleted service still in
+                // the events archive) — query it verbatim.
+                None if selector.starts_with("oab-") => Some(selector.to_string()),
+                // A bare selector matching no live service can match no event
+                // either; never forward it to the logs boundary.
+                None => return Ok(Vec::new()),
+            }
+        }
     };
-    // Query tasks by the authoritative ECS service name ECS handed back — never
-    // the caller's (possibly short) selector, and never a `format!`-rebuilt name
-    // (wrong for services that don't fit the `oab-<ns>-<name>` shape). A short
-    // name reaching `ListTasks` is exactly what surfaced as
-    // `ServiceNotFoundException`.
-    let instances = oabctl::instance_status(aws_config, cluster, &svc.service_name).await?;
-    Ok(Some(build_deployment(svc, &instances)))
+    reads
+        .fetch_ecs_events(
+            log_group,
+            Some(cluster),
+            service_name.as_deref(),
+            since_ms,
+            limit,
+        )
+        .await
 }
 
 /// Observe recent ECS control-plane **events** for the cluster (optionally one
 /// service) — the lifecycle timeline `observe_deployment` cannot show, read
-/// back from the EventBridge → CloudWatch Logs archive. Thin passthrough to
-/// oabctl; newest first. See [`oabctl::fetch_ecs_events`] for the caveat that
+/// back from the EventBridge → CloudWatch Logs archive. `service` may be the
+/// full ECS name (`oab-{namespace}-{name}`) **or** the display short name —
+/// resolved against `service_status` so the logs query always keys on the full
+/// name. Newest first. See [`oabctl::fetch_ecs_events`] for the caveat that
 /// container-health flips are not emitted by ECS.
 pub async fn observe_events(
     aws_config: &aws_config::SdkConfig,
@@ -167,7 +280,7 @@ pub async fn observe_events(
     since_ms: i64,
     limit: i32,
 ) -> anyhow::Result<Vec<EcsEvent>> {
-    oabctl::fetch_ecs_events(aws_config, log_group, Some(cluster), service, since_ms, limit).await
+    observe_events_with(aws_config, log_group, cluster, service, since_ms, limit).await
 }
 
 // ---- k8s observe (studio#146) --------------------------------------------
@@ -296,7 +409,10 @@ fn k8s_latched_verified(pod: &k8s_openapi::api::core::v1::Pod) -> bool {
 /// `instance_phase`'s ECS derivation. `lease_valid`/`accepting_work` are
 /// CP-level, not yet k8s-observable, so they default to valid/admitting —
 /// same stance `instance_phase` takes for ECS today.
-pub fn k8s_instance_phase(pod: &k8s_openapi::api::core::v1::Pod, verified_before: bool) -> AgentState {
+pub fn k8s_instance_phase(
+    pod: &k8s_openapi::api::core::v1::Pod,
+    verified_before: bool,
+) -> AgentState {
     use agent_lifecycle::k8s::{K8sDriver, K8sPod};
     use agent_lifecycle::RuntimeDriver;
 
@@ -335,7 +451,9 @@ async fn find_k8s_pods(
         .await
         .map_err(|e| anyhow::anyhow!("failed to list k8s deployments in '{namespace}': {e}"))?;
     let Some(dep) = deployments.items.into_iter().find(|d| {
-        let Some(name) = k8s_oab_name(d) else { return false };
+        let Some(name) = k8s_oab_name(d) else {
+            return false;
+        };
         service == format!("oab-{namespace}-{name}") || service == name
     }) else {
         return Ok(None);
@@ -591,13 +709,17 @@ pub async fn observe_k8s_identity(context: Option<&str>) -> anyhow::Result<Runti
     let named_context = kubeconfig.contexts.iter().find(|c| c.name == context_name);
     let ctx = named_context.and_then(|c| c.context.as_ref());
     let scope = match ctx {
-        Some(c) => format!("{}/{}", c.cluster, c.namespace.as_deref().unwrap_or("default")),
+        Some(c) => format!(
+            "{}/{}",
+            c.cluster,
+            c.namespace.as_deref().unwrap_or("default")
+        ),
         None => String::new(),
     };
 
-    let client = k8s_client_for(context)
-        .await
-        .map_err(|e| anyhow::anyhow!("failed to resolve kubeconfig context '{context_name}': {e}"))?;
+    let client = k8s_client_for(context).await.map_err(|e| {
+        anyhow::anyhow!("failed to resolve kubeconfig context '{context_name}': {e}")
+    })?;
 
     let api: Api<SelfSubjectReview> = Api::all(client);
     let review = api
@@ -868,7 +990,11 @@ pub async fn list_namespaces(context: Option<&str>) -> anyhow::Result<Vec<String
         .list(&ListParams::default())
         .await
         .map_err(|e| anyhow::anyhow!("failed to list namespaces: {e}"))?;
-    Ok(list.items.into_iter().filter_map(|ns| ns.metadata.name).collect())
+    Ok(list
+        .items
+        .into_iter()
+        .filter_map(|ns| ns.metadata.name)
+        .collect())
 }
 
 /// List service accounts in one namespace of the given kubeconfig context.
@@ -877,7 +1003,10 @@ pub async fn list_namespaces(context: Option<&str>) -> anyhow::Result<Vec<String
 /// account applies) on any error here, including an RBAC-denied `list`, so
 /// this deliberately doesn't distinguish failure reasons the way
 /// `list_aws_profiles`/`list_k8s_contexts` do.
-pub async fn list_service_accounts(context: Option<&str>, namespace: &str) -> anyhow::Result<Vec<String>> {
+pub async fn list_service_accounts(
+    context: Option<&str>,
+    namespace: &str,
+) -> anyhow::Result<Vec<String>> {
     use k8s_openapi::api::core::v1::ServiceAccount;
     use kube::api::{Api, ListParams};
 
@@ -887,7 +1016,11 @@ pub async fn list_service_accounts(context: Option<&str>, namespace: &str) -> an
         .list(&ListParams::default())
         .await
         .map_err(|e| anyhow::anyhow!("failed to list service accounts: {e}"))?;
-    Ok(list.items.into_iter().filter_map(|sa| sa.metadata.name).collect())
+    Ok(list
+        .items
+        .into_iter()
+        .filter_map(|sa| sa.metadata.name)
+        .collect())
 }
 
 // ---- Fleet → managing-credential binding (ADR: Per-Fleet managing identity) --
@@ -908,17 +1041,12 @@ pub async fn list_service_accounts(context: Option<&str>, namespace: &str) -> an
 // the existing schema, not a parallel one). `fleets-k8s.toml` is migrated into
 // `fleets.toml` once at startup — see `migrate_legacy_k8s_bindings`.
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum FleetRuntime {
+    #[default]
     Ecs,
     K8s,
-}
-
-impl Default for FleetRuntime {
-    fn default() -> Self {
-        FleetRuntime::Ecs
-    }
 }
 
 /// A declarative binding of a managed fleet to the credential/context that
@@ -1152,10 +1280,8 @@ fn role_identity(arn: &str) -> Option<(String, String)> {
     let resource = parts[5..].join(":");
     let name = if let Some(r) = resource.strip_prefix("assumed-role/") {
         r.split('/').next()?.to_string()
-    } else if let Some(r) = resource.strip_prefix("role/") {
-        r.to_string()
     } else {
-        return None;
+        resource.strip_prefix("role/")?.to_string()
     };
     Some((account, name))
 }
@@ -1422,10 +1548,7 @@ pub fn write_bindings_atomic(path: &std::path::Path, text: &str) -> anyhow::Resu
 /// Validate `text` parses as a bindings file and, if so, persist it verbatim,
 /// returning the parsed set for the caller to hot-reload. A parse error is
 /// returned **before** anything is written, so a bad edit never lands on disk.
-pub fn save_bindings_text(
-    path: &std::path::Path,
-    text: &str,
-) -> anyhow::Result<FleetBindings> {
+pub fn save_bindings_text(path: &std::path::Path, text: &str) -> anyhow::Result<FleetBindings> {
     let parsed: FleetBindings = toml::from_str(text)?;
     write_bindings_atomic(path, text)?;
     Ok(parsed)
@@ -1480,7 +1603,10 @@ pub struct ProvisionOutcome {
 /// already uploads a copy of the composed config.toml to, and the same
 /// convention `oabctl create`'s wizard uses for its own generated manifest.
 fn default_config_from_uri(bucket: &str, namespace: &str, name: &str) -> String {
-    format!("s3://{bucket}/{}/config.toml", studio_compose::artifacts_prefix(namespace, name))
+    format!(
+        "s3://{bucket}/{}/config.toml",
+        studio_compose::artifacts_prefix(namespace, name)
+    )
 }
 
 /// Stores an `OPENAB_ACP_AUTH_KEY` in Secrets Manager under the same
@@ -1501,7 +1627,9 @@ async fn provision_acp_auth_secret(
 ) -> anyhow::Result<String> {
     let sm = aws_sdk_secretsmanager::Client::new(aws_config);
     let secret_name = format!("oab/{namespace}/{name}");
-    let key = token.map(str::to_string).unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let key = token
+        .map(str::to_string)
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let secret_obj = serde_json::json!({ "OPENAB_ACP_AUTH_KEY": key });
     oabctl::create::store_secret(&sm, &secret_name, &secret_obj.to_string()).await?;
     Ok(format!("aws-sm://{secret_name}#OPENAB_ACP_AUTH_KEY"))
@@ -1532,7 +1660,8 @@ async fn build_default_manifest(
     let config_from = default_config_from_uri(bucket, namespace, name);
     let mut secrets = std::collections::HashMap::new();
     if acp_enabled {
-        let acp_auth_ref = provision_acp_auth_secret(aws_config, namespace, name, acp_token).await?;
+        let acp_auth_ref =
+            provision_acp_auth_secret(aws_config, namespace, name, acp_token).await?;
         secrets.insert("OPENAB_ACP_AUTH_KEY".to_string(), acp_auth_ref);
     }
     Ok(oabctl::manifest::OABServiceManifest {
@@ -1648,10 +1777,19 @@ pub async fn provision_from_library(
             // (compose-library) path; the caller-controlled toggle is
             // studio#128's wizard-only `provision_agent`.
             let mut manifest =
-                build_default_manifest(aws_config, namespace, name, &image, &bucket, true, None).await?;
-            manifest.spec.bundle_from = Some(oabctl::studio_api::bundle_from_uri(&bucket, namespace, name));
-            oabctl::studio_api::provision_manifest(aws_config, cluster, &manifest, &objects, Some(&bucket))
-                .await?
+                build_default_manifest(aws_config, namespace, name, &image, &bucket, true, None)
+                    .await?;
+            manifest.spec.bundle_from = Some(oabctl::studio_api::bundle_from_uri(
+                &bucket, namespace, name,
+            ));
+            oabctl::studio_api::provision_manifest(
+                aws_config,
+                cluster,
+                &manifest,
+                &objects,
+                Some(&bucket),
+            )
+            .await?
         }
     };
 
@@ -1725,17 +1863,26 @@ async fn provision_agent_secrets(
 ) -> anyhow::Result<()> {
     let mut obj = serde_json::Map::new();
     if let Some(key) = &input.api_key {
-        obj.insert("VENDOR_API_KEY".to_string(), serde_json::Value::String(key.clone()));
+        obj.insert(
+            "VENDOR_API_KEY".to_string(),
+            serde_json::Value::String(key.clone()),
+        );
     }
     match input.chat_platform.as_deref() {
         Some("discord") => {
             if let Some(t) = &input.chat_bot_token {
-                obj.insert("DISCORD_BOT_TOKEN".to_string(), serde_json::Value::String(t.clone()));
+                obj.insert(
+                    "DISCORD_BOT_TOKEN".to_string(),
+                    serde_json::Value::String(t.clone()),
+                );
             }
         }
         Some("telegram") => {
             if let Some(t) = &input.chat_bot_token {
-                obj.insert("TELEGRAM_BOT_TOKEN".to_string(), serde_json::Value::String(t.clone()));
+                obj.insert(
+                    "TELEGRAM_BOT_TOKEN".to_string(),
+                    serde_json::Value::String(t.clone()),
+                );
             }
         }
         Some("line") => {
@@ -1746,7 +1893,10 @@ async fn provision_agent_secrets(
                 );
             }
             if let Some(s) = &input.chat_channel_secret {
-                obj.insert("LINE_CHANNEL_SECRET".to_string(), serde_json::Value::String(s.clone()));
+                obj.insert(
+                    "LINE_CHANNEL_SECRET".to_string(),
+                    serde_json::Value::String(s.clone()),
+                );
             }
         }
         _ => {}
@@ -1756,7 +1906,12 @@ async fn provision_agent_secrets(
     }
     let sm = aws_sdk_secretsmanager::Client::new(aws_config);
     let secret_name = format!("oab/{namespace}/{name}");
-    oabctl::create::store_secret(&sm, &secret_name, &serde_json::Value::Object(obj).to_string()).await?;
+    oabctl::create::store_secret(
+        &sm,
+        &secret_name,
+        &serde_json::Value::Object(obj).to_string(),
+    )
+    .await?;
     Ok(())
 }
 
@@ -2012,9 +2167,17 @@ pub async fn provision_agent(
                 input.acp_token.as_deref(),
             )
             .await?;
-            manifest.spec.bundle_from = Some(oabctl::studio_api::bundle_from_uri(&bucket, namespace, name));
-            oabctl::studio_api::provision_manifest(aws_config, cluster, &manifest, &objects, Some(&bucket))
-                .await?
+            manifest.spec.bundle_from = Some(oabctl::studio_api::bundle_from_uri(
+                &bucket, namespace, name,
+            ));
+            oabctl::studio_api::provision_manifest(
+                aws_config,
+                cluster,
+                &manifest,
+                &objects,
+                Some(&bucket),
+            )
+            .await?
         }
     };
 
@@ -2093,7 +2256,8 @@ pub async fn provision_agent_k8s(
     // bundle.zip + `hooks.pre_seed` carrier the AWS path uses. A k8s deploy
     // now never touches S3, and the pod itself never needs AWS credentials
     // just to boot.
-    let config_from = provision_config_k8s_configmap(context, namespace, name, &config_toml).await?;
+    let config_from =
+        provision_config_k8s_configmap(context, namespace, name, &config_toml).await?;
 
     // Content-address of what's actually being applied — reuses
     // `studio_compose::Bundle::digest()`'s tested hashing rather than
@@ -2125,7 +2289,10 @@ pub async fn provision_agent_k8s(
     .await?;
 
     let driver = oabctl::K8sDriver::from_context(context).await?;
-    let opts = oabctl::ProvisionOptions { control_plane_bucket: None, wait: false };
+    let opts = oabctl::ProvisionOptions {
+        control_plane_bucket: None,
+        wait: false,
+    };
     let report = {
         use oabctl::ProvisionDriver;
         driver.apply(std::slice::from_ref(&manifest), &opts).await?
@@ -2181,7 +2348,9 @@ async fn provision_acp_auth_k8s_secret(
 
     let client = k8s_client_for(context).await?;
     let secret_name = format!("{}-acp", oabctl::k8s_safe_name(name));
-    let key = token.map(str::to_string).unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let key = token
+        .map(str::to_string)
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let mut string_data = std::collections::BTreeMap::new();
     string_data.insert("OPENAB_ACP_AUTH_KEY".to_string(), key);
     let secret = Secret {
@@ -2194,9 +2363,13 @@ async fn provision_acp_auth_k8s_secret(
         ..Default::default()
     };
     let api: Api<Secret> = Api::namespaced(client, namespace);
-    api.patch(&secret_name, &PatchParams::apply("studio-cp"), &Patch::Apply(&secret))
-        .await
-        .map_err(|e| anyhow::anyhow!("failed to create/apply k8s Secret '{secret_name}': {e}"))?;
+    api.patch(
+        &secret_name,
+        &PatchParams::apply("studio-cp"),
+        &Patch::Apply(&secret),
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("failed to create/apply k8s Secret '{secret_name}': {e}"))?;
     Ok(format!("k8s-secret://{secret_name}#OPENAB_ACP_AUTH_KEY"))
 }
 
@@ -2222,9 +2395,13 @@ async fn ensure_namespace_k8s(context: Option<&str>, namespace: &str) -> anyhow:
         ..Default::default()
     };
     let api: Api<Namespace> = Api::all(client);
-    api.patch(namespace, &PatchParams::apply("studio-cp"), &Patch::Apply(&ns))
-        .await
-        .map_err(|e| anyhow::anyhow!("failed to create/apply k8s namespace '{namespace}': {e}"))?;
+    api.patch(
+        namespace,
+        &PatchParams::apply("studio-cp"),
+        &Patch::Apply(&ns),
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("failed to create/apply k8s namespace '{namespace}': {e}"))?;
     Ok(())
 }
 
@@ -2266,9 +2443,15 @@ async fn provision_config_k8s_configmap(
         ..Default::default()
     };
     let api: Api<ConfigMap> = Api::namespaced(client, namespace);
-    api.patch(&config_map_name, &PatchParams::apply("studio-cp"), &Patch::Apply(&config_map))
-        .await
-        .map_err(|e| anyhow::anyhow!("failed to create/apply k8s ConfigMap '{config_map_name}': {e}"))?;
+    api.patch(
+        &config_map_name,
+        &PatchParams::apply("studio-cp"),
+        &Patch::Apply(&config_map),
+    )
+    .await
+    .map_err(|e| {
+        anyhow::anyhow!("failed to create/apply k8s ConfigMap '{config_map_name}': {e}")
+    })?;
     Ok(format!("k8s-configmap://{config_map_name}#config.toml"))
 }
 
@@ -2297,7 +2480,8 @@ async fn build_default_k8s_manifest(
 ) -> anyhow::Result<oabctl::manifest::OABServiceManifest> {
     let mut secrets = std::collections::HashMap::new();
     if acp_enabled {
-        let acp_auth_ref = provision_acp_auth_k8s_secret(context, namespace, name, acp_token).await?;
+        let acp_auth_ref =
+            provision_acp_auth_k8s_secret(context, namespace, name, acp_token).await?;
         secrets.insert("OPENAB_ACP_AUTH_KEY".to_string(), acp_auth_ref);
     }
     Ok(oabctl::manifest::OABServiceManifest {
@@ -2417,10 +2601,13 @@ pub async fn provision_from_library_k8s(
             .await?
         }
     };
-    manifest.spec.bundle_from = Some(oabctl::studio_api::bundle_from_uri(&bucket, namespace, name));
+    manifest.spec.bundle_from = Some(oabctl::studio_api::bundle_from_uri(
+        &bucket, namespace, name,
+    ));
 
     let report =
-        oabctl::studio_api::provision_k8s(aws_config, context, &manifest, &objects, Some(&bucket)).await?;
+        oabctl::studio_api::provision_k8s(aws_config, context, &manifest, &objects, Some(&bucket))
+            .await?;
 
     Ok(ProvisionOutcome {
         image,
@@ -2461,7 +2648,10 @@ pub async fn scale_k8s_deployment(
     size: i32,
 ) -> anyhow::Result<()> {
     use oabctl::ProvisionDriver;
-    oabctl::K8sDriver::from_context(context).await?.scale(namespace, name, size).await
+    oabctl::K8sDriver::from_context(context)
+        .await?
+        .scale(namespace, name, size)
+        .await
 }
 
 /// Delete a control-plane resource (e.g. an `OABService`).
@@ -2697,7 +2887,8 @@ members = ["oab-prod-mira"]
         assert_eq!(b.get("mira").unwrap().cluster.as_deref(), Some("oab"));
         // membership routing
         assert_eq!(
-            b.fleet_for_service("oab-prod-mira").map(|f| f.name.as_str()),
+            b.fleet_for_service("oab-prod-mira")
+                .map(|f| f.name.as_str()),
             Some("mira")
         );
         assert!(b.fleet_for_service("oab-prod-nope").is_none());
@@ -2732,7 +2923,10 @@ members = ["oab-prod-mira"]
 
     #[test]
     fn empty_config_and_no_fleet_key_parse_to_empty() {
-        assert!(toml::from_str::<FleetBindings>("").unwrap().fleets.is_empty());
+        assert!(toml::from_str::<FleetBindings>("")
+            .unwrap()
+            .fleets
+            .is_empty());
         assert!(toml::from_str::<FleetBindings>("# just a comment\n")
             .unwrap()
             .fleets
@@ -2781,10 +2975,16 @@ namespace = "prod"
 "#;
         let b: FleetBindings = toml::from_str(doc).expect("parse");
         assert_eq!(
-            b.get("dev").expect("dev fleet").expected_principal.as_deref(),
+            b.get("dev")
+                .expect("dev fleet")
+                .expected_principal
+                .as_deref(),
             Some("system:serviceaccount:dev:oab-agent")
         );
-        assert_eq!(b.get("unset").expect("unset fleet").expected_principal, None);
+        assert_eq!(
+            b.get("unset").expect("unset fleet").expected_principal,
+            None
+        );
     }
 
     #[test]
@@ -2799,7 +2999,10 @@ namespace = "prod"
 
     #[test]
     fn normalize_bindings_runtime_field_inserts_ecs_for_named_fleets() {
-        let dir = std::env::temp_dir().join(format!("oab-normalize-runtime-named-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "oab-normalize-runtime-named-{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("fleets.toml");
@@ -2829,7 +3032,10 @@ namespace = "prod"
 
     #[test]
     fn normalize_bindings_runtime_field_inserts_ecs_for_legacy_array_fleets() {
-        let dir = std::env::temp_dir().join(format!("oab-normalize-runtime-legacy-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "oab-normalize-runtime-legacy-{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("fleets.toml");
@@ -2873,17 +3079,19 @@ namespace = "prod"
         )
         .unwrap();
 
-        let migrated =
-            migrate_legacy_k8s_bindings_at(&legacy_path, &fleets_path).expect("migrate");
+        let migrated = migrate_legacy_k8s_bindings_at(&legacy_path, &fleets_path).expect("migrate");
 
         assert!(migrated);
         assert!(!legacy_path.exists(), "legacy file should be renamed away");
         assert!(dir.join("fleets-k8s.toml.migrated").exists());
 
         let merged_text = std::fs::read_to_string(&fleets_path).unwrap();
-        let merged: FleetBindings = toml::from_str(&merged_text).expect("merged fleets.toml still parses");
+        let merged: FleetBindings =
+            toml::from_str(&merged_text).expect("merged fleets.toml still parses");
         assert_eq!(merged.fleets.len(), 3);
-        let heph = merged.get("hephaestus").expect("migrated k8s fleet present");
+        let heph = merged
+            .get("hephaestus")
+            .expect("migrated k8s fleet present");
         assert_eq!(heph.runtime, FleetRuntime::K8s);
         assert_eq!(heph.context.as_deref(), Some("orbstack"));
         assert_eq!(heph.namespace.as_deref(), Some("openab-studio"));
@@ -2916,7 +3124,10 @@ namespace = "prod"
         let text = "# my fleets\n\n[[fleet]]\nname = \"prod\"\nruntime = \"ecs\"\ncluster = \"oab\"\nprofile = \"orca-prod\"\n";
         let parsed = save_bindings_text(&path, text).expect("save");
         assert_eq!(parsed.fleets.len(), 1);
-        assert_eq!(parsed.for_cluster("oab").unwrap().profile.as_deref(), Some("orca-prod"));
+        assert_eq!(
+            parsed.for_cluster("oab").unwrap().profile.as_deref(),
+            Some("orca-prod")
+        );
         // written verbatim — comment and layout preserved exactly
         assert_eq!(read_bindings_text(&path).unwrap(), text);
         let _ = std::fs::remove_dir_all(&dir);
@@ -2968,7 +3179,10 @@ namespace = "prod"
         // studio_compose::Bundle::ZIP_FILENAME can't share a dependency edge
         // to enforce this with one constant (see provision_from_library) —
         // this is the cross-crate seam that catches drift instead.
-        assert_eq!(oabctl::studio_api::BUNDLE_ZIP_FILENAME, studio_compose::Bundle::ZIP_FILENAME);
+        assert_eq!(
+            oabctl::studio_api::BUNDLE_ZIP_FILENAME,
+            studio_compose::Bundle::ZIP_FILENAME
+        );
     }
 
     #[test]
@@ -3051,7 +3265,10 @@ aws_access_key_id = AKIA...
     fn k8s_service_account_from_principal_none_for_plain_username() {
         // A plain username (not a service account) or unset both mean "use
         // the namespace's default service account" — not an error.
-        assert_eq!(k8s_service_account_from_principal(Some("brett.chien")), None);
+        assert_eq!(
+            k8s_service_account_from_principal(Some("brett.chien")),
+            None
+        );
         assert_eq!(k8s_service_account_from_principal(None), None);
     }
 
@@ -3144,7 +3361,10 @@ aws_access_key_id = AKIA...
             &wizard_input(true, None),
         )
         .unwrap_err();
-        assert!(err.to_string().contains("predates /acp gateway support"), "{err}");
+        assert!(
+            err.to_string().contains("predates /acp gateway support"),
+            "{err}"
+        );
     }
 
     #[test]
@@ -3168,7 +3388,10 @@ aws_access_key_id = AKIA...
 
     #[test]
     fn acp_compat_check_lets_a_custom_image_through_unverified() {
-        check_acp_image_compat("my-registry.example.com/custom:latest", &wizard_input(true, None))
-            .expect("not an openab release tag — can't verify, don't block");
+        check_acp_image_compat(
+            "my-registry.example.com/custom:latest",
+            &wizard_input(true, None),
+        )
+        .expect("not an openab release tag — can't verify, don't block");
     }
 }

@@ -43,15 +43,11 @@ pub struct EcsEvent {
     pub reason: Option<String>,
 }
 
-/// Reduce a service reference to its bare agent name for comparison:
-/// `oab-{ns}-{name}` → `{name}` (name may itself contain dashes); a bare name
-/// passes through unchanged.
-fn normalize_service(s: &str) -> String {
-    match s.strip_prefix("oab-") {
-        // "prod-mira" → "mira"; "prod-foo-bar" → "foo-bar" (name keeps dashes)
-        Some(rest) => rest.split_once('-').map_or(rest, |(_, name)| name).to_string(),
-        None => s.to_string(),
-    }
+/// An event matches a `service` filter only on the FULL `oab-{ns}-{name}` —
+/// never a normalized bare name, which would cross-match same-named services
+/// in other namespaces (`oab-prod-mira` vs `oab-dev-mira`).
+fn matches_service_filter(ev: &EcsEvent, want: &str) -> bool {
+    ev.service.as_deref() == Some(want)
 }
 
 /// Parse one CloudWatch Logs message (an EventBridge event envelope, JSON) into
@@ -113,8 +109,12 @@ pub fn parse_event(message: &str) -> Option<EcsEvent> {
 /// - `cluster`: when `Some`, keep only events whose `clusterArn` ends in
 ///   `/{cluster}` (defensive — the archiving rule is expected to be
 ///   cluster-scoped already).
-/// - `service`: when `Some`, keep only events for that OAB service (accepts
-///   `oab-{ns}-{name}` or the bare agent name).
+/// - `service`: when `Some`, keep only events for that OAB service. Must be
+///   the full ECS service name (`oab-{ns}-{name}`) — the same discipline
+///   [`crate::instance_status`] enforces for `ListTasks`: a bare agent name
+///   would cross-match same-named services in other namespaces, so it is
+///   refused loudly. `studio_cp::observe_events` resolves a caller's
+///   short-or-full selector against `service_status` before reaching here.
 /// - `since_ms`: CloudWatch time-window start (epoch millis).
 /// - `limit`: max events returned (clamped to `1..=1000`).
 pub async fn fetch_ecs_events(
@@ -125,6 +125,15 @@ pub async fn fetch_ecs_events(
     since_ms: i64,
     limit: i32,
 ) -> Result<Vec<EcsEvent>> {
+    // Fail loud at the boundary so the mistake is unambiguous — a short name
+    // would silently match the wrong namespace's events rather than erroring.
+    if let Some(s) = service.filter(|s| !s.starts_with("oab-")) {
+        anyhow::bail!(
+            "fetch_ecs_events: expected full ECS service name `oab-<ns>-<name>`, got `{s}` \
+             — resolve short/display selectors via service_status first"
+        );
+    }
+
     let logs = aws_sdk_cloudwatchlogs::Client::new(aws_config);
     let limit = limit.clamp(1, 1000);
 
@@ -159,10 +168,11 @@ pub async fn fetch_ecs_events(
     // Newest first.
     raw.sort_by_key(|(ts, _)| std::cmp::Reverse(*ts));
 
-    let want_service = service.map(normalize_service);
     let mut out = Vec::new();
     for (_, msg) in raw {
-        let Some(ev) = parse_event(&msg) else { continue };
+        let Some(ev) = parse_event(&msg) else {
+            continue;
+        };
         if let Some(c) = cluster {
             match &ev.cluster_arn {
                 Some(arn) if arn.ends_with(&format!("/{c}")) => {}
@@ -171,11 +181,8 @@ pub async fn fetch_ecs_events(
                 _ => continue,
             }
         }
-        if let Some(ws) = &want_service {
-            match &ev.service {
-                Some(s) if &normalize_service(s) == ws => {}
-                _ => continue,
-            }
+        if service.is_some_and(|want| !matches_service_filter(&ev, want)) {
+            continue;
         }
         out.push(ev);
         if out.len() as i32 >= limit {
@@ -190,10 +197,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn normalize_strips_oab_namespace_prefix() {
-        assert_eq!(normalize_service("oab-prod-mira"), "mira");
-        assert_eq!(normalize_service("oab-prod-foo-bar"), "foo-bar");
-        assert_eq!(normalize_service("mira"), "mira");
+    fn service_filter_matches_full_ecs_name_only() {
+        let msg = r#"{
+            "source": "aws.ecs",
+            "detail-type": "ECS Task State Change",
+            "time": "2026-08-11T04:42:00Z",
+            "detail": {
+                "clusterArn": "arn:aws:ecs:ap-east-2:504190915686:cluster/oab",
+                "group": "service:oab-prod-mira",
+                "lastStatus": "RUNNING"
+            }
+        }"#;
+        let ev = parse_event(msg).expect("parses");
+        assert!(matches_service_filter(&ev, "oab-prod-mira"));
+        // Never a normalized bare name — oab-dev-mira shares `mira` and must
+        // not leak into a prod-scoped query (studio#29).
+        assert!(!matches_service_filter(&ev, "oab-dev-mira"));
+        assert!(!matches_service_filter(&ev, "mira"));
     }
 
     #[test]
