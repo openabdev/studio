@@ -107,7 +107,11 @@
                 </label>
                 <label
                   >Credential profile
-                  <input id="deploy-profile" class="compose-input" type="text" placeholder="e.g. oab-fleet" spellcheck="false" />
+                  <select id="deploy-profile" class="compose-select"></select>
+                </label>
+                <label id="deploy-profile-custom-wrap" hidden
+                  >Profile name
+                  <input id="deploy-profile-custom" class="compose-input" type="text" placeholder="e.g. oab-fleet" spellcheck="false" />
                 </label>
                 <label
                   >Principal (optional)
@@ -118,6 +122,10 @@
                 <label
                   >Context
                   <select id="deploy-k8s-context" class="compose-select"></select>
+                </label>
+                <label id="deploy-k8s-context-custom-wrap" hidden
+                  >Context name
+                  <input id="deploy-k8s-context-custom" class="compose-input" type="text" placeholder="e.g. orbstack / kind-kind" spellcheck="false" />
                 </label>
                 <label
                   >Namespace

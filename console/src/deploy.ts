@@ -42,25 +42,164 @@ function localConfigFolder(): string | undefined {
   }
 }
 
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
+// list_aws_profiles / list_k8s_contexts / list_namespaces response shapes
+// (oab-mcp, studio#104) — kept minimal (just what this panel reads), not the
+// tools' full contract.
+export interface AwsProfilesResponse {
+  profiles: { name: string; region: string | null }[];
+  // `exists`/`error` drive the spec's failure tiers: missing/empty config →
+  // actionable guidance; a file that exists but can't be read → raw error.
+  exists: boolean;
+  error: string | null;
 }
-
-// list_k8s_contexts / list_namespaces response shapes (oab-mcp, studio#104) —
-// kept minimal (just what this panel reads), not the tools' full contract.
-interface K8sContextsResponse {
+export interface K8sContextsResponse {
   contexts: { name: string }[];
   current_context: string | null;
+  exists: boolean;
+  error: string | null;
 }
-interface K8sNamespacesResponse {
+export interface K8sNamespacesResponse {
   namespaces: string[];
 }
 interface K8sServiceAccountsResponse {
   service_accounts: string[];
+}
+
+// What a tool-backed enumeration <select> resolves to: the options to offer
+// plus, when enumeration degraded, the single status line to show. studio#104's
+// failure tiers: missing/empty config → actionable guidance (`err: false`);
+// call/read failure → the raw error (`err: true`). The manual-entry sentinel
+// stays in `options` either way — the wizard is never blocked by enumeration.
+export interface EnumFieldResult {
+  options: { value: string; label: string }[];
+  status: { text: string; err: boolean } | null;
+}
+
+// Manual-entry sentinel values for the AWS-profile / k8s-context selects —
+// picking one reveals the field's plain text input (the image tag field's
+// "Custom…" / namespace's "+ Create new…" pattern).
+export const PROFILE_MANUAL = "__manual__";
+export const CONTEXT_MANUAL = "__manual__";
+export const NAMESPACE_NEW = "__new__";
+
+// `list_aws_profiles` → the Credential profile select's options + status.
+// `null`/`err` is the tool call itself failing (sidecar down, core not
+// started) — same "raw error, manual fallback" tier as `res.error`.
+export function awsProfileField(
+  res: AwsProfilesResponse | null,
+  err?: unknown,
+): EnumFieldResult {
+  const manual = { value: PROFILE_MANUAL, label: "+ Enter a profile name…" };
+  const defaultChain = { value: "", label: "— default credential chain —" };
+  if (res === null) {
+    return {
+      options: [defaultChain, manual],
+      status: { text: `aws profile list unavailable: ${errText(err)}`, err: true },
+    };
+  }
+  if (res.error) {
+    return {
+      options: [defaultChain, manual],
+      status: { text: `aws profile list unavailable: ${res.error}`, err: true },
+    };
+  }
+  if (!res.exists || res.profiles.length === 0) {
+    return {
+      options: [defaultChain, manual],
+      status: {
+        text: "no AWS credential profiles found — run `aws configure` or `aws sso login`, or enter a profile name manually",
+        err: false,
+      },
+    };
+  }
+  return {
+    options: [
+      defaultChain,
+      ...res.profiles.map((p) => ({
+        value: p.name,
+        label: p.region ? `${p.name} (${p.region})` : p.name,
+      })),
+      manual,
+    ],
+    status: null,
+  };
+}
+
+// `list_k8s_contexts` → the Context select's options + status. Same three
+// tiers as the AWS profile field.
+export function k8sContextField(
+  res: K8sContextsResponse | null,
+  err?: unknown,
+): EnumFieldResult {
+  const manual = { value: CONTEXT_MANUAL, label: "+ Enter a context name…" };
+  const ambient = { value: "", label: "— kubeconfig current-context —" };
+  if (res === null) {
+    return {
+      options: [ambient, manual],
+      status: { text: `k8s context list unavailable: ${errText(err)}`, err: true },
+    };
+  }
+  if (res.error) {
+    return {
+      options: [ambient, manual],
+      status: { text: `k8s context list unavailable: ${res.error}`, err: true },
+    };
+  }
+  if (!res.exists || res.contexts.length === 0) {
+    return {
+      options: [ambient, manual],
+      status: {
+        text: "no kubeconfig found — install OrbStack/kind/minikube for a local cluster, or merge your cloud vendor's kubeconfig into ~/.kube/config; you can also enter a context name manually",
+        err: false,
+      },
+    };
+  }
+  return {
+    options: [
+      ambient,
+      ...res.contexts.map((c) => ({
+        value: c.name,
+        label: c.name === res.current_context ? `${c.name} (current)` : c.name,
+      })),
+      manual,
+    ],
+    status: null,
+  };
+}
+
+// `list_namespaces` → the Namespace select's options + status. On failure the
+// "+ Create new namespace…" sentinel must survive — losing it blocks the
+// wizard's only not-yet-existing-namespace path (studio#104).
+export function k8sNamespaceField(
+  res: K8sNamespacesResponse | null,
+  err?: unknown,
+): EnumFieldResult {
+  const placeholder = { value: "", label: "— pick a namespace —" };
+  const createNew = { value: NAMESPACE_NEW, label: "+ Create new namespace…" };
+  if (res === null) {
+    return {
+      options: [placeholder, createNew],
+      status: { text: `namespace list unavailable: ${errText(err)}`, err: true },
+    };
+  }
+  return {
+    options: [
+      placeholder,
+      ...res.namespaces.map((n) => ({ value: n, label: n })),
+      createNew,
+    ],
+    status: null,
+  };
+}
+
+// `list_service_accounts` → the Service account select's options. No status:
+// per #104's design any failure here (including an RBAC-denied list) means
+// "leave it unset" — the namespace's `default` service account applies.
+export function k8sServiceAccountOptions(
+  accounts: string[] | null,
+): { value: string; label: string }[] {
+  const fallback = { value: "", label: "— namespace default —" };
+  return [fallback, ...(accounts ?? []).map((sa) => ({ value: sa, label: sa }))];
 }
 interface VendorImageTagsResponse {
   beta: string | null;
@@ -149,10 +288,17 @@ export function initDeployPanel(deps: DeployPanelDeps): DeployPanelHandle | null
   const providerSel = document.getElementById("deploy-provider") as HTMLSelectElement | null;
   const awsFieldsEl = document.getElementById("deploy-aws-fields");
   const regionInput = document.getElementById("deploy-region") as HTMLInputElement | null;
-  const profileInput = document.getElementById("deploy-profile") as HTMLInputElement | null;
+  // Credential profile is a <select> fed by `list_aws_profiles` (studio#104),
+  // with a "+ Enter a profile name…" sentinel revealing a plain text input —
+  // the manual-entry fallback for when enumeration is empty/failed.
+  const profileSel = document.getElementById("deploy-profile") as HTMLSelectElement | null;
+  const profileCustomWrap = document.getElementById("deploy-profile-custom-wrap");
+  const profileCustomInput = document.getElementById("deploy-profile-custom") as HTMLInputElement | null;
   const principalInput = document.getElementById("deploy-principal") as HTMLInputElement | null;
   const k8sFieldsEl = document.getElementById("deploy-k8s-fields");
   const k8sContextSel = document.getElementById("deploy-k8s-context") as HTMLSelectElement | null;
+  const k8sContextCustomWrap = document.getElementById("deploy-k8s-context-custom-wrap");
+  const k8sContextCustomInput = document.getElementById("deploy-k8s-context-custom") as HTMLInputElement | null;
   // Namespace is a <select> of what already exists, plus a sentinel
   // "+ Create new namespace…" option (studio#119 — the original free-text
   // <input>+<datalist> didn't read as "selectable" per Brett) that reveals a
@@ -161,7 +307,7 @@ export function initDeployPanel(deps: DeployPanelDeps): DeployPanelHandle | null
   const k8sNamespaceSel = document.getElementById("deploy-k8s-namespace") as HTMLSelectElement | null;
   const k8sNamespaceNewWrap = document.getElementById("deploy-k8s-namespace-new-wrap");
   const k8sNamespaceNewInput = document.getElementById("deploy-k8s-namespace-new") as HTMLInputElement | null;
-  const NAMESPACE_NEW_SENTINEL = "__new__";
+  const NAMESPACE_NEW_SENTINEL = NAMESPACE_NEW;
   // Service account, unlike namespace, must already exist for k8s to accept
   // it as a pod's serviceAccountName — so (unlike namespace) a plain <select>
   // is the right shape here, no free-text escape hatch needed.
@@ -200,10 +346,14 @@ export function initDeployPanel(deps: DeployPanelDeps): DeployPanelHandle | null
     !providerSel ||
     !awsFieldsEl ||
     !regionInput ||
-    !profileInput ||
+    !profileSel ||
+    !profileCustomWrap ||
+    !profileCustomInput ||
     !principalInput ||
     !k8sFieldsEl ||
     !k8sContextSel ||
+    !k8sContextCustomWrap ||
+    !k8sContextCustomInput ||
     !k8sNamespaceSel ||
     !k8sNamespaceNewWrap ||
     !k8sNamespaceNewInput ||
@@ -358,12 +508,21 @@ export function initDeployPanel(deps: DeployPanelDeps): DeployPanelHandle | null
     // `selected` default ("aws"), but doesn't touch the field-group `hidden`
     // attributes this panel manages by hand — sync those too.
     showProviderFields(providerSel.value);
+    applyProfileMode();
+    applyContextMode();
     applyNamespaceMode();
     applyChatPlatformMode();
     applyVendorMode();
     agentNameInput.value = randomGreekName();
     updateNamePreview();
     void loadVendorImage();
+    // studio#104: enumeration loads fire on open (new-fleet only — the
+    // "add-instance" mode never shows this step) so the provider-specific
+    // fields are already populated by the time the operator reaches them.
+    if (mode?.kind === "new-fleet") {
+      if (providerSel.value === "k8s") void loadK8sContexts();
+      else void loadAwsProfiles();
+    }
   };
 
   // studio#119: the namespace <select>'s "+ Create new namespace…" sentinel
@@ -395,7 +554,7 @@ export function initDeployPanel(deps: DeployPanelDeps): DeployPanelHandle | null
       const namespace = currentNamespace() || "default";
       const serviceAccount = k8sServiceAccountSel.value;
       return {
-        context: k8sContextSel.value || undefined,
+        context: currentContext(),
         namespace,
         expectedPrincipal: serviceAccount ? `system:serviceaccount:${namespace}:${serviceAccount}` : undefined,
       };
@@ -421,45 +580,122 @@ export function initDeployPanel(deps: DeployPanelDeps): DeployPanelHandle | null
     agentNamePreviewEl.textContent = `→ recorded in fleets.toml as oab-${namespace}-${name}`;
   };
 
-  // Toggle the AWS/k8s field groups per studio#104's design: switching
-  // providers resets which group is visible; field *values* aren't cleared
-  // here (identityForm.reset() already did that on open/close) since the
-  // two groups have no overlapping semantics to accidentally carry over.
+  // Toggle the AWS/k8s field groups per studio#104's design. On a provider
+  // switch the *departing* group's fields are reset (see the provider change
+  // handler below) — field semantics don't map across providers.
   const showProviderFields = (provider: string): void => {
     awsFieldsEl.hidden = provider !== "aws";
     k8sFieldsEl.hidden = provider !== "k8s";
   };
 
+  // Rebuild a <select>'s options from a pure option list, restoring the
+  // previous selection when it's still offered (element-by-element, not
+  // innerHTML — enumerated values come back over MCP and never reach the DOM
+  // as markup).
+  const setSelectOptions = (sel: HTMLSelectElement, opts: { value: string; label: string }[]): void => {
+    const previous = sel.value;
+    sel.innerHTML = "";
+    for (const o of opts) {
+      const el = document.createElement("option");
+      el.value = o.value;
+      el.textContent = o.label;
+      sel.appendChild(el);
+    }
+    if (previous && opts.some((o) => o.value === previous)) sel.value = previous;
+  };
+
+  // Apply an EnumFieldResult to a select + the shared identity status line:
+  // degraded enumerations show their guidance/raw error; a clean one clears
+  // whatever a previous failed attempt left behind (studio#119's staleness
+  // rule — an error must not outlive the state it described).
+  const applyEnumField = (sel: HTMLSelectElement, field: EnumFieldResult): void => {
+    setSelectOptions(sel, field.options);
+    if (field.status) setStatus(identityStatusEl, field.status.text, field.status.err ? "err" : "");
+    else setStatus(identityStatusEl, "");
+  };
+
+  const applyProfileMode = (): void => {
+    const isManual = profileSel.value === PROFILE_MANUAL;
+    profileCustomWrap.hidden = !isManual;
+    if (isManual) profileCustomInput.focus();
+    else profileCustomInput.value = "";
+  };
+
+  const applyContextMode = (): void => {
+    const isManual = k8sContextSel.value === CONTEXT_MANUAL;
+    k8sContextCustomWrap.hidden = !isManual;
+    if (isManual) k8sContextCustomInput.focus();
+    else k8sContextCustomInput.value = "";
+  };
+
+  const currentProfile = (): string =>
+    profileSel.value === PROFILE_MANUAL ? profileCustomInput.value.trim() : profileSel.value;
+
+  const currentContext = (): string | undefined =>
+    (k8sContextSel.value === CONTEXT_MANUAL
+      ? k8sContextCustomInput.value.trim()
+      : k8sContextSel.value) || undefined;
+
+  // list_aws_profiles (studio#104) → the Credential profile select.
+  // `lastAwsProfiles` keeps the raw entries so a change event can pre-fill
+  // Region from the selected profile's own configured region.
+  let lastAwsProfiles: { name: string; region: string | null }[] = [];
+  const loadAwsProfiles = async (): Promise<void> => {
+    const invoke = tauriInvoke();
+    if (!invoke) {
+      // No sidecar (vite preview) — still offer the manual-entry fallback so
+      // the select isn't an empty dead end; no status, nothing actually
+      // failed.
+      setSelectOptions(profileSel, awsProfileField(null).options);
+      applyProfileMode();
+      return;
+    }
+    let field: EnumFieldResult;
+    try {
+      const res = await invoke<AwsProfilesResponse>("list_aws_profiles");
+      lastAwsProfiles = res.profiles;
+      field = awsProfileField(res);
+    } catch (e) {
+      lastAwsProfiles = [];
+      field = awsProfileField(null, e);
+    }
+    // Stale-flight guard: the operator may have switched providers (or left
+    // the step) while the tool call was in flight — don't repaint hidden
+    // fields or overwrite the status line for the departed provider.
+    if (providerSel.value !== "aws") return;
+    applyEnumField(profileSel, field);
+    applyProfileMode();
+  };
+
   const loadK8sNamespaces = async (): Promise<void> => {
     const invoke = tauriInvoke();
-    if (!invoke) return;
-    const context = k8sContextSel.value || undefined;
-    try {
-      const res = await invoke<K8sNamespacesResponse>(
-        "list_namespaces",
-        context ? { context } : {},
-      );
-      const previous = k8sNamespaceSel.value;
-      const opts = [
-        '<option value="">— pick a namespace —</option>',
-        ...res.namespaces.map((n) => `<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`),
-        `<option value="${NAMESPACE_NEW_SENTINEL}">+ Create new namespace…</option>`,
-      ];
-      k8sNamespaceSel.innerHTML = opts.join("");
-      // innerHTML replacement always resets selection to the first option —
-      // restore it if the previously-selected namespace is still in the
-      // refreshed list (e.g. reloading against the same context).
-      if (previous && Array.from(k8sNamespaceSel.options).some((o) => o.value === previous)) {
-        k8sNamespaceSel.value = previous;
-      }
+    if (!invoke) {
+      setSelectOptions(k8sNamespaceSel, k8sNamespaceField(null).options);
       applyNamespaceMode();
-      // studio#119: a prior failed attempt (e.g. before switching context)
-      // can leave its error text on screen — clear it once a load actually
-      // succeeds, otherwise a stale error outlives the state it described.
-      setStatus(identityStatusEl, "");
-    } catch (e) {
-      setStatus(identityStatusEl, `namespace list unavailable: ${errText(e)}`, "err");
+      void loadK8sServiceAccounts();
+      return;
     }
+    const context = currentContext();
+    let field: EnumFieldResult;
+    try {
+      field = k8sNamespaceField(
+        await invoke<K8sNamespacesResponse>("list_namespaces", context ? { context } : {}),
+      );
+    } catch (e) {
+      // studio#104: even on failure the select must still offer
+      // "+ Create new namespace…" — that sentinel is the manual-entry
+      // fallback, and without it a failed first load leaves zero options and
+      // blocks the wizard.
+      field = k8sNamespaceField(null, e);
+    }
+    // Same stale-flight guard as loadAwsProfiles.
+    if (providerSel.value !== "k8s") return;
+    applyEnumField(k8sNamespaceSel, field);
+    applyNamespaceMode();
+    // Service accounts are scoped to (context, namespace) — refresh them
+    // only after the namespace selection itself settles, never concurrently
+    // (a concurrent load could read a stale namespace selection).
+    void loadK8sServiceAccounts();
   };
 
   // Service account is scoped to (context, namespace) and per #104's design
@@ -468,60 +704,105 @@ export function initDeployPanel(deps: DeployPanelDeps): DeployPanelHandle | null
   // means "leave it unset" (the namespace's default service account applies),
   // not something worth surfacing a status message for.
   const loadK8sServiceAccounts = async (): Promise<void> => {
-    const defaultOption = '<option value="">— namespace default —</option>';
     const invoke = tauriInvoke();
     const namespace = currentNamespace();
     if (!invoke || !namespace) {
-      k8sServiceAccountSel.innerHTML = defaultOption;
+      setSelectOptions(k8sServiceAccountSel, k8sServiceAccountOptions(null));
       return;
     }
-    const context = k8sContextSel.value || undefined;
+    const context = currentContext();
     try {
       const res = await invoke<K8sServiceAccountsResponse>(
         "list_service_accounts",
         context ? { context, namespace } : { namespace },
       );
-      k8sServiceAccountSel.innerHTML =
-        defaultOption +
-        res.service_accounts
-          .map((sa) => `<option value="${escapeHtml(sa)}">${escapeHtml(sa)}</option>`)
-          .join("");
+      setSelectOptions(k8sServiceAccountSel, k8sServiceAccountOptions(res.service_accounts));
     } catch {
-      k8sServiceAccountSel.innerHTML = defaultOption;
+      setSelectOptions(k8sServiceAccountSel, k8sServiceAccountOptions(null));
     }
   };
 
   const loadK8sContexts = async (): Promise<void> => {
     const invoke = tauriInvoke();
-    if (!invoke) return;
-    try {
-      const res = await invoke<K8sContextsResponse>("list_k8s_contexts");
-      const opts = ['<option value="">— kubeconfig current-context —</option>'];
-      for (const c of res.contexts) {
-        const label = c.name === res.current_context ? `${c.name} (current)` : c.name;
-        opts.push(`<option value="${escapeHtml(c.name)}">${escapeHtml(label)}</option>`);
-      }
-      k8sContextSel.innerHTML = opts.join("");
-      // studio#119: same staleness fix as loadK8sNamespaces — the
-      // loadK8sNamespaces() call below will overwrite this with its own
-      // result once it resolves, but clear here too so a stale error doesn't
-      // linger for the gap between the two if that call is slow.
-      setStatus(identityStatusEl, "");
-    } catch (e) {
-      setStatus(identityStatusEl, `k8s context list unavailable: ${errText(e)}`, "err");
+    if (!invoke) {
+      // Same "seed the manual fallbacks" as loadAwsProfiles' no-sidecar path.
+      setSelectOptions(k8sContextSel, k8sContextField(null).options);
+      applyContextMode();
+      setSelectOptions(k8sNamespaceSel, k8sNamespaceField(null).options);
+      applyNamespaceMode();
+      setSelectOptions(k8sServiceAccountSel, k8sServiceAccountOptions(null));
+      return;
     }
-    void loadK8sNamespaces();
+    let field: EnumFieldResult;
+    try {
+      field = k8sContextField(await invoke<K8sContextsResponse>("list_k8s_contexts"));
+    } catch (e) {
+      field = k8sContextField(null, e);
+    }
+    // Same stale-flight guard as loadAwsProfiles.
+    if (providerSel.value !== "k8s") return;
+    applyEnumField(k8sContextSel, field);
+    applyContextMode();
+    if (!field.status) {
+      void loadK8sNamespaces();
+    } else {
+      // Enumeration degraded — listing namespaces against an unreadable or
+      // absent kubeconfig would only overwrite the guidance/raw error with a
+      // secondary failure. Reset the dependent selects to their manual
+      // fallbacks instead, so the wizard stays unblocked.
+      setSelectOptions(k8sNamespaceSel, k8sNamespaceField({ namespaces: [] }).options);
+      applyNamespaceMode();
+      setSelectOptions(k8sServiceAccountSel, k8sServiceAccountOptions(null));
+    }
+  };
+
+  const resetAwsFields = (): void => {
+    regionInput.value = "";
+    principalInput.value = "";
+    profileCustomInput.value = "";
+    lastAwsProfiles = [];
+    if (profileSel.options.length > 0) profileSel.selectedIndex = 0;
+    applyProfileMode();
+  };
+
+  const resetK8sFields = (): void => {
+    if (k8sContextSel.options.length > 0) k8sContextSel.selectedIndex = 0;
+    k8sContextCustomInput.value = "";
+    applyContextMode();
+    if (k8sNamespaceSel.options.length > 0) k8sNamespaceSel.selectedIndex = 0;
+    k8sNamespaceNewInput.value = "";
+    applyNamespaceMode();
+    setSelectOptions(k8sServiceAccountSel, k8sServiceAccountOptions(null));
   };
 
   providerSel.addEventListener("change", () => {
     showProviderFields(providerSel.value);
-    if (providerSel.value === "k8s") void loadK8sContexts();
+    // studio#104: switching providers resets the departing group's fields —
+    // field semantics don't map across providers, so a hidden stale value is
+    // dropped, not silently carried into a later submit.
+    if (providerSel.value === "k8s") {
+      resetAwsFields();
+      void loadK8sContexts();
+    } else {
+      resetK8sFields();
+      void loadAwsProfiles();
+    }
     updateNamePreview();
   });
-  k8sContextSel.addEventListener("change", () => {
-    void loadK8sNamespaces();
-    void loadK8sServiceAccounts();
+  profileSel.addEventListener("change", () => {
+    applyProfileMode();
+    // A profile's configured region is the region the SDK would resolve for
+    // it anyway — surface it in the Region field (still freely editable).
+    const p = lastAwsProfiles.find((p) => p.name === profileSel.value);
+    if (p?.region) regionInput.value = p.region;
   });
+  k8sContextSel.addEventListener("change", () => {
+    applyContextMode();
+    void loadK8sNamespaces();
+  });
+  // Manual context entry re-drives the dependent lists on commit ("change",
+  // not "input" — avoids a tool call per keystroke).
+  k8sContextCustomInput.addEventListener("change", () => void loadK8sNamespaces());
   k8sNamespaceSel.addEventListener("change", () => {
     applyNamespaceMode();
     void loadK8sServiceAccounts();
@@ -699,7 +980,7 @@ export function initDeployPanel(deps: DeployPanelDeps): DeployPanelHandle | null
                 : {
                     kind: "ecs",
                     region: regionInput.value.trim() || null,
-                    profile: profileInput.value.trim() || null,
+                    profile: currentProfile() || null,
                   },
             })
           : appendMember(current.text, fleetName, service);

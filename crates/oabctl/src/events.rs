@@ -49,7 +49,10 @@ pub struct EcsEvent {
 fn normalize_service(s: &str) -> String {
     match s.strip_prefix("oab-") {
         // "prod-mira" → "mira"; "prod-foo-bar" → "foo-bar" (name keeps dashes)
-        Some(rest) => rest.split_once('-').map_or(rest, |(_, name)| name).to_string(),
+        Some(rest) => rest
+            .split_once('-')
+            .map_or(rest, |(_, name)| name)
+            .to_string(),
         None => s.to_string(),
     }
 }
@@ -162,7 +165,9 @@ pub async fn fetch_ecs_events(
     let want_service = service.map(normalize_service);
     let mut out = Vec::new();
     for (_, msg) in raw {
-        let Some(ev) = parse_event(&msg) else { continue };
+        let Some(ev) = parse_event(&msg) else {
+            continue;
+        };
         if let Some(c) = cluster {
             match &ev.cluster_arn {
                 Some(arn) if arn.ends_with(&format!("/{c}")) => {}
