@@ -68,6 +68,7 @@ stateDiagram-v2
     Running   --> Stopping  : stop / replace (desired=stopped)
     Paused    --> Stopping  : stop / replace
     Stopping  --> Stopped   : state saved
+    Stopping  --> Stopped   : hard loss (OOM / crash / node death), no flush
     Running   --> Stopped   : reclaim (hard loss)
     Paused    --> Stopped   : reclaim (hard loss)
     Stopped   --> [*]
@@ -79,18 +80,22 @@ stateDiagram-v2
 | **Running** | desired=running ∧ identity_verified ∧ accepting_work ∧ healthy | Alive, authorized, in-sync, and admitting work. | **Only Running admits new work** → dispatch/gate is the single predicate `state == Running`. |
 | **Paused** | desired=running ∧ identity_verified ∧ ¬accepting_work ∧ healthy | Healthy and in-sync but deliberately not admitting (director cordon). | Intent, not fault. Resumable; still subject to health edges. Keeping it a peer state is what keeps the dispatch predicate single-field. |
 | **Unhealthy** | desired=running ∧ identity_verified ∧ ¬healthy | Alive but fenced: liveness/authz/probe/lease lost. **Not** version skew. | Fenced at once; recover within a window (re-prove identity) or go to Stopping. Split cause: *observed-bad* vs *unobservable* (node lost). |
-| **Stopping** | desired=stopped; graceful window open | Terminate committed: flush state and finish in-flight work within a deadline (may still be health-OK). | `desiredStatus==stopped` is the cross-runtime discriminator. Durability was already secured while Running. |
-| **Stopped** | terminal (absorbing) | Terminated. Not resurrected; a replacement is a fresh instance. | Record the cause (normative enum: normal / crash / reclaimed). Granularity is **instance-level**. |
+| **Stopping** | desired=stopped; graceful window open | Terminate committed: flush state and finish in-flight work within a deadline (may still be health-OK). | `desiredStatus==stopped` is the cross-runtime discriminator. Durability was already secured while Running. The graceful window is the only thing holding this state open: a hard loss closes it the other way (§6 — each runtime's terminal observation), and the flush is lost. |
+| **Stopped** | terminal (absorbing) | Terminated. Not resurrected; a replacement is a fresh instance. | Record the cause (normative enum: normal / crash / reclaimed). A hard loss **during** `Stopping` is `crash`/`reclaimed`, never `normal` — the flush did not complete, so no state was saved. Granularity is **instance-level**. |
 
 **Attributes, not states** (read alongside the state): `accepting_work`
 (Running vs Paused) — its authority is the **CP/director**, never the agent's
 self-report; `superseded` / version-skew (a healthy instance whose desired
-version has moved on) ⇒ `accepting_work=false`, so it classifies as **Paused**
-and is never dispatched new work. *When and in what order* a superseded instance
-is drained or replaced is a **fleet-level rollout** concern (e.g.
-make-before-break) — out of scope for this instance-level ADR; see the future
-rollout / RuntimeDriver ADR. Also: health `cause` = observed-bad vs
-unobservable; death `cause` enum; turn-level busy/idle.
+version has moved on) is **not a state**: the CP derives it from the desired
+spec and expresses it through the *same single field* as a director cordon
+(`accepting_work=false`), so the instance classifies as **Paused** and is never
+dispatched new work — an instance that is both cordoned and superseded is still
+exactly one `Paused`. *When* the old instance is drained or replaced, and *in
+what order* relative to its replacement, is a **fleet-level rollout** concern
+(e.g. make-before-break) for the rollout / RuntimeDriver ADR, not an instance
+question; nothing here implies an ordering, an overlap window, or a grace
+period. Also: health `cause` = observed-bad vs unobservable; death `cause` enum;
+turn-level busy/idle.
 
 ## 4. Principles
 
@@ -111,8 +116,11 @@ unobservable; death `cause` enum; turn-level busy/idle.
 4. **`reclaim` is two paths, not one.** A *planned* interruption (Spot/preempt
    notice — ECS ~120s SIGTERM, GKE ~30s + preStop) **compresses `Stopping`**
    into a short deadline. Only a *hard* loss (node death / SIGKILL / OOM) jumps
-   straight to `Stopped`. Durability never relies on the Stopping window —
-   **checkpoint while Running.**
+   straight to `Stopped`, and it does so **from any live state — including one
+   already in `Stopping`**: the graceful `Stopping→Stopped` edge is then never
+   taken, the flush is lost, and the instance lands in `Stopped` with cause
+   `crash`/`reclaimed`, never `normal`. Durability never relies on the Stopping
+   window — **checkpoint while Running.**
 5. **Runtime-independent.** Each driver projects native signals onto the 6 via
    the discriminators `(desiredStatus, accepting_work, health, identity_verified)`;
    the machine never changes per runtime.
@@ -194,6 +202,70 @@ an ECS-only coincidence.
   health-cause, death-cause enum, busy/idle), not new states.
 - **Follow-ups:** a `RuntimeDriver` contract ADR (verbs apply / observe / scale
   / cordon / …); an identity / lease / epoch spec ADR.
+- **Follow-up (the `State.Paused` naming item, openabdev/studio#3):** the
+  `RuntimeDriver` contract ADR — the follow-up named just above, not yet written —
+  must fix the enum it exposes and that enum's serialized name. The model today
+  is `AgentState` with a `Paused` variant (`crates/agent-lifecycle`), and the
+  review item asks whether the contract should read `State.Paused` instead. ADR-1
+  settles the **semantics** and leaves the **spelling** to the contract ADR. The
+  constraint that carries forward either way: `Paused` must stay the value of
+  **one field** whose single `Running` case *is* the whole dispatch predicate
+  (§4 principle 6) — so *turning it into a flag* is the expensive move (§7), and
+  even a plain rename is not free at the published surface (see below).
+
+### Lock-in and cost to reverse
+
+What this ADR locks in is mostly a **published surface**, not an implementation.
+
+**Cheap to reverse:** the `cause` enum value sets (additive — a new value leaves
+existing readers' current meaning intact, and these are printed names rather than
+a versioned wire enum), and adding a runtime driver (a new projection, never a
+change to the machine). The attribute *names* are **not** in this bucket — see
+the discriminator shape below.
+
+**Expensive to reverse:**
+
+- **The 6-state set.** It is the canonical `AgentState` in
+  `crates/agent-lifecycle`, the value of `phase` in ADR-2's read model, and the
+  string the MCP tools publish (`crates/oab-mcp` emits
+  `"state": format!("{:?}", phase)`; the type has no serde derive). The console
+  skin mirrors those literals as a TypeScript union (`console/src/types.ts`) and
+  keys a badge class off them (`STATE_CLASS` in `console/src/render.ts`), so the
+  *names* are a cross-language contract: renaming one breaks the Rust/TypeScript
+  pair — and breaks it *quietly*, since an unrecognised value renders no class
+  rather than raising — even though nothing in Rust parses the string back.
+- **The single-field dispatch predicate** (`state == Running`). Reverting to a
+  two-field predicate does not fail loudly — it fails by *silently* scheduling
+  cordoned agents, which is precisely the failure mode §7 rejected. This is the
+  most expensive item here, and the reason `Paused` stays a peer state rather
+  than becoming an attribute.
+- **`Stopped` as terminal, at instance granularity.** Un-absorbing it (a
+  container restart becoming a `Stopped→Starting` flap) rewrites what an
+  "instance" is, and invalidates both the latching `identity_verified` bit and
+  the death `cause` enum: history already observed has to be re-read under the
+  new meaning.
+- **The four-axis discriminator shape.** Drivers conform to it
+  (`RuntimeDriver::project`), so reshaping it is a conformance break for every
+  driver — ECS and k8s alike — not a refactor behind one call site.
+- **The identity mechanism** — the per-instance credential at `Starting`, the
+  CP-signed lease bound to the instance id, the fencing epoch and revocation on
+  Stopping/Stopped (§4 principles 1–2). Only the latch is written down in code
+  (`IdentityLatch` in `crates/agent-lifecycle`), and even that is not yet wired:
+  the control plane still threads a caller-supplied `verified_before` into
+  `RuntimeDriver::project` (`crates/studio-cp`). So the lock-in is on the
+  **specification**: once drivers and the CP exist, changing it means re-proving
+  identity for every live instance — an operational migration, not a rename —
+  whereas changing it while it is still prose is nearly free. Any change must
+  also preserve what `identity_verified == true` already meant for the instances
+  classified with it.
+
+Reversal comes as a **mapping plus a deprecation window** — publish both
+surfaces, move consumers, then drop one — never an in-place edit; being a
+*projection* of runtime signals is what lets a second surface coexist at all.
+What cannot be undone in place is a consumer's compiled-in assumption that one
+field answers "may this agent take new work?". The identity mechanism is the
+exception: two fencing-epoch / credential schemes cannot be dual-published, so
+changing it is the operational migration above, not a windowed deprecation.
 
 ## 10. More Information
 
