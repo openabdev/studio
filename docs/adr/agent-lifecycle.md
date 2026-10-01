@@ -67,7 +67,8 @@ stateDiagram-v2
     Unhealthy --> Stopped   : hard loss (OOM / crash / node death), no flush
     Running   --> Stopping  : stop / replace (desired=stopped)
     Paused    --> Stopping  : stop / replace
-    Stopping  --> Stopped   : state saved
+    Stopping  --> Stopped   : state saved (graceful flush)
+    Stopping  --> Stopped   : hard loss mid-drain (kill / node death), flush abandoned
     Running   --> Stopped   : reclaim (hard loss)
     Paused    --> Stopped   : reclaim (hard loss)
     Stopped   --> [*]
@@ -79,18 +80,23 @@ stateDiagram-v2
 | **Running** | desired=running ∧ identity_verified ∧ accepting_work ∧ healthy | Alive, authorized, in-sync, and admitting work. | **Only Running admits new work** → dispatch/gate is the single predicate `state == Running`. |
 | **Paused** | desired=running ∧ identity_verified ∧ ¬accepting_work ∧ healthy | Healthy and in-sync but deliberately not admitting (director cordon). | Intent, not fault. Resumable; still subject to health edges. Keeping it a peer state is what keeps the dispatch predicate single-field. |
 | **Unhealthy** | desired=running ∧ identity_verified ∧ ¬healthy | Alive but fenced: liveness/authz/probe/lease lost. **Not** version skew. | Fenced at once; recover within a window (re-prove identity) or go to Stopping. Split cause: *observed-bad* vs *unobservable* (node lost). |
-| **Stopping** | desired=stopped; graceful window open | Terminate committed: flush state and finish in-flight work within a deadline (may still be health-OK). | `desiredStatus==stopped` is the cross-runtime discriminator. Durability was already secured while Running. |
+| **Stopping** | desired=stopped; graceful window open | Terminate committed: flush state and finish in-flight work within a deadline (may still be health-OK). | `desiredStatus==stopped` is the cross-runtime discriminator. The window is best-effort — a hard loss mid-drain still lands in `Stopped`, on the hard-loss edge. Durability was already secured while Running. |
 | **Stopped** | terminal (absorbing) | Terminated. Not resurrected; a replacement is a fresh instance. | Record the cause (normative enum: normal / crash / reclaimed). Granularity is **instance-level**. |
 
 **Attributes, not states** (read alongside the state): `accepting_work`
 (Running vs Paused) — its authority is the **CP/director**, never the agent's
-self-report; `superseded` / version-skew (a healthy instance whose desired
-version has moved on) ⇒ `accepting_work=false`, so it classifies as **Paused**
-and is never dispatched new work. *When and in what order* a superseded instance
-is drained or replaced is a **fleet-level rollout** concern (e.g.
-make-before-break) — out of scope for this instance-level ADR; see the future
-rollout / RuntimeDriver ADR. Also: health `cause` = observed-bad vs
-unobservable; death `cause` enum; turn-level busy/idle.
+self-report; `superseded` / version-skew is an **instance-level** attribute —
+*this* instance's observed version lags the version in its desired spec — so
+while the spec still wants it running, the CP sets `accepting_work=false` on
+that instance ⇒ it classifies as **Paused**: never dispatched new work, but
+still finishing in-flight work (the two-predicate rule) and keeping every
+normal edge — it can still go `Unhealthy`, and once the director flips the
+spec to `desiredStatus=stopped` it takes the usual `→Stopping` edge;
+`superseded` never pins an instance in place. *When and in what order*
+superseded instances are drained or replaced is a **fleet-level rollout**
+concern (e.g. make-before-break) — out of scope for this instance-level ADR;
+see the future rollout / RuntimeDriver ADR. Also: health `cause` =
+observed-bad vs unobservable; death `cause` enum; turn-level busy/idle.
 
 ## 4. Principles
 
@@ -111,8 +117,12 @@ unobservable; death `cause` enum; turn-level busy/idle.
 4. **`reclaim` is two paths, not one.** A *planned* interruption (Spot/preempt
    notice — ECS ~120s SIGTERM, GKE ~30s + preStop) **compresses `Stopping`**
    into a short deadline. Only a *hard* loss (node death / SIGKILL / OOM) jumps
-   straight to `Stopped`. Durability never relies on the Stopping window —
-   **checkpoint while Running.**
+   straight to `Stopped` — including one that lands **while already
+   `Stopping`**: the graceful window is best-effort, and a mid-drain kill ends
+   in `Stopped` with the flush abandoned, on the hard-loss edge rather than the
+   `state saved` one (the recorded death `cause` distinguishes them).
+   Durability never relies on the Stopping window — **checkpoint while
+   Running.**
 5. **Runtime-independent.** Each driver projects native signals onto the 6 via
    the discriminators `(desiredStatus, accepting_work, health, identity_verified)`;
    the machine never changes per runtime.
@@ -192,8 +202,21 @@ an ECS-only coincidence.
   and `restart:"no"` conditions above.
 - Detailed sub-states are **attributes** of the 6 (accepting_work, superseded,
   health-cause, death-cause enum, busy/idle), not new states.
-- **Follow-ups:** a `RuntimeDriver` contract ADR (verbs apply / observe / scale
-  / cordon / …); an identity / lease / epoch spec ADR.
+- **Lock-in / reversibility.** Cheap to reverse: per-driver projection details,
+  attribute vocabularies (the `cause` enums, turn-level busy/idle), and adding
+  another runtime driver — the machine does not change per runtime. Expensive
+  to reverse: the 6-state surface itself — the read-model and Studio render it
+  and every dispatch call site relies on `state == Running`, so folding
+  `Paused` back into an attribute re-opens the two-field dispatch predicate
+  this ADR rejected; and the latching `identity_verified` bit is a stored
+  cross-component invariant (tracked by the CP, consumed by every driver
+  projection) — dropping it silently resurrects the `Starting`/`Unhealthy`
+  collision it exists to break.
+- **Follow-ups:** a `RuntimeDriver` contract ADR (ADR-2; verbs apply / observe
+  / scale / cordon / …) — which also owns the wire naming for this machine:
+  whether the enum spells `Paused` as a peer variant or projects
+  `(running, accepting_work=false)` is deferred there; this ADR fixes the
+  semantics, not the identifier. And an identity / lease / epoch spec ADR.
 
 ## 10. More Information
 

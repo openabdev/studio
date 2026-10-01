@@ -131,7 +131,9 @@ fn split_ecs_json_key_suffix(value: &str) -> Result<(&str, Option<&str>)> {
         return Ok((value, None));
     };
     let base = &value[..after_name_start + name_end];
-    let fields: Vec<&str> = value[after_name_start + name_end + 1..].split(':').collect();
+    let fields: Vec<&str> = value[after_name_start + name_end + 1..]
+        .split(':')
+        .collect();
     let (json_key, version_stage, version_id) = match fields.as_slice() {
         [k] => (*k, "", ""),
         [k, s] => (*k, *s, ""),
@@ -210,7 +212,10 @@ mod tests {
             "arn:aws:secretsmanager:us-east-1:903779448426:secret:oab/telegram/pahudxbot-AC80TP:TELEGRAM_BOT_TOKEN::",
         )
         .unwrap();
-        assert_eq!(base, "arn:aws:secretsmanager:us-east-1:903779448426:secret:oab/telegram/pahudxbot-AC80TP");
+        assert_eq!(
+            base,
+            "arn:aws:secretsmanager:us-east-1:903779448426:secret:oab/telegram/pahudxbot-AC80TP"
+        );
         assert_eq!(key, Some("TELEGRAM_BOT_TOKEN"));
     }
 
@@ -220,7 +225,10 @@ mod tests {
             "arn:aws:secretsmanager:us-east-1:903779448426:secret:oab/telegram/pahudxbot-AC80TP",
         )
         .unwrap();
-        assert_eq!(base, "arn:aws:secretsmanager:us-east-1:903779448426:secret:oab/telegram/pahudxbot-AC80TP");
+        assert_eq!(
+            base,
+            "arn:aws:secretsmanager:us-east-1:903779448426:secret:oab/telegram/pahudxbot-AC80TP"
+        );
         assert_eq!(key, None);
     }
 
@@ -237,9 +245,14 @@ mod tests {
         // optional fields empty (`::`) must not be misparsed as
         // json-key="mysecret" — "mysecret" here is part of the secret
         // name/base ARN, not a suffix field.
-        let (base, key) =
-            split_ecs_json_key_suffix("arn:aws:secretsmanager:us-east-1:903779448426:secret:mysecret::").unwrap();
-        assert_eq!(base, "arn:aws:secretsmanager:us-east-1:903779448426:secret:mysecret");
+        let (base, key) = split_ecs_json_key_suffix(
+            "arn:aws:secretsmanager:us-east-1:903779448426:secret:mysecret::",
+        )
+        .unwrap();
+        assert_eq!(
+            base,
+            "arn:aws:secretsmanager:us-east-1:903779448426:secret:mysecret"
+        );
         assert_eq!(key, None);
     }
 
@@ -284,7 +297,9 @@ mod tests {
 
     #[test]
     fn parse_aws_sm_uri_rejects_missing_hash() {
-        assert!(parse_aws_sm_uri("aws-sm://oab/telegram/pahudxbot").unwrap().is_err());
+        assert!(parse_aws_sm_uri("aws-sm://oab/telegram/pahudxbot")
+            .unwrap()
+            .is_err());
     }
 
     #[test]
@@ -295,7 +310,9 @@ mod tests {
 
     #[test]
     fn parse_aws_sm_uri_returns_none_for_other_schemes() {
-        assert!(parse_aws_sm_uri("arn:aws:secretsmanager:us-east-1:123:secret:oab/x-AbCdEf").is_none());
+        assert!(
+            parse_aws_sm_uri("arn:aws:secretsmanager:us-east-1:123:secret:oab/x-AbCdEf").is_none()
+        );
         assert!(parse_aws_sm_uri("plain-secret-name").is_none());
     }
 
@@ -310,13 +327,17 @@ mod tests {
 
     #[test]
     fn parse_k8s_secret_uri_rejects_missing_hash() {
-        assert!(parse_k8s_secret_uri("k8s-secret://oab-orca").unwrap().is_err());
+        assert!(parse_k8s_secret_uri("k8s-secret://oab-orca")
+            .unwrap()
+            .is_err());
     }
 
     #[test]
     fn parse_k8s_secret_uri_rejects_empty_parts() {
         assert!(parse_k8s_secret_uri("k8s-secret://#key").unwrap().is_err());
-        assert!(parse_k8s_secret_uri("k8s-secret://oab-orca#").unwrap().is_err());
+        assert!(parse_k8s_secret_uri("k8s-secret://oab-orca#")
+            .unwrap()
+            .is_err());
     }
 
     #[test]
@@ -336,13 +357,19 @@ mod tests {
 
     #[test]
     fn parse_k8s_configmap_uri_rejects_missing_hash() {
-        assert!(parse_k8s_configmap_uri("k8s-configmap://oab-orca-config").unwrap().is_err());
+        assert!(parse_k8s_configmap_uri("k8s-configmap://oab-orca-config")
+            .unwrap()
+            .is_err());
     }
 
     #[test]
     fn parse_k8s_configmap_uri_rejects_empty_parts() {
-        assert!(parse_k8s_configmap_uri("k8s-configmap://#config.toml").unwrap().is_err());
-        assert!(parse_k8s_configmap_uri("k8s-configmap://oab-orca-config#").unwrap().is_err());
+        assert!(parse_k8s_configmap_uri("k8s-configmap://#config.toml")
+            .unwrap()
+            .is_err());
+        assert!(parse_k8s_configmap_uri("k8s-configmap://oab-orca-config#")
+            .unwrap()
+            .is_err());
     }
 
     #[test]
