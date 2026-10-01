@@ -227,7 +227,9 @@ impl AgentRegistry {
                 return Err("every [[agent]] needs a name".to_string());
             }
             if !seen.insert(name) {
-                return Err(format!("duplicate agent name {name:?} — names must be unique"));
+                return Err(format!(
+                    "duplicate agent name {name:?} — names must be unique"
+                ));
             }
             if a.management {
                 management += 1;
@@ -272,17 +274,23 @@ cwd = "/work"
 
     #[test]
     fn cwd_defaults_when_omitted() {
-        let cfg = RemoteConfig::parse(r#"url = "wss://x/acp"
-token = "t""#)
-            .expect("parse");
+        let cfg = RemoteConfig::parse(
+            r#"url = "wss://x/acp"
+token = "t""#,
+        )
+        .expect("parse");
         assert_eq!(cfg.cwd, "/");
     }
 
     #[test]
     fn validate_rejects_missing_url_bad_scheme_and_missing_token() {
-        assert!(RemoteConfig { url: "".into(), token: "t".into(), cwd: "/".into() }
-            .validate()
-            .is_err());
+        assert!(RemoteConfig {
+            url: "".into(),
+            token: "t".into(),
+            cwd: "/".into()
+        }
+        .validate()
+        .is_err());
         assert!(RemoteConfig {
             url: "http://x/acp".into(),
             token: "t".into(),
@@ -339,7 +347,7 @@ token = "s2"
         let mira = reg.get("mira").expect("mira present");
         assert_eq!(mira.cwd, "/");
         assert!(!mira.management); // management defaults off (least privilege)
-        // management() returns the one flagged entry.
+                                   // management() returns the one flagged entry.
         assert_eq!(reg.management().map(|a| a.name.as_str()), Some("orca"));
     }
 
@@ -372,23 +380,42 @@ token = "s2"
     #[test]
     fn validate_rejects_dup_names_missing_names_and_two_managements() {
         assert!(AgentRegistry {
-            agents: vec![AgentEndpoint { name: "a".into(), ..Default::default() },
-                         AgentEndpoint { name: "a".into(), ..Default::default() }],
+            agents: vec![
+                AgentEndpoint {
+                    name: "a".into(),
+                    ..Default::default()
+                },
+                AgentEndpoint {
+                    name: "a".into(),
+                    ..Default::default()
+                }
+            ],
         }
         .validate()
         .unwrap_err()
         .contains("unique"));
 
         assert!(AgentRegistry {
-            agents: vec![AgentEndpoint { name: "  ".into(), ..Default::default() }],
+            agents: vec![AgentEndpoint {
+                name: "  ".into(),
+                ..Default::default()
+            }],
         }
         .validate()
         .is_err());
 
         assert!(AgentRegistry {
             agents: vec![
-                AgentEndpoint { name: "a".into(), management: true, ..Default::default() },
-                AgentEndpoint { name: "b".into(), management: true, ..Default::default() },
+                AgentEndpoint {
+                    name: "a".into(),
+                    management: true,
+                    ..Default::default()
+                },
+                AgentEndpoint {
+                    name: "b".into(),
+                    management: true,
+                    ..Default::default()
+                },
             ],
         }
         .validate()
@@ -409,9 +436,12 @@ token = "s2"
         .unwrap_err()
         .contains("name"));
         // Named but unconfigured conn → the RemoteConfig validation fires.
-        assert!(AgentEndpoint { name: "x".into(), ..Default::default() }
-            .validate()
-            .is_err());
+        assert!(AgentEndpoint {
+            name: "x".into(),
+            ..Default::default()
+        }
+        .validate()
+        .is_err());
     }
 
     #[test]

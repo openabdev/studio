@@ -242,7 +242,12 @@ async fn task_def_has_health_check(
     if let Some(v) = cache.get(arn) {
         return *v;
     }
-    let defined = match ecs.describe_task_definition().task_definition(arn).send().await {
+    let defined = match ecs
+        .describe_task_definition()
+        .task_definition(arn)
+        .send()
+        .await
+    {
         Ok(resp) => resp
             .task_definition()
             .map(|td| {
