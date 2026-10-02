@@ -39,7 +39,8 @@ export interface Source {
   // Scale a deployment on (size 1) or off (size 0) — the start/stop action.
   // Reversible: ECS keeps the Spec at desiredCount 0, so no state store is
   // needed. `namespace` is required (the service is `oab-{namespace}-{name}`);
-  // the managing credential is resolved per-cluster from `cluster`. `fleet`
+  // the managing credential is resolved from `fleet` when given, else from
+  // `cluster`. `fleet`
   // (same rule as `listDeployments`/`runtimeContext`) is required to reach a
   // k8s-runtime fleet — pass it whenever a fleet is active, alongside
   // `cluster`, so oab-mcp can dispatch by runtime without a cluster fallback.

@@ -34,9 +34,14 @@ This ADR decides both: what a **fleet** is, and how an **agent connects**.
 its cluster.** Grouping is decoupled from credential.
 
 - **Grouping** is by *usage* (what the agents are for), chosen by the operator.
-- **Credential** is a *consequence* of where the members physically live
-  (cluster / account), not the grouping key. Multiple fleets may share a cluster
-  and credential while remaining distinct fleets.
+- **Credential** is declared *per fleet*, not derived from where the members
+  physically happen to live. Multiple fleets may share a `cluster` — and may
+  declare different `region`/`profile` — while remaining distinct fleets; a
+  fleet that declares neither gets the ambient chain. (Credential selection is
+  keyed on the governing fleet, not the cluster — see §4. The earlier framing
+  here — "a consequence of where the members physically live" — was wrong, and
+  `oab-mcp` implemented it, until studio#111 made the fleet's own `region` /
+  `profile` the first key it looks at.)
 
 ### Schema — `[fleet.<name>]`, explicit members
 
@@ -60,9 +65,11 @@ profile = "oab-fleet"
 expected_principal = "arn:aws:iam::504190915686:user/oab-fleet-laptop"
 ```
 
-This lets `orca` and `mira` be **two distinct fleets that share the `oab`
-cluster and one credential** — exactly the "group by usage, not by cluster" the
-operator asked for.
+This lets `orca` and `mira` be **two distinct fleets on one `cluster`** —
+exactly the "group by usage, not by cluster" the operator asked for. Here they
+also happen to name the same credential, but nothing requires that: `region` /
+`profile` are per fleet, and either fleet may be re-pointed at its own account
+without touching the other.
 
 - **Membership (a): explicit member list** — ship first. Full operator control,
   no external dependency.

@@ -37,8 +37,9 @@ export function deploymentKey(d: Deployment): string {
 // Start (scale→1) when the deployment is off, Stop (scale→0) when it's on.
 // Stop keeps the Spec — ECS retains the service at desiredCount 0 — so it's
 // reversible, no state store needed. The `data-*` carry the identity the
-// delegated handler needs; the managing credential is resolved per-cluster, so
-// the row only needs name + namespace (service = `oab-{namespace}-{name}`).
+// delegated handler needs; the managing credential is resolved by the fleet
+// handle (falling back to the cluster), so the row only needs name + namespace
+// (service = `oab-{namespace}-{name}`).
 //
 // `pending` ⇒ a scale is in flight (or the observed count hasn't flipped yet):
 // render a disabled placeholder so the 5s poll re-render can't hand back a fresh

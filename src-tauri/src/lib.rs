@@ -136,6 +136,8 @@ async fn deploy_provision(
     provider: Option<String>,
     context: Option<String>,
     expected_principal: Option<String>,
+    region: Option<String>,
+    profile: Option<String>,
 ) -> Result<Value, String> {
     let cluster = cluster.unwrap_or_else(default_cluster);
     let client = {
@@ -169,6 +171,19 @@ async fn deploy_provision(
     if let Some(ep) = expected_principal.filter(|s| !s.is_empty()) {
         params["expected_principal"] = json!(ep);
     }
+    // studio#111: same AWS identity as `deploy_provision_agent` below — the
+    // compose-library path creates through the identical
+    // create-or-redeploy branch, so it needs the identical override. No
+    // console caller sends these yet (the wizard only calls
+    // `deploy_provision_agent`, and its compose-library UI was removed in
+    // studio#128); they exist for direct MCP clients, like the tool's other
+    // provider/placement args.
+    if let Some(r) = region.filter(|s| !s.is_empty()) {
+        params["region"] = json!(r);
+    }
+    if let Some(p) = profile.filter(|s| !s.is_empty()) {
+        params["profile"] = json!(p);
+    }
     match client.call_tool("deploy_provision", params).await {
         Ok(v) => Ok(v),
         Err(e) => {
@@ -199,6 +214,8 @@ async fn deploy_provision_agent(
     provider: Option<String>,
     context: Option<String>,
     expected_principal: Option<String>,
+    region: Option<String>,
+    profile: Option<String>,
 ) -> Result<Value, String> {
     let cluster = cluster.unwrap_or_else(default_cluster);
     let client = {
@@ -245,6 +262,21 @@ async fn deploy_provision_agent(
     }
     if let Some(ep) = expected_principal.filter(|s| !s.is_empty()) {
         params["expected_principal"] = json!(ep);
+    }
+    // studio#111: forward the fleet's AWS identity. The console collects
+    // Region + Credential profile in the New Fleet identity step and records
+    // them in `fleets.toml` — but `oab-mcp` resolves the managing credential by
+    // the fleet a call names (`fleet:`), else by a binding's `cluster` key, and
+    // the console names neither (it passes no `fleet`; its writer emits no
+    // `cluster` key), so the recorded pair would go unread and the deploy would
+    // act as the ambient `[default]` chain instead. On a first create there's
+    // no block at all yet (`fleets.toml` is written only after a confirmed successful
+    // deploy), so these args are the only carrier the create has.
+    if let Some(r) = region.filter(|s| !s.is_empty()) {
+        params["region"] = json!(r);
+    }
+    if let Some(p) = profile.filter(|s| !s.is_empty()) {
+        params["profile"] = json!(p);
     }
     match client.call_tool("deploy_provision_agent", params).await {
         Ok(v) => Ok(v),
@@ -568,7 +600,8 @@ async fn list_service_accounts(
 /// `deploy_scale` tool (ADR-2 write model — stop = scale→0, start = scale→1; the
 /// Spec is kept by ECS, so it's reversible). An OAB service runs a single bot
 /// token, so size is 0/1 only; `namespace` is required upstream to resolve the
-/// service (`oab-{namespace}-{name}`) and the managing credential is per-cluster.
+/// service (`oab-{namespace}-{name}`) and the managing credential is resolved
+/// from `fleet`, else from `cluster`.
 /// `fleet` (same rule as `deploy_list`/`runtime_context`) is required to reach a
 /// k8s-runtime fleet — without it this silently fell through to the ECS path
 /// with an empty cluster string.

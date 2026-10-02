@@ -927,8 +927,10 @@ impl Default for FleetRuntime {
 /// account/region there).
 ///
 /// A fleet groups agents by *usage*, decoupled from the physical
-/// cluster/namespace: two fleets may share a `cluster` (and one credential)
-/// while listing different `members`. `members` empty ⇒ the fleet covers the
+/// cluster/namespace: two fleets may share a `cluster` while listing different
+/// `members`, and may even declare different `region`/`profile` — which is why
+/// credential resolution keys on the fleet a call names before the `cluster`
+/// (see `oab-mcp`'s `base_binding`). `members` empty ⇒ the fleet covers the
 /// whole cluster/namespace (back-compat with the old cluster-granular
 /// binding).
 #[derive(Debug, Clone, Default, serde::Deserialize)]
@@ -944,8 +946,9 @@ pub struct FleetBinding {
     /// (wired into `OabMcp::from_env`, ahead of `migrate_legacy_k8s_bindings`)
     /// before it'll parse.
     pub runtime: FleetRuntime,
-    /// ECS cluster this fleet's members live in (drives the managing credential;
-    /// credential resolution stays cluster/account-granular). `runtime: ecs` only.
+    /// ECS cluster this fleet's members live in — the **fallback** credential
+    /// key for a call that names no `fleet` (the fleet's own name wins; see
+    /// `oab-mcp`'s `base_binding`). `runtime: ecs` only.
     #[serde(default)]
     pub cluster: Option<String>,
     /// Region to pin for this fleet. `runtime: ecs` only.
@@ -988,6 +991,33 @@ impl FleetBinding {
                 .members
                 .iter()
                 .any(|m| m == service_name || m == short_name)
+    }
+
+    /// A copy of this binding with a caller's own `region`/`profile` layered
+    /// on top (studio#111): each field the caller names replaces this
+    /// binding's, each one it leaves unset is kept, and a
+    /// `FleetBinding::default()` — what the caller falls back to when no fleet
+    /// governs the call — yields a credentials-only binding.
+    ///
+    /// **Layering, not substitution** is the point. A deploy call that pins
+    /// only a region must keep acting under whatever profile the governing
+    /// binding selects — building a fresh binding from the caller's fields
+    /// alone would quietly drop it and fall back to the ambient `[default]`
+    /// account, which is the very failure this exists to prevent.
+    ///
+    /// Blank strings count as unset, so a caller that always passes its fields
+    /// (an empty text input, a `null` field) needs no trimming of its own.
+    /// Surrounding whitespace is trimmed off an accepted value, matching the
+    /// console layer (`deployArgs.ts`'s `orUndefined`), so a stray space can't
+    /// reach `aws_config::Region::new` and resolve a region that doesn't exist.
+    pub fn with_identity(mut self, region: Option<&str>, profile: Option<&str>) -> FleetBinding {
+        if let Some(r) = region.filter(|s| !s.trim().is_empty()) {
+            self.region = Some(r.trim().to_string());
+        }
+        if let Some(p) = profile.filter(|s| !s.trim().is_empty()) {
+            self.profile = Some(p.trim().to_string());
+        }
+        self
     }
 }
 
@@ -1061,9 +1091,10 @@ pub struct FleetBindings {
 }
 
 impl FleetBindings {
-    /// The ECS fleet governing `cluster`, if any (first match) — used for
-    /// credential resolution, which stays cluster/account-granular. k8s
-    /// bindings never match (they have no `cluster`).
+    /// The ECS fleet governing `cluster`, if any (first match) — the credential
+    /// fallback for a call that names no `fleet`; two ecs fleets sharing one
+    /// `cluster` key are indistinguishable here, which is why fleet-name-first
+    /// resolution exists. k8s bindings never match (they have no `cluster`).
     pub fn for_cluster(&self, cluster: &str) -> Option<&FleetBinding> {
         self.fleets
             .iter()
@@ -3170,5 +3201,90 @@ aws_access_key_id = AKIA...
     fn acp_compat_check_lets_a_custom_image_through_unverified() {
         check_acp_image_compat("my-registry.example.com/custom:latest", &wizard_input(true, None))
             .expect("not an openab release tag — can't verify, don't block");
+    }
+
+    // studio#111 — `FleetBinding::with_identity`, the seam `oab-mcp`'s
+    // `aws_or` layers a deploy call's own region/profile onto. Pure, so no AWS
+    // access is needed to pin the layering rule.
+
+    fn binding(region: Option<&str>, profile: Option<&str>) -> FleetBinding {
+        FleetBinding {
+            name: "prod".into(),
+            runtime: FleetRuntime::Ecs,
+            region: region.map(str::to_string),
+            profile: profile.map(str::to_string),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn with_identity_overrides_both_fields_when_the_caller_names_both() {
+        let b = binding(Some("us-east-1"), Some("old"))
+            .with_identity(Some("ap-northeast-1"), Some("new"));
+        assert_eq!(b.region.as_deref(), Some("ap-northeast-1"));
+        assert_eq!(b.profile.as_deref(), Some("new"));
+    }
+
+    #[test]
+    fn with_identity_keeps_the_bindings_profile_when_the_caller_pins_only_a_region() {
+        // The regression this shape exists for: substituting the caller's
+        // fields for the binding's would drop "prod-admin" here and silently
+        // provision under the ambient `[default]` account instead.
+        let b =
+            binding(Some("us-east-1"), Some("prod-admin")).with_identity(Some("eu-west-1"), None);
+        assert_eq!(b.region.as_deref(), Some("eu-west-1"));
+        assert_eq!(b.profile.as_deref(), Some("prod-admin"));
+    }
+
+    #[test]
+    fn with_identity_keeps_the_bindings_region_when_the_caller_pins_only_a_profile() {
+        let b = binding(Some("us-east-1"), None).with_identity(None, Some("staging"));
+        assert_eq!(b.region.as_deref(), Some("us-east-1"));
+        assert_eq!(b.profile.as_deref(), Some("staging"));
+    }
+
+    #[test]
+    fn with_identity_treats_blank_fields_as_unset() {
+        // The console always passes both fields, so an empty text input has
+        // to read as "unset" rather than as "provision into the empty region".
+        let b = binding(Some("us-east-1"), Some("prod-admin")).with_identity(Some(""), Some("  "));
+        assert_eq!(b.region.as_deref(), Some("us-east-1"));
+        assert_eq!(b.profile.as_deref(), Some("prod-admin"));
+    }
+
+    #[test]
+    fn with_identity_trims_an_accepted_value() {
+        // Same rule as the console layer's, so a padded field from any caller
+        // can't reach `Region::new` and name a region that doesn't exist.
+        let b = binding(Some("us-east-1"), Some("prod-admin"))
+            .with_identity(Some("  ap-northeast-1  "), Some(" studio-prod\t"));
+        assert_eq!(b.region.as_deref(), Some("ap-northeast-1"));
+        assert_eq!(b.profile.as_deref(), Some("studio-prod"));
+    }
+
+    #[test]
+    fn with_identity_on_a_blank_binding_yields_a_credentials_only_binding() {
+        // What `oab-mcp`'s `aws_or` does when `for_cluster` found nothing (the
+        // common case for a console-created fleet): start from a blank binding,
+        // so the caller's own answer is all there is and must not be discarded.
+        let b = FleetBinding::default().with_identity(Some("ap-northeast-1"), Some("studio-prod"));
+        assert_eq!(b.region.as_deref(), Some("ap-northeast-1"));
+        assert_eq!(b.profile.as_deref(), Some("studio-prod"));
+        // …and nothing else is invented.
+        assert_eq!(b.cluster, None);
+        assert_eq!(b.context, None);
+        assert_eq!(b.namespace, None);
+        assert!(b.members.is_empty());
+    }
+
+    #[test]
+    fn with_identity_leaves_the_rest_of_the_binding_untouched() {
+        let mut base = binding(Some("us-east-1"), Some("prod-admin"));
+        base.members = vec!["oab-default-zeus".into()];
+        base.cluster = Some("oab".into());
+        let b = base.with_identity(Some("eu-west-1"), Some("studio-prod"));
+        assert_eq!(b.name, "prod");
+        assert_eq!(b.cluster.as_deref(), Some("oab"));
+        assert_eq!(b.members, vec!["oab-default-zeus".to_string()]);
     }
 }

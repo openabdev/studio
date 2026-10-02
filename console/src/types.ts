@@ -50,8 +50,9 @@ export interface FleetBinding {
 // One configured fleet → managing-credential/context binding — mirrors an
 // entry of oab-mcp's `fleet_config` tool (ADR #19, fleet-grouping ADR; unified
 // across runtimes 2026-09-06). `name` is the switch key: a fleet is a
-// usage-based logical group, so two fleets may share a `cluster` (and thus one
-// credential) while listing different `members`. `runtime` picks which of the
+// usage-based logical group, so two fleets may share a `cluster` while listing
+// different `members` — and may declare different `region`/`profile`, which is
+// why oab-mcp resolves the credential by fleet name before by cluster. `runtime` picks which of the
 // `ecs`-only (`cluster`/`region`/`profile`) or `k8s`-only
 // (`context`/`namespace`) fields apply — the other set is always `null` for a
 // given entry. Selecting a fleet targets its cluster/context for reads and

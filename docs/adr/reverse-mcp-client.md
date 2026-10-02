@@ -187,8 +187,9 @@ discovers them and passes the right `fleet` per call.
 
 - **Rejected — one `type:acp` server per fleet.** Its only advantage is
   tunnel-layer isolation (a session pinned to one fleet). That is not a boundary we
-  need: fleets share Studio's identity/credentials (credential is
-  cluster/account-granular), so isolation here is ergonomic, not security — and the
+  need: fleets share Studio's identity/credentials (the credential is selected
+  per fleet, and only a fleet that declares one gets its own — everything else
+  is the ambient chain), so isolation here is ergonomic, not security — and the
   `fleet` argument already provides it. The cost is real: N tunnels/declarations,
   the 8-servers/session ceiling, same-name rank/evict handling, and re-declaring
   all on every resume. **Deferred** to if/when fleets carry **distinct

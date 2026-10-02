@@ -742,6 +742,15 @@ if (fleetDetailEl) {
         context: fleet?.context ?? null,
         namespace: fleet?.namespace ?? null,
         expectedPrincipal: fleet?.expected_principal ?? null,
+        // studio#111: the fleet's recorded region/profile go along with the
+        // deploy for the same reason its k8s placement does — the sidecar
+        // resolves a fleet's credential by the fleet a call names, else by a
+        // binding's `cluster` key, and this wizard names neither (it passes no
+        // `fleet`; its writer emits no `cluster` key), so without these the
+        // recorded pair would go unread and it would act as the ambient
+        // `[default]` account/region.
+        region: fleet?.region ?? null,
+        profile: fleet?.profile ?? null,
       });
       return;
     }
