@@ -33,6 +33,15 @@
 //! correctly from the live Deployment's own existence, no stored manifest
 //! needed for that either.
 //!
+//! studio#155: `apply` also creates a `ClusterIP` `Service` next to the
+//! `Deployment` whenever `spec.acp_enabled` is set — the piece that makes the
+//! pod's `/acp` port addressable at all (before this, a k8s agent got an ACP
+//! auth key in its env but no reachable endpoint to pair with it; see
+//! [`build_acp_service`] for the ClusterIP-vs-NodePort reasoning and
+//! [`k8s_acp_url`] for the address `agents.toml` dials). `delete` removes the
+//! Service alongside the Deployment so the endpoint doesn't dangle, and a
+//! re-apply with `acp_enabled` off prunes the stale Service too.
+//!
 //! Observing k8s state into the canonical 6-state (the `apply`/`scale`
 //! counterpart to `status.rs`'s ECS `service_status`/`instance_status`) is
 //! also out of scope here — it's substantial enough on its own (a new
@@ -40,7 +49,7 @@
 //! mapping table) to land as its own follow-up rather than growing this PR
 //! further.
 
-use crate::apply::{ApplyAction, AppliedService, ApplyReport};
+use crate::apply::{AppliedService, ApplyAction, ApplyReport};
 use crate::driver::{ProvisionDriver, ProvisionOptions};
 use crate::manifest::{OABServiceManifest, Runtime};
 use anyhow::{Context, Result};
@@ -48,10 +57,12 @@ use async_trait::async_trait;
 use k8s_openapi::api::apps::v1::{Deployment, DeploymentSpec};
 use k8s_openapi::api::core::v1::{
     ConfigMapVolumeSource, Container, EnvVar, EnvVarSource, PodSpec, PodTemplateSpec,
-    ResourceRequirements, SecretKeySelector, Toleration, Volume, VolumeMount,
+    ResourceRequirements, SecretKeySelector, Service, ServicePort, ServiceSpec, Toleration, Volume,
+    VolumeMount,
 };
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{LabelSelector, ObjectMeta};
+use k8s_openapi::apimachinery::pkg::util::intstr::IntOrString;
 use kube::api::{Api, DeleteParams, Patch, PatchParams};
 use kube::{Client, Config};
 use std::collections::BTreeMap;
@@ -68,7 +79,13 @@ use std::collections::BTreeMap;
 pub fn k8s_safe_name(name: &str) -> String {
     name.to_lowercase()
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '-' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
         .collect::<String>()
         .trim_matches('-')
         .to_string()
@@ -112,7 +129,9 @@ impl K8sDriver {
     }
 }
 
-fn require_kubernetes_runtime(m: &OABServiceManifest) -> Result<&crate::manifest::KubernetesRuntime> {
+fn require_kubernetes_runtime(
+    m: &OABServiceManifest,
+) -> Result<&crate::manifest::KubernetesRuntime> {
     match &m.spec.runtime {
         Runtime::Kubernetes(rt) => Ok(rt),
         Runtime::Ecs(_) => anyhow::bail!(
@@ -177,13 +196,22 @@ fn resource_requirements(resources: &crate::manifest::Resources) -> ResourceRequ
     }
 }
 
+/// The label set shared by the Deployment's `selector.matchLabels`, its pod
+/// template, and the ACP `Service`'s selector — all three must agree or the
+/// Service would select nothing (and the Deployment would violate its own
+/// selector contract), so they come from one place.
+fn pod_labels(m: &OABServiceManifest) -> BTreeMap<String, String> {
+    let mut labels = BTreeMap::new();
+    labels.insert("app".to_string(), k8s_deployment_name(&m.metadata.name));
+    labels.insert("oab/name".to_string(), m.metadata.name.clone());
+    labels
+}
+
 fn build_deployment(m: &OABServiceManifest) -> Result<Deployment> {
     let k8s_rt = require_kubernetes_runtime(m)?;
     let name = k8s_deployment_name(&m.metadata.name);
 
-    let mut labels = BTreeMap::new();
-    labels.insert("app".to_string(), name.clone());
-    labels.insert("oab/name".to_string(), m.metadata.name.clone());
+    let labels = pod_labels(m);
 
     let mut env = vec![
         EnvVar {
@@ -230,7 +258,11 @@ fn build_deployment(m: &OABServiceManifest) -> Result<Deployment> {
         // frame, so a separate wrapper here would silently swallow the
         // parser's own detail (which scheme, which malformed part).
         Some(Err(e)) => {
-            anyhow::bail!("{e} — manifest '{}/{}'", m.metadata.namespace, m.metadata.name)
+            anyhow::bail!(
+                "{e} — manifest '{}/{}'",
+                m.metadata.namespace,
+                m.metadata.name
+            )
         }
     };
     let (command, volumes, volume_mounts) = if let Some((config_map_name, _key)) = configmap_ref {
@@ -319,12 +351,109 @@ fn build_deployment(m: &OABServiceManifest) -> Result<Deployment> {
     })
 }
 
+/// The `Service` exposing the pod's ACP/gateway port (studio#155). Without it
+/// a k8s agent's `/acp` endpoint exists only inside the pod — nothing in the
+/// cluster forwards traffic to it, so the `OPENAB_ACP_AUTH_KEY` the deploy
+/// wires into env has no address to pair with.
+///
+/// `None` unless `spec.acp_enabled` is set: an ACP-less pod has no listener
+/// behind the port, and a Service selecting it would be a dead endpoint that
+/// still claims an address.
+///
+/// `ClusterIP`, deliberately not `NodePort`/`LoadBalancer` — the cluster-local
+/// name `oab-<name>.<namespace>.svc.cluster.local` is already reachable from
+/// the operator's machine on OrbStack (it routes `*.svc.cluster.local` and
+/// ClusterIP addresses straight to the host) and everywhere else via
+/// `kubectl port-forward svc/oab-<name> 8080:8080`, while NodePort/LB would
+/// publish the bearer-authed port on every node IP or a provisioned LB — a
+/// wider surface than a single-pod agent needs. A Studio-side dynamic
+/// port-forward (the issue's candidate fix 2) stays a possible follow-up; the
+/// Service also gives that tunnel a stable `svc/` target that survives pod
+/// restarts, unlike `pod/<name>`.
+pub fn build_acp_service(m: &OABServiceManifest) -> Result<Option<Service>> {
+    require_kubernetes_runtime(m)?;
+    if m.spec.acp_enabled != Some(true) {
+        return Ok(None);
+    }
+    let labels = pod_labels(m);
+    // The port the openab gateway listens on — the same value
+    // `manifest::Ingress::container_port` defaults to on the ECS side; a k8s
+    // manifest has no ingress block, so the image's own default is the only
+    // value in play.
+    let port = i32::from(crate::manifest::default_container_port());
+    Ok(Some(Service {
+        metadata: ObjectMeta {
+            // Shares the Deployment's `oab-<name>` — different Kind, no
+            // collision, and the name an operator guesses is the right one.
+            name: Some(k8s_deployment_name(&m.metadata.name)),
+            namespace: Some(m.metadata.namespace.clone()),
+            labels: Some(labels.clone()),
+            ..Default::default()
+        },
+        spec: Some(ServiceSpec {
+            type_: Some("ClusterIP".to_string()),
+            selector: Some(labels),
+            ports: Some(vec![ServicePort {
+                name: Some("acp".to_string()),
+                protocol: Some("TCP".to_string()),
+                port,
+                target_port: Some(IntOrString::Int(port)),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }))
+}
+
+/// What `apply` should do about the agent's ACP `Service` — the decision lives
+/// in its own function so the contract is pinned by tests without needing a
+/// live cluster.
+enum AcpServiceReconcile {
+    /// SSA-patch this Service and report its `webhook_urls` entry. `Box` keeps
+    /// the enum small next to the data-less `Prune`.
+    Apply(Box<Service>),
+    /// Ensure the Service is absent. A redeploy that flipped
+    /// `spec.acp_enabled` off must tear the stale Service down rather than
+    /// leave it selecting pods that no longer listen on `/acp` — a dead
+    /// endpoint that still claims a ClusterIP.
+    Prune,
+}
+
+fn acp_service_reconcile(m: &OABServiceManifest) -> Result<AcpServiceReconcile> {
+    match build_acp_service(m)? {
+        Some(service) => Ok(AcpServiceReconcile::Apply(Box::new(service))),
+        None => Ok(AcpServiceReconcile::Prune),
+    }
+}
+
+/// The in-cluster `/acp` WebSocket URL the agent's Service exposes — the
+/// address a `[[agent]].url` in `agents.toml` dials. `ws://` (not `wss://`):
+/// service traffic inside the cluster is plaintext; the `openab.bearer.*`
+/// sub-protocol carries the auth, and `RemoteConfig::validate` accepts only
+/// ws/wss schemes anyway.
+pub fn k8s_acp_url(namespace: &str, name: &str) -> String {
+    format!(
+        "ws://{}.{}.svc.cluster.local:{}/acp",
+        k8s_deployment_name(name),
+        namespace,
+        crate::manifest::default_container_port()
+    )
+}
+
 #[async_trait]
 impl ProvisionDriver for K8sDriver {
-    async fn apply(&self, manifests: &[OABServiceManifest], _opts: &ProvisionOptions) -> Result<ApplyReport> {
+    async fn apply(
+        &self,
+        manifests: &[OABServiceManifest],
+        _opts: &ProvisionOptions,
+    ) -> Result<ApplyReport> {
         let mut services = Vec::with_capacity(manifests.len());
         for m in manifests {
             let deployment = build_deployment(m)?;
+            // Planned before any API call so a manifest error fails the whole
+            // apply up front, not after a half-applied Deployment (studio#155).
+            let acp_reconcile = acp_service_reconcile(m)?;
             let name = k8s_deployment_name(&m.metadata.name);
             let api: Api<Deployment> = Api::namespaced(self.client.clone(), &m.metadata.namespace);
 
@@ -347,12 +476,57 @@ impl ProvisionDriver for K8sDriver {
                 )
             })?;
 
+            // The Deployment exists now — reconcile its /acp exposure
+            // (studio#155). Both arms are idempotent: server-side apply with
+            // the Deployment's own field-manager, or a 404-tolerant delete for
+            // a redeploy that turned acp off (and for never-acp manifests,
+            // where the delete is just a no-op). The report's webhook_urls is
+            // the "address next to the auth key" the issue was missing.
+            let mut webhook_urls = Vec::new();
+            let svc_api: Api<Service> = Api::namespaced(self.client.clone(), &m.metadata.namespace);
+            match acp_reconcile {
+                AcpServiceReconcile::Apply(service) => {
+                    svc_api
+                        .patch(
+                            &name,
+                            &PatchParams::apply("oabctl").force(),
+                            &Patch::Apply(&service),
+                        )
+                        .await
+                        .with_context(|| {
+                            format!(
+                                "failed to apply k8s service '{name}' in namespace '{}'",
+                                m.metadata.namespace
+                            )
+                        })?;
+                    webhook_urls.push(k8s_acp_url(&m.metadata.namespace, &m.metadata.name));
+                }
+                AcpServiceReconcile::Prune => {
+                    match svc_api.delete(&name, &DeleteParams::default()).await {
+                        Ok(_) => {}
+                        Err(kube::Error::Api(e)) if e.code == 404 => {}
+                        Err(e) => {
+                            return Err(e).with_context(|| {
+                                format!(
+                                    "failed to prune k8s service '{name}' in namespace '{}'",
+                                    m.metadata.namespace
+                                )
+                            });
+                        }
+                    }
+                }
+            }
+
             services.push(AppliedService {
                 namespace: m.metadata.namespace.clone(),
                 name: m.metadata.name.clone(),
                 resource_name: name,
-                action: if existed { ApplyAction::Updated } else { ApplyAction::Created },
-                webhook_urls: Vec::new(),
+                action: if existed {
+                    ApplyAction::Updated
+                } else {
+                    ApplyAction::Created
+                },
+                webhook_urls,
                 warnings: Vec::new(),
             });
         }
@@ -375,17 +549,35 @@ impl ProvisionDriver for K8sDriver {
         Ok(())
     }
 
-    async fn delete(&self, resource: &str, name: &str, namespace: &str, _control_plane_bucket: &str) -> Result<()> {
+    async fn delete(
+        &self,
+        resource: &str,
+        name: &str,
+        namespace: &str,
+        _control_plane_bucket: &str,
+    ) -> Result<()> {
         if resource != "oabservice" {
             anyhow::bail!("unknown resource type: {resource}. Use 'oabservice'");
         }
         let dep_name = k8s_deployment_name(name);
         let api: Api<Deployment> = Api::namespaced(self.client.clone(), namespace);
         match api.delete(&dep_name, &DeleteParams::default()).await {
-            Ok(_) => Ok(()),
+            Ok(_) => {}
             // Delete is idempotent — already gone is success, not an error.
+            Err(kube::Error::Api(e)) if e.code == 404 => {}
+            Err(e) => {
+                return Err(e)
+                    .with_context(|| format!("failed to delete k8s deployment '{dep_name}'"));
+            }
+        }
+        // The ACP Service `apply` created next to the Deployment (studio#155) —
+        // same name, same idempotent delete. Harmless when the agent never had
+        // acp enabled (404 is success either way).
+        let svc_api: Api<Service> = Api::namespaced(self.client.clone(), namespace);
+        match svc_api.delete(&dep_name, &DeleteParams::default()).await {
+            Ok(_) => Ok(()),
             Err(kube::Error::Api(e)) if e.code == 404 => Ok(()),
-            Err(e) => Err(e).with_context(|| format!("failed to delete k8s deployment '{dep_name}'")),
+            Err(e) => Err(e).with_context(|| format!("failed to delete k8s service '{dep_name}'")),
         }
     }
 }
@@ -457,12 +649,21 @@ mod tests {
         // a manifest carrying it builds identically to one without.
         let with = k8s_manifest(Some("s3://bucket/artifacts/prod/orca/"), &[]);
         let without = k8s_manifest(None, &[]);
-        assert_eq!(build_deployment(&with).unwrap(), build_deployment(&without).unwrap());
+        assert_eq!(
+            build_deployment(&with).unwrap(),
+            build_deployment(&without).unwrap()
+        );
     }
 
     #[test]
     fn build_deployment_wires_secret_key_ref() {
-        let m = k8s_manifest(None, &[("DISCORD_BOT_TOKEN", "k8s-secret://oab-orca#DISCORD_BOT_TOKEN")]);
+        let m = k8s_manifest(
+            None,
+            &[(
+                "DISCORD_BOT_TOKEN",
+                "k8s-secret://oab-orca#DISCORD_BOT_TOKEN",
+            )],
+        );
         let dep = build_deployment(&m).unwrap();
         let pod = dep.spec.unwrap().template.spec.unwrap();
         let env = pod.containers[0].env.as_ref().unwrap();
@@ -480,7 +681,13 @@ mod tests {
 
     #[test]
     fn build_deployment_rejects_non_k8s_secret_scheme() {
-        let m = k8s_manifest(None, &[("DISCORD_BOT_TOKEN", "aws-sm://oab/prod/orca#DISCORD_BOT_TOKEN")]);
+        let m = k8s_manifest(
+            None,
+            &[(
+                "DISCORD_BOT_TOKEN",
+                "aws-sm://oab/prod/orca#DISCORD_BOT_TOKEN",
+            )],
+        );
         let err = build_deployment(&m).unwrap_err();
         assert!(err.to_string().contains("k8s-secret://"));
     }
@@ -492,7 +699,10 @@ mod tests {
         let m = k8s_manifest(None, &[("DISCORD_BOT_TOKEN", "k8s-secret://oab-orca")]);
         let err = build_deployment(&m).unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("DISCORD_BOT_TOKEN"), "must name the env var: {msg}");
+        assert!(
+            msg.contains("DISCORD_BOT_TOKEN"),
+            "must name the env var: {msg}"
+        );
         assert!(msg.contains("prod/orca"), "must name the agent: {msg}");
     }
 
@@ -525,7 +735,10 @@ mod tests {
         m.spec.config_from = "k8s-configmap://orca-config".to_string(); // missing #key
         let err = build_deployment(&m).unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("k8s-configmap://"), "must name the scheme: {msg}");
+        assert!(
+            msg.contains("k8s-configmap://"),
+            "must name the scheme: {msg}"
+        );
         assert!(msg.contains("prod/orca"), "must name the agent: {msg}");
     }
 
@@ -538,7 +751,10 @@ mod tests {
 
         let pod = dep.spec.unwrap().template.spec.unwrap();
         let container = &pod.containers[0];
-        assert_eq!(container.image.as_deref(), Some("ghcr.io/openabdev/openab:latest"));
+        assert_eq!(
+            container.image.as_deref(),
+            Some("ghcr.io/openabdev/openab:latest")
+        );
         assert_eq!(
             container.command.as_deref(),
             Some(
@@ -564,17 +780,76 @@ mod tests {
     #[test]
     fn build_deployment_wires_service_account_and_node_selector() {
         let mut m = k8s_manifest(None, &[]);
-        let Runtime::Kubernetes(rt) = &mut m.spec.runtime else { unreachable!() };
+        let Runtime::Kubernetes(rt) = &mut m.spec.runtime else {
+            unreachable!()
+        };
         rt.service_account = Some("orca-sa".to_string());
-        rt.node_selector.insert("kubernetes.io/arch".to_string(), "arm64".to_string());
+        rt.node_selector
+            .insert("kubernetes.io/arch".to_string(), "arm64".to_string());
 
         let dep = build_deployment(&m).unwrap();
         let pod = dep.spec.unwrap().template.spec.unwrap();
         assert_eq!(pod.service_account_name.as_deref(), Some("orca-sa"));
         assert_eq!(
-            pod.node_selector.unwrap().get("kubernetes.io/arch").map(String::as_str),
+            pod.node_selector
+                .unwrap()
+                .get("kubernetes.io/arch")
+                .map(String::as_str),
             Some("arm64")
         );
+    }
+
+    #[test]
+    fn acp_service_selector_matches_the_deployment_pod_labels() {
+        // studio#155: the Service must select exactly the Deployment's pod
+        // template labels — drift here silently produces a Service with zero
+        // endpoints.
+        let mut m = k8s_manifest(None, &[]);
+        m.spec.acp_enabled = Some(true);
+        let svc = build_acp_service(&m).unwrap().expect("acp on → Service");
+        let dep = build_deployment(&m).unwrap();
+        let pod_labels = dep.spec.unwrap().template.metadata.unwrap().labels.unwrap();
+        assert_eq!(svc.spec.unwrap().selector.unwrap(), pod_labels);
+    }
+
+    #[test]
+    fn acp_off_reconcile_plans_prune_not_apply() {
+        // Review F2 (studio#155): a redeploy that turns acp off must produce a
+        // Prune so apply tears down the stale Service — Apply would leave the
+        // old selector routing to pods that no longer listen on /acp.
+        let mut m = k8s_manifest(None, &[]);
+        assert!(matches!(
+            acp_service_reconcile(&m).unwrap(),
+            AcpServiceReconcile::Prune
+        ));
+        m.spec.acp_enabled = Some(false);
+        assert!(matches!(
+            acp_service_reconcile(&m).unwrap(),
+            AcpServiceReconcile::Prune
+        ));
+        m.spec.acp_enabled = Some(true);
+        assert!(matches!(
+            acp_service_reconcile(&m).unwrap(),
+            AcpServiceReconcile::Apply(_)
+        ));
+    }
+
+    #[test]
+    fn acp_service_rejects_ecs_runtime_too() {
+        let mut m = k8s_manifest(None, &[]);
+        m.spec.acp_enabled = Some(true);
+        m.spec.runtime = Runtime::Ecs(crate::manifest::EcsRuntime {
+            capacity_provider: "FARGATE_SPOT".to_string(),
+            architecture: "X86_64".to_string(),
+            task_role_arn: None,
+            networking: crate::manifest::EcsNetworking {
+                subnets: vec!["subnet-1".to_string()],
+                security_groups: vec!["sg-1".to_string()],
+                assign_public_ip: false,
+            },
+        });
+        let err = build_acp_service(&m).unwrap_err();
+        assert!(err.to_string().contains("dispatch bug"));
     }
 
     #[test]
